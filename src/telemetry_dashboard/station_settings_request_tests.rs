@@ -13,6 +13,7 @@ use std::{
     time::Duration,
 };
 fn session(token: &str) {
+    crate::auth::hold_station_identity_for_test();
     auth::set_current_session(auth::StoredAuthSession {
         token: token.into(),
         remember_me: false,
@@ -29,6 +30,7 @@ fn session(token: &str) {
     });
 }
 fn dom(base: &str) -> VirtualDom {
+    crate::auth::hold_station_identity_for_test();
     let mut dom = VirtualDom::new(|| rsx! {div{}});
     dom.rebuild_in_place();
     dom.in_scope(ScopeId::ROOT, || {
@@ -510,6 +512,7 @@ async fn pump_fill_dom(dom: &mut VirtualDom) {
 }
 #[tokio::test(flavor = "current_thread")]
 async fn actual_clear_abort_component_captures_dialog_and_confirm_before_task_first_poll() {
+    crate::auth::hold_station_identity_for_test();
     for change in [
         "current",
         "station-after-confirm",
@@ -596,6 +599,7 @@ fn qualification_fixture_app() -> Element {
     rsx! {dashboard::gse_panel::QualificationStatus{status,disabled:false}}
 }
 fn qualification_dom(base: &str) -> (VirtualDom, [dioxus::core::ElementId; 2]) {
+    crate::auth::hold_station_identity_for_test();
     let mut dom = VirtualDom::new(qualification_fixture_app);
     dom.in_scope(ScopeId::ROOT, || {
         dashboard::UrlConfig::set_base_url_and_persist(base.into());

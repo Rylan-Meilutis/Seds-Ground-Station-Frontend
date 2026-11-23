@@ -23,9 +23,7 @@ pub(crate) struct LogArtifact {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fallback_storage_base_dir() -> std::path::PathBuf {
-    dirs::data_local_dir()
-        .or_else(dirs::data_dir)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+    crate::native_storage::fallback_data_dir()
 }
 
 #[cfg(all(not(target_arch = "wasm32"), target_os = "android"))]

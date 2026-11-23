@@ -80,6 +80,7 @@ mod native {
         time::Duration,
     };
     fn session(token: &str) {
+        crate::auth::hold_station_identity_for_test();
         auth::set_current_session(auth::StoredAuthSession {
             token: token.into(),
             remember_me: false,
@@ -96,6 +97,7 @@ mod native {
         });
     }
     fn dom(base: &str) -> VirtualDom {
+        crate::auth::hold_station_identity_for_test();
         let mut dom = VirtualDom::new(|| rsx! {div{}});
         dom.rebuild_in_place();
         dom.in_scope(ScopeId::ROOT, || {

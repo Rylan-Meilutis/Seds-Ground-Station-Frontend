@@ -427,6 +427,30 @@ pub fn can_join_voice() -> bool {
     voice_permission(&current_status())
 }
 
+/// Serializes unit tests that change the process-wide station identity: the
+/// signed-in session (with its request revision) and the persisted station
+/// address. Request owners capture both and refuse to send once either moves,
+/// so two such tests running on parallel test threads cancel each other's
+/// requests or send them to each other's fixture servers. The first call on a
+/// test thread takes the lock and keeps it in thread-local storage until that
+/// thread ends (libtest runs each test on its own thread, so this also
+/// releases it after a panic); later calls on the same thread are no-ops.
+#[cfg(test)]
+pub(crate) fn hold_station_identity_for_test() {
+    use std::cell::RefCell;
+    use std::sync::MutexGuard;
+    static STATION_IDENTITY: Mutex<()> = Mutex::new(());
+    thread_local! {
+        static HELD: RefCell<Option<MutexGuard<'static, ()>>> = const { RefCell::new(None) };
+    }
+    HELD.with(|held| {
+        let mut held = held.borrow_mut();
+        if held.is_none() {
+            *held = Some(STATION_IDENTITY.lock().unwrap_or_else(|poisoned| poisoned.into_inner()));
+        }
+    });
+}
+
 pub fn set_current_session(session: StoredAuthSession) {
     let host_scope = current_host_scope();
     if let Ok(mut slot) = CURRENT_SESSION.lock() {
@@ -1182,10 +1206,7 @@ fn auth_storage_dir() -> std::path::PathBuf {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn fallback_auth_storage_dir() -> std::path::PathBuf {
-    dirs::data_local_dir()
-        .or_else(dirs::data_dir)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
-        .join("gs26")
+    crate::native_storage::fallback_data_dir().join("gs26")
 }
 
 #[cfg(test)]

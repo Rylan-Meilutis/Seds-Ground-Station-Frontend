@@ -124,6 +124,7 @@ fn root() -> Element {
     rsx! {TranscodingHosts{}}
 }
 fn session(token: &str) {
+    crate::auth::hold_station_identity_for_test();
     crate::auth::set_current_session(crate::auth::StoredAuthSession {
         token: token.into(),
         remember_me: false,

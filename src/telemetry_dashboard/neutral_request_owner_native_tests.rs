@@ -22,11 +22,13 @@ fn root()->Element{
     }else{rsx!{dashboard::admin_console::AdminConsole{on_exit:|_|{},on_navigate:|_|{}}}}
 }
 fn session(token:&str){
+    crate::auth::hold_station_identity_for_test();
     crate::auth::set_current_session(crate::auth::StoredAuthSession{token:token.into(),remember_me:false,session:crate::auth::SessionStatus{
         authenticated:true,username:Some("neutral-operator".into()),roles:vec!["admin".into(),"stream_admin".into(),"stream_master".into()],
         permissions:crate::auth::Permissions{view_data:true,send_commands:true,..Default::default()},..Default::default()}});
 }
 fn dom(server:&Server,view:&'static str)->VirtualDom{
+    crate::auth::hold_station_identity_for_test();
     VIEW.with(|v|*v.borrow_mut()=view);SPAWNED.with(|v|v.borrow_mut().clear());
     let mut dom=VirtualDom::new(root);dom.in_scope(ScopeId::ROOT,||{
         dashboard::UrlConfig::set_base_url_and_persist(server.base.clone());

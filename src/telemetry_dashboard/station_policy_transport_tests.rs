@@ -6,7 +6,7 @@ use std::{future::Future, io::{Read, Write}, net::TcpListener, pin::Pin, rc::Rc,
 pub(super) fn child(module: &str, name: &str) -> bool {
     let exact=format!("{}::{name}",module.split_once("::").unwrap().1);
     if std::env::var("GS_POLICY_TRANSPORT_CHILD").as_deref()==Ok(exact.as_str()) {return true;}
-    let root=std::env::temp_dir().join(format!("gs-policy-ui-{}-{}",std::process::id(),
+    let root=std::env::temp_dir().join(format!("gs-policy-ui-{name}-{}-{}",std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir(&root).unwrap();
     let result=std::process::Command::new(std::env::current_exe().unwrap())
@@ -25,6 +25,7 @@ pub(super) fn dom(base:&str)->VirtualDom {
     dom
 }
 fn setup(dom:&VirtualDom,base:&str) {
+    crate::auth::hold_station_identity_for_test();
     dom.in_scope(ScopeId::ROOT,||{
         // Set the actual UI owner without persisting a station choice. This
         // isolated child never initializes/restores a host-scope auth store.

@@ -39,6 +39,33 @@ mod file;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use file::{atomic_write, remove_durable, transaction_lock};
 
+/// Desktop data root when the platform gives no app-private directory.
+/// Unit tests never use the operator's real one: they persist fixture station
+/// addresses and sessions, and concurrent test processes must not see each
+/// other's. A test child that was handed its own temporary `XDG_DATA_HOME`
+/// keeps it (restart tests share one across children); otherwise each test
+/// process gets a private directory under `<temp>/gs26-frontend-tests/`.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn fallback_data_dir() -> std::path::PathBuf {
+    #[cfg(test)]
+    {
+        let temp = std::env::temp_dir();
+        std::env::var_os("XDG_DATA_HOME")
+            .map(std::path::PathBuf::from)
+            .filter(|dir| dir.starts_with(&temp))
+            .unwrap_or_else(|| {
+                temp.join("gs26-frontend-tests")
+                    .join(std::process::id().to_string())
+            })
+    }
+    #[cfg(not(test))]
+    {
+        dirs::data_local_dir()
+            .or_else(dirs::data_dir)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| ".".into()))
+    }
+}
+
 /// Report the operation and OS error category only, never stored values/tokens.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn report_error(operation: &'static str, error: &std::io::Error) {

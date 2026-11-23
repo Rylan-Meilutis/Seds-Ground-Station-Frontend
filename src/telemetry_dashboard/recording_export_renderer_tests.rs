@@ -38,6 +38,7 @@ fn report_app() -> Element {
     rsx! { ReportStudio { recording: RECORDING() } }
 }
 fn session(token: &str) {
+    crate::auth::hold_station_identity_for_test();
     auth::set_current_session(auth::StoredAuthSession {
         token: token.to_owned(),
         remember_me: false,
@@ -53,6 +54,7 @@ fn session(token: &str) {
     });
 }
 fn setup(dom: &VirtualDom, base: &str) {
+    crate::auth::hold_station_identity_for_test();
     dom.in_scope(ScopeId::ROOT, || {
         dashboard::UrlConfig::set_base_url_and_persist(base.to_owned());
         *dashboard::WS_EPOCH.write() = 3;

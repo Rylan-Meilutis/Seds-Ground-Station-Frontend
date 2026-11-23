@@ -930,7 +930,10 @@ mod tests {
 
     #[test]
     fn settings_flows_render_for_users_and_non_admins() {
-        // Not signed in (tests have no session): the user section says so.
+        // Not signed in: the user section says so. The session is process
+        // wide and other tests leave theirs behind, so clear it under the lock.
+        crate::auth::hold_station_identity_for_test();
+        crate::auth::clear_current_session();
         let page = render_settings(Some(enabled()), false);
         assert!(page.contains("Sign in to take part"), "{page}");
         // Non-administrators see the settings read-only, with the summary.

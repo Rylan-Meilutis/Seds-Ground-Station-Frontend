@@ -71,6 +71,7 @@ impl Drop for Server {
 }
 pub(super) fn dom(base: &str) -> VirtualDom { dom_with(|| rsx! { div {} }, base) }
 fn dom_with(root: fn() -> Element, base: &str) -> VirtualDom {
+    crate::auth::hold_station_identity_for_test();
     let mut dom = VirtualDom::new(root); dom.rebuild_in_place();
     dom.in_scope(ScopeId::ROOT, || {
         *BASE_URL.write() = base.into(); *WS_EPOCH.write() = 7;

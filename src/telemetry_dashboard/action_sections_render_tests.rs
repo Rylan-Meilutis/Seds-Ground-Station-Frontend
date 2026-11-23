@@ -75,6 +75,7 @@ fn expanded(block: &str) -> Option<bool> {
 
 #[test]
 fn actions_tab_groups_every_control_into_mode_ordered_collapsible_sections() {
+    crate::auth::hold_station_identity_for_test();
     if !super::super::command_owner::isolated_test_child(module_path!(), "actions_tab_groups_every_control_into_mode_ordered_collapsible_sections") { return; }
     auth::set_current_session(auth::StoredAuthSession{token:"section-test-token".into(),remember_me:false,
         session:auth::SessionStatus{authenticated:true,permissions:auth::Permissions{view_data:true,send_commands:true,..Default::default()},..Default::default()}});
@@ -157,6 +158,7 @@ fn render_recover(station_recovery: Option<serde_json::Value>) -> String {
 
 #[test]
 fn recover_station_is_listed_under_recovery_only_while_the_station_latch_is_set() {
+    crate::auth::hold_station_identity_for_test();
     if !super::super::command_owner::isolated_test_child(module_path!(), "recover_station_is_listed_under_recovery_only_while_the_station_latch_is_set") { return; }
     auth::set_current_session(auth::StoredAuthSession{token:"recover-test-token".into(),remember_me:false,
         session:auth::SessionStatus{authenticated:true,permissions:auth::Permissions{view_data:true,send_commands:true,..Default::default()},..Default::default()}});

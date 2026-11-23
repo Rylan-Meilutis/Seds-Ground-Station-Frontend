@@ -213,6 +213,7 @@ fn layout_root() -> Element {
 }
 
 fn dom(base: &str) -> VirtualDom {
+    crate::auth::hold_station_identity_for_test();
     let mut dom = VirtualDom::new(layout_root);
     dom.rebuild_in_place();
     dom.in_scope(ScopeId::ROOT, || {
