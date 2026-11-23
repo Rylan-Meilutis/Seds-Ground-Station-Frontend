@@ -51,6 +51,9 @@ pub(super) struct OptionEntry {
     /// without restarting. Absent on older backends, which restart instead.
     #[serde(default)]
     pub in_process: bool,
+    /// The mode against simulated board firmware (GS docs/firmware-sim.md). Absent on older backends.
+    #[serde(default)]
+    pub firmware_sim: bool,
 }
 impl OptionEntry {
     /// The backend fences this switch itself and needs no per-request epoch
@@ -174,7 +177,10 @@ impl Snapshot {
                     && self.modes.iter().any(|m| m.id == o.mode_id)
                     && o.reason.as_ref().is_none_or(|v| prose(v, 4096))
                     && !self.options[..i].iter().any(|p| {
-                        p.id == o.id || (p.mode_id == o.mode_id && p.simulation == o.simulation)
+                        p.id == o.id
+                            || (p.mode_id == o.mode_id
+                                && p.simulation == o.simulation
+                                && p.firmware_sim == o.firmware_sim)
                     })
             })
             && self.transition.as_ref().is_none_or(Transition::valid)
@@ -186,9 +192,13 @@ impl Snapshot {
         self.options.iter().find(|o| o.id == id)
     }
     pub fn pair(&self, mode_id: &str, simulation: bool) -> Option<&OptionEntry> {
+        self.target(mode_id, simulation, false)
+    }
+    /// The option for a mode, its Simulation flag and its firmware simulation flag.
+    pub fn target(&self, mode_id: &str, simulation: bool, firmware_sim: bool) -> Option<&OptionEntry> {
         self.options
             .iter()
-            .find(|o| o.mode_id == mode_id && o.simulation == simulation)
+            .find(|o| o.mode_id == mode_id && o.simulation == simulation && o.firmware_sim == firmware_sim)
     }
     pub fn reason(&self, target: &str, received: f64, now: f64) -> Option<String> {
         if !self.fresh(received, now) {

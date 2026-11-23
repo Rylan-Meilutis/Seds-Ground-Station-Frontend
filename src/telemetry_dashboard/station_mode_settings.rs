@@ -74,6 +74,7 @@ struct Controls {
     selected: Signal<String>,
     applied_selection: Signal<Option<String>>,
     simulation: Signal<Option<bool>>,
+    firmware_sim: Signal<bool>,
     dialog: Signal<Option<Prepared>>,
     busy: Signal<bool>,
     operation_owner: Signal<Option<Rc<ExportOwner>>>,
@@ -87,11 +88,12 @@ impl Controls {
     fn target(&self) -> Option<contract::OptionEntry> {
         let mode = self.selected.peek().clone();
         let simulation = (*self.simulation.peek())?;
+        let firmware_sim = *self.firmware_sim.peek();
         observer::OBSERVED
             .peek()
             .as_ref()?
             .value
-            .pair(&mode, simulation)
+            .target(&mode, simulation, firmware_sim)
             .cloned()
     }
     fn reason(&self, inhibited: bool) -> Option<String> {
@@ -252,6 +254,7 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
         selected: use_signal(String::new),
         applied_selection: use_signal(|| None::<String>),
         simulation: use_signal(|| None::<bool>),
+        firmware_sim: use_signal(|| false),
         dialog: use_signal(|| None::<Prepared>),
         busy: use_signal(|| false),
         operation_owner: use_signal(|| None::<Rc<ExportOwner>>),
@@ -302,12 +305,14 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
                 &c.id,
                 &c.mode_id,
                 c.simulation,
+                c.firmware_sim,
             ))
             .ok();
             let changed = applied.is_some() && *sync.applied_selection.peek() != applied;
             if changed || sync.selected.peek().is_empty() {
                 sync.selected.set(c.mode_id.clone());
                 sync.simulation.set(Some(c.simulation));
+                sync.firmware_sim.set(c.firmware_sim);
                 sync.applied_selection.set(applied);
             }
         }
@@ -319,6 +324,8 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
     });
     let selected = controls.selected.read().clone();
     let simulation = *controls.simulation.read();
+    let firmware_sim = *controls.firmware_sim.read();
+    let firmware_offered = observed_firmware_offered();
     let busy = *controls.busy.read();
     let dialog = controls.dialog.read().clone();
     let target = controls.target();
@@ -331,6 +338,7 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
         });
     let mut choose = controls.clone();
     let mut toggle = controls.clone();
+    let mut toggle_firmware = controls.clone();
     let review = controls.clone();
     let mut cancel = controls.clone();
     let confirm = controls.clone();
@@ -361,6 +369,7 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
             }
         }
         label{style:"display:flex;gap:var(--gs-space-2);align-items:center;",input{r#type:"checkbox",aria_label:"Simulate telemetry and actions",checked:simulation==Some(true),disabled:!can_draft||simulation.is_none(),onchange:move|e|{if toggle.alive()&&!*toggle.busy.peek()&&toggle.dialog.peek().is_none(){toggle.simulation.set(Some(e.checked()));}}} "Simulation (incoming data and actions)"}
+        if firmware_offered {label{style:"display:flex;gap:var(--gs-space-2);align-items:center;",input{r#type:"checkbox",aria_label:"Run against simulated firmware",checked:firmware_sim,disabled:!can_draft,onchange:move|e|{if toggle_firmware.alive()&&!*toggle_firmware.busy.peek()&&toggle_firmware.dialog.peek().is_none(){toggle_firmware.firmware_sim.set(e.checked());}}} "SIMULATED FIRMWARE (every board's real firmware on the station machine; refused while hardware is connected)"}}
         if simulation.is_none(){p{class:"gs-notice","Execution domain unknown; no hardware domain is assumed."}}
         if let Some(target)=target.as_ref(){if changed{p{style:"margin:0;","Selected: {target.label}"}}}else{p{class:"gs-notice","This mode/Simulation combination is not advertised. No target is inferred."}}
         if changed {if let Some(reason)=reason.as_ref(){p{role:"status",class:"gs-notice gs-notice--warn","{reason}"}}}
@@ -387,4 +396,12 @@ pub(super) fn StationModeSettings(theme: ThemeConfig, inhibited: bool) -> Elemen
             }
         }
     }}
+}
+
+/// Whether the backend advertises any firmware-simulation option.
+fn observed_firmware_offered() -> bool {
+    observer::OBSERVED
+        .read()
+        .as_ref()
+        .is_some_and(|o| o.value.options.iter().any(|t| t.firmware_sim))
 }
