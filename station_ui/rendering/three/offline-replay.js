@@ -309,7 +309,7 @@ function mount(root,input,options={}){
  const extras={...(p.replay_extras&&typeof p.replay_extras==='object'?p.replay_extras:{}),...(options.extras||{})};
  let model=flightModel(p,extras);
  const flightMode=p.mode!=='test_fire';
- const title=node('h3',p.mode==='test_fire'?'Test-fire replay · motor on stand':live?'Flight replay · live':'Flight replay · saved data');root.append(title);
+ const title=node('h3',p.mode==='test_fire'?'Test-fire replay · motor on stand':live?'Flight replay · live':model.predicted.predicted?'Flight replay · predicted flight plan':'Flight replay · saved data');root.append(title);
  const badge=node('span');badge.style.cssText='display:none;margin-left:10px;padding:2px 10px;border-radius:999px;background:#7c3aed;color:#fff;font-size:13px;letter-spacing:.08em;vertical-align:middle';badge.dataset.predicted='false';title.append(badge);
  root.append(node('p',`${p.recording||(live?'Live telemetry':'Imported recording')} · ${live?'live':'offline'} · ${p.configuration_provenance||'configuration saved at export'}; no live values or commands`));
  const controls=node('div');controls.style.cssText='display:flex;gap:8px;flex-wrap:wrap;align-items:center';controls.className='gs-fr-controls';controls.setAttribute('role','toolbar');controls.setAttribute('aria-label','Replay time controls');root.append(controls);
@@ -402,7 +402,7 @@ function mount(root,input,options={}){
  function updateVisualNote(){
   if(!visual)return;
   if(flightScene){const terrainText=visual.terrainSource==='pad-altitude'?'ground at the pad altitude (no terrain data)':visual.terrainSource==='generic'?'reference ground':'terrain'+(visual.terrainAttribution?' · '+visual.terrainAttribution:'');
-   visualNote.textContent=visualUnavailable?'3D context lost · saved text values remain available':`Vehicle from the station geometry at its recorded GPS position · ${terrainText} · attitude ${visualState?.attitudeSource||'reference'}${visual.software?' · reduced-detail 3D':''}${model.track.sampled?' · sampled path':''}`+noteSuffix;
+   visualNote.textContent=visualUnavailable?'3D context lost · saved text values remain available':`Vehicle from the station geometry at its ${model.predicted.predicted?'predicted':'recorded GPS'} position · ${terrainText} · attitude ${visualState?.attitudeSource||'reference'}${visual.software?' · reduced-detail 3D':''}${model.track.sampled?' · sampled path':''}`+noteSuffix;
    sceneNote.textContent=terrainText;return;}
   visualNote.textContent=visualUnavailable?'3D context lost · saved text values remain available':
    'Illustrative '+(p.mode==='test_fire'?'fixed motor stand':visualState?.attitude.every(finite)?'flight vehicle · recorded attitude':'flight vehicle · attitude unavailable; reference orientation')+' · drag/arrow keys to orbit'+(visual.software?' · reduced-detail 3D':'')+noteSuffix;
