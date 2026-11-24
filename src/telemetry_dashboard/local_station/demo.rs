@@ -223,16 +223,151 @@ pub(crate) fn layout() -> Value {
 /// buttons: the close halves of the supply valves, as a station lists them.
 pub(crate) const PAIRED_COMMANDS: &[&str] = &["NitrogenClose", "NitrousClose"];
 
-/// The demo's pad checklists (`GET /api/checklists`).
+/// The demo station's checklist document, in the station's shape and field
+/// order (GroundStation26 `checklists::Document`): pad checks still open,
+/// range safety done and signed off.
+#[derive(serde::Serialize)]
+struct ChecklistItem {
+    id: &'static str,
+    text: &'static str,
+    checked: bool,
+    complete_on: Option<&'static str>,
+    completion_source: Option<&'static str>,
+    completed_by: Option<&'static str>,
+    completed_at_ms: Option<i64>,
+}
+#[derive(serde::Serialize)]
+struct Checklist {
+    id: &'static str,
+    title: &'static str,
+    required_before_launch: bool,
+    items: Vec<ChecklistItem>,
+}
+#[derive(serde::Serialize)]
+struct Signoff {
+    checklist_id: &'static str,
+    checklist_title: &'static str,
+    signed_by: &'static str,
+    signed_at_ms: i64,
+    content_digest: &'static str,
+    signed_revision: u64,
+    invalidated_at_ms: Option<i64>,
+    invalidation_reason: Option<&'static str>,
+}
+#[derive(serde::Serialize)]
+struct ChecklistDocument {
+    revision: u64,
+    signoffs: Vec<Signoff>,
+    completion_events: Vec<String>,
+    enforce_before_launch: bool,
+    checklists: Vec<Checklist>,
+}
+
+/// A fixed demo time for the records (2026-01-01 00:00 UTC).
+const RECORDS_T0: i64 = 1_767_225_600_000;
+
+fn checklist_document() -> ChecklistDocument {
+    let open = |id, text| ChecklistItem { id, text, checked: false, complete_on: None, completion_source: None, completed_by: None, completed_at_ms: None };
+    let done = |id, text, at| ChecklistItem { id, text, checked: true, complete_on: None, completion_source: None, completed_by: Some("demo-operator"), completed_at_ms: Some(RECORDS_T0 + at) };
+    ChecklistDocument {
+        revision: 4,
+        signoffs: vec![Signoff {
+            checklist_id: "range",
+            checklist_title: "Range safety (demo)",
+            signed_by: "demo-operator",
+            signed_at_ms: RECORDS_T0 + 95_000,
+            content_digest: "d3m0c0ffee",
+            signed_revision: 4,
+            invalidated_at_ms: None,
+            invalidation_reason: None,
+        }],
+        completion_events: Vec::new(),
+        enforce_before_launch: false,
+        checklists: vec![
+            Checklist { id: "pad", title: "Pad checks (demo)", required_before_launch: false, items: vec![
+                open("pt", "Pressure transducer reading checked"),
+                open("lines", "Gas lines and connections inspected"),
+                open("comms", "Communications and abort procedure checked"),
+            ] },
+            Checklist { id: "range", title: "Range safety (demo)", required_before_launch: false, items: vec![
+                done("clear", "Range clear of personnel", 60_000),
+                done("wind", "Winds within limits", 90_000),
+            ] },
+        ],
+    }
+}
+
+/// The demo's checklists (`GET /api/checklists`).
 pub(crate) fn checklists() -> Value {
-    let item = |id: &str, text: &str| json!({"id": id, "text": text, "checked": false, "completed_by": null, "completed_at_ms": null});
-    json!({"revision": 1, "enforce_before_launch": false, "checklists": [
-        {"id": "pad", "title": "Pad checks (demo)", "required_before_launch": false, "items": [
-            item("pt", "Pressure transducer reading checked"),
-            item("lines", "Gas lines and connections inspected"),
-            item("comms", "Communications and abort procedure checked")
-        ]}
-    ]})
+    serde_json::to_value(checklist_document()).unwrap_or(Value::Null)
+}
+
+/// The station's sign-off CSV of a document (`checklists::signoff_csv`).
+fn signoff_csv(document: &ChecklistDocument) -> String {
+    let cell = |value: &str| {
+        let safe = if value.trim_start().starts_with(['=', '+', '-', '@']) { format!("'{value}") } else { value.to_owned() };
+        format!("\"{}\"", safe.replace('"', "\"\""))
+    };
+    let mut csv = "checklist_id,checklist_title,status,signed_by,signed_at_ms,signed_revision,content_digest,invalidated_at_ms,invalidation_reason\r\n".to_owned();
+    for list in &document.checklists {
+        if !document.signoffs.iter().any(|s| s.checklist_id == list.id) {
+            csv.push_str(&format!("{},{},unsigned,,,,,,\r\n", cell(list.id), cell(list.title)));
+        }
+    }
+    for s in &document.signoffs {
+        let columns = [
+            s.checklist_id.to_owned(),
+            s.checklist_title.to_owned(),
+            if s.invalidated_at_ms.is_some() { "invalidated" } else { "signed_off" }.to_owned(),
+            s.signed_by.to_owned(),
+            s.signed_at_ms.to_string(),
+            s.signed_revision.to_string(),
+            s.content_digest.to_owned(),
+            s.invalidated_at_ms.map(|v| v.to_string()).unwrap_or_default(),
+            s.invalidation_reason.unwrap_or("").to_owned(),
+        ];
+        csv.push_str(&columns.iter().map(|c| cell(c)).collect::<Vec<_>>().join(","));
+        csv.push_str("\r\n");
+    }
+    csv
+}
+
+/// The demo's launch recovery history: one launch session, recovered once
+/// (the station's `launch_history` journal and its CSV of recovery events).
+const RECOVERY_EVENT: [&str; 11] = [
+    "demo-recovery-1", "demo-launch-session", "demo-primary", "3", "1767225740000", "1767226100000", "360000", "demo-operator", "demo-session-fingerprint", "primary", "true",
+];
+
+fn recovery_json() -> String {
+    let e = RECOVERY_EVENT;
+    format!(
+        concat!(
+            r#"{{"version":1,"automatic_actions_inhibited":false,"launch_attempt":false,"#,
+            r#""current":{{"authority":"{auth}","revision":{rev},"session":"{session}","clock":{{"kind":"t_plus","anchor_timestamp_ms":{t0},"duration_ms":null}},"t0_utc_ms":{t0}}},"#,
+            r#""past_sessions":[],"events":[{{"id":"{id}","launch_session":"{session}","authority":"{auth}","clock_revision":{rev},"t0_utc_ms":{t0},"reached_utc_ms":{reached},"t_relative_ms":{rel},"actor":"{actor}","auth_session":"{fp}","station":"{station}","primary_verified":{verified}}}],"#,
+            r#""daq_clock":[0,0],"daq_stamp":0,"legacy_anchor_unknown":false,"awaiting_new_launch":false,"new_cycle_confirmed":false}}"#
+        ),
+        id = e[0], session = e[1], auth = e[2], rev = e[3], t0 = e[4], reached = e[5], rel = e[6], actor = e[7], fp = e[8], station = e[9], verified = e[10]
+    )
+}
+
+fn recovery_csv() -> String {
+    let mut csv = "event_id,launch_session,authority,clock_revision,t0_utc_ms,reached_utc_ms,t_relative_ms,actor,auth_session,station,primary_verified\r\n".to_owned();
+    csv.push_str(&RECOVERY_EVENT.iter().map(|c| format!("\"{}\"", c.replace('"', "\"\""))).collect::<Vec<_>>().join(","));
+    csv.push_str("\r\n");
+    csv
+}
+
+/// The demo station's records exports (Data Export panel), in the
+/// station's shapes: `(body, content type)` for the route, `None` otherwise.
+pub(crate) fn record(path: &str) -> Option<(Vec<u8>, &'static str)> {
+    Some(match path {
+        "/api/checklists/export" => (serde_json::to_vec(&checklist_document()).unwrap_or_default(), "application/json"),
+        "/api/checklists/export.csv" => (signoff_csv(&checklist_document()).into_bytes(), "text/csv; charset=utf-8"),
+        "/api/recovery/export.json" => (recovery_json().into_bytes(), "application/json"),
+        "/api/recovery/export.csv" => (recovery_csv().into_bytes(), "text/csv; charset=utf-8"),
+        _ => return None,
+    })
 }
 
 fn boards() -> Vec<Board> {

@@ -647,6 +647,12 @@ impl LocalStation {
         if let Some(found) = self.session.route_entry(path, query) {
             return found;
         }
+        // The demo station's records exports (checklists, recovery history).
+        if self.session.is_demo()
+            && let Some((body, content_type)) = super::demo::record(path)
+        {
+            return reply(200, body, content_type);
+        }
         match self.get_json(path, query, wall) {
             Some(value) => json_reply(&value),
             None => text_reply(404, "Not available offline: this route needs a Ground Station."),
