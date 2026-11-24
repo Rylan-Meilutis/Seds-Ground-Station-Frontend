@@ -94,6 +94,11 @@ pub(crate) const COVERED: &[&str] = &[
     "replay-bundle/sd.manifest",
     "replay-bundle/exports/sd-report-preview",
     "replay-bundle/exports/sd-report-preview-window",
+    // Custom-window reviews and review exports of three bundles, answered
+    // offline and compared (local_station/tests.rs).
+    "replay-bundle/review/fire-burn-summary",
+    "replay-bundle/review/flight-launch-summary",
+    "replay-bundle/review/requests",
     "requests/gse-self-test-confirmation",
     "rrls/status",
     "rrls/status-relaying",

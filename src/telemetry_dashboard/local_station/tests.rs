@@ -504,17 +504,22 @@ fn exports_the_bundle_cannot_make_say_they_need_the_station() {
     }
     assert_eq!(report("csv").unwrap().filename, "telemetry-report.csv");
     assert_eq!(report("preview").unwrap().filename, "");
-    // A custom review window needs the station; the default window is the bundled file.
+    // Without a window the review export is the bundled file; a window is computed.
     let base = format!("/api/flight_review/recording/{id}/flight_export");
     let whole = exports::answer(&flight, &base).unwrap().unwrap();
     assert_eq!(whole.content_type, "application/zip");
     assert!(whole.filename.starts_with("flight-") && whole.filename.ends_with(".zip"));
     let zip = &flight.zips["flight_export"];
     let (from, to) = (zip.from_ms.unwrap(), zip.to_ms.unwrap());
-    assert_eq!(exports::answer(&flight, &format!("{base}?from_ms={from}&to_ms={to}")).unwrap().unwrap(), whole);
-    let form = (from / 1000 * 1000, (to + 999) / 1000 * 1000);
-    assert_eq!(exports::answer(&flight, &format!("{base}?from_ms={}&to_ms={}", form.0, form.1)).unwrap().unwrap(), whole);
-    assert_eq!(exports::answer(&flight, &format!("{base}?from_ms={}&to_ms={to}", from + 5_000)).unwrap().unwrap_err().0, 501);
+    let windowed = exports::answer(&flight, &format!("{base}?from_ms={from}&to_ms={to}")).unwrap().unwrap();
+    assert_eq!((windowed.filename.as_str(), windowed.content_type), (whole.filename.as_str(), "application/zip"));
+    assert_eq!(exports::answer(&flight, &format!("{base}?from_ms={to}&to_ms={from}")).unwrap().unwrap_err(), (400, "The range must end after it starts.".into()));
+    // A bundle without review inputs (older) sends a window to the station.
+    let mut files = bundle::unzip(BUNDLE).unwrap();
+    files.remove(exports::review::INPUTS_PATH);
+    let older = exports::ExportInputs::from_bundle(id, std::rc::Rc::new(STATION_CSV.to_vec()), &files);
+    assert_eq!(exports::answer(&older, &format!("{base}?from_ms={}&to_ms={to}", from + 5_000)).unwrap().unwrap_err().0, 501);
+    assert_eq!(exports::answer(&older, &format!("/api/flight_review/recording/{id}?from_ms={from}")).unwrap().unwrap_err().0, 501);
     // Other recordings are not in the bundle; other routes are not exports.
     assert_eq!(exports::answer(&flight, "/api/recordings/other.db/csv").unwrap().unwrap_err().0, 404);
     assert!(exports::answer(&flight, "/api/recordings").is_none());
@@ -603,4 +608,61 @@ fn station_records_are_served_from_the_bundle_and_by_the_demo() {
     assert_eq!(recovery["events"][0]["launch_session"], recovery["current"]["session"]);
     let csv = demo.request("GET", "/api/recovery/export.csv", None).text();
     assert!(csv.starts_with("event_id,launch_session,authority,clock_revision,t0_utc_ms,reached_utc_ms,t_relative_ms,actor,auth_session,station,primary_verified\r\n\"demo-recovery-1\""), "{csv}");
+}
+
+/// The station's custom-window reviews and review exports (`raster=false`)
+/// of three bundles (GroundStation26 `contract_fixtures`,
+/// `replay-bundle/review/requests.json`): the bundled flight recording, a
+/// flight capture and a test-fire capture with its DAQ launch file and
+/// applied plan. Offline answers are the same bytes (summaries: the same JSON).
+#[test]
+fn offline_review_windows_equal_the_station_byte_for_byte() {
+    // The station's clock while it answered (contract_fixtures `T0`).
+    const STATION_NOW: i64 = 1_767_225_600_000;
+    let open = |name: &str, bytes: &[u8]| bundle::open(name, bytes).unwrap().exports.clone().expect("a bundle answers exports");
+    let bundles = [
+        ("flight", open("flight.gsreplay", BUNDLE)),
+        ("flight_capture", open("flight_capture.gsreplay", &export_fixture("review/flight_capture.gsreplay"))),
+        ("test_fire", open("test_fire.gsreplay", &export_fixture("review/test_fire.gsreplay"))),
+    ];
+    let requests: Value = serde_json::from_slice(&export_fixture("review/requests.json")).unwrap();
+    let mut compared = 0;
+    for request in requests.as_array().unwrap() {
+        let path = request["path"].as_str().unwrap();
+        let inputs = &bundles.iter().find(|(name, _)| request["bundle"] == *name).unwrap().1;
+        let answer = exports::answer_at(inputs, path, STATION_NOW).unwrap_or_else(|| panic!("{path} is answered offline"));
+        let status = request["status"].as_u64().unwrap() as u16;
+        match answer {
+            Ok(file) => {
+                assert_eq!(status, 200, "{path}: the station answered {status} {}", request["body"]);
+                let file_name = request["file"].as_str().unwrap();
+                let expected = export_fixture(file_name);
+                if file_name.ends_with(".json") {
+                    let ours: Value = serde_json::from_slice(&file.bytes).unwrap();
+                    assert_eq!(ours, serde_json::from_slice::<Value>(&expected).unwrap(), "{path}: review differs from {file_name}");
+                } else {
+                    if file.bytes != expected {
+                        let ours = crate::telemetry_dashboard::local_station::bundle::unzip(&file.bytes).unwrap();
+                        let theirs = crate::telemetry_dashboard::local_station::bundle::unzip(&expected).unwrap();
+                        for (name, station) in &theirs {
+                            let mine = ours.get(name).cloned().unwrap_or_default();
+                            if &mine != station {
+                                let at = mine.iter().zip(station.iter()).position(|(a, b)| a != b).unwrap_or(mine.len().min(station.len()));
+                                let show = |b: &[u8]| String::from_utf8_lossy(&b[at.saturating_sub(200).min(b.len())..(at + 300).min(b.len())]).into_owned();
+                                panic!("{path}: {name} differs at byte {at}\n--- offline\n{}\n--- station\n{}", show(&mine), show(station));
+                            }
+                        }
+                        assert_eq!(ours.keys().collect::<Vec<_>>(), theirs.keys().collect::<Vec<_>>(), "{path}: entries");
+                        panic!("{path}: entries equal but the archive bytes differ from {file_name}");
+                    }
+                    assert_eq!(file.content_type, "application/zip");
+                }
+            }
+            Err((code, message)) => {
+                assert_eq!((code, message.as_str()), (status, request["body"].as_str().unwrap_or_default()), "{path}");
+            }
+        }
+        compared += 1;
+    }
+    assert!(compared >= 12, "{compared} requests");
 }
