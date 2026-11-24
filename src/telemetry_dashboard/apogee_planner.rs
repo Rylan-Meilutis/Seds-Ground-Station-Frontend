@@ -73,6 +73,11 @@ pub(crate) struct Settings {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meop_psi: Option<f64>,
     pub nominal_supercharge_psi: Option<f64>,
+    /// Every field this editor does not model (`motor_model`, `version`, and
+    /// whatever a newer station adds), sent back exactly as the station
+    /// served it so a save never resets them.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -89,6 +94,7 @@ impl Default for Settings {
             min_fill_kg: None,
             meop_psi: None,
             nominal_supercharge_psi: None,
+            extra: serde_json::Map::new(),
         }
     }
 }
@@ -992,6 +998,22 @@ pub(super) fn AppliedPlanNote(theme: super::layout::ThemeConfig, nitrous_mass_kg
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_save_round_trips_the_fields_this_editor_does_not_model() {
+        let served = serde_json::json!({"target_apogee_m": 3048.0, "display_unit": "ft", "weather_source": "manual",
+            "online_weather_enabled": false, "launch_time_ms": null, "manual_weather": {"surface_temp_c": 15.0, "wind_mps": 0.0, "wind_from_deg": 0.0, "gust_mps": 0.0},
+            "tank_temp_c": null, "tank_volume_l": 15.8537, "min_ullage_frac": 0.15, "min_fill_kg": 3.0, "meop_psi": 750.0,
+            "nominal_supercharge_psi": null, "motor_model": "scaling", "version": 1, "added_by_a_newer_station": {"x": 1}});
+        let mut settings: Settings = serde_json::from_value(served.clone()).unwrap();
+        settings.target_apogee_m = 2500.0;
+        let saved = serde_json::to_value(&settings).unwrap();
+        assert_eq!(saved["motor_model"], "scaling", "not reset by a save");
+        assert_eq!(saved["version"], 1, "never written as 0");
+        assert_eq!(saved["added_by_a_newer_station"], served["added_by_a_newer_station"]);
+        assert_eq!(saved["tank_volume_l"], 15.8537);
+        assert_eq!(saved["target_apogee_m"], 2500.0);
+    }
+
     use super::*;
     use serde_json::json;
 
