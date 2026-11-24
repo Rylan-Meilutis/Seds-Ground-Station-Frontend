@@ -166,6 +166,7 @@ pub fn App() -> Element {
     // Watch companion: activate the watch session at launch and keep the
     // watch told what the phone is doing before any dashboard is mounted.
     telemetry_dashboard::use_watch_status_publisher();
+    use_opened_file_navigation();
 
     #[cfg(target_arch = "wasm32")]
     {
@@ -181,6 +182,31 @@ pub fn App() -> Element {
     }
 
     rsx! { AppContent {} }
+}
+
+/// A replay file opened from another app (`crate::opened_file`) lands in the
+/// offline replay view, which takes it from there.
+fn use_opened_file_navigation() {
+    crate::opened_file::use_opened_file_listener();
+    let handled = use_hook(|| std::rc::Rc::new(std::cell::Cell::new(0u64)));
+    use_effect(move || {
+        let revision = crate::opened_file::OPENED_FILE_REVISION();
+        let Some(router) = dioxus_router::root_router() else { return };
+        if revision == 0 || handled.get() == revision {
+            return;
+        }
+        handled.set(revision);
+        if !matches!(router.current::<Route>(), Route::Preview {}) {
+            router.push(Route::Preview {});
+        }
+    });
+}
+
+/// Cold start with an opened file: the root redirect goes to the replay view.
+/// (Unit tests offer files concurrently with headless route tests.)
+#[cfg(not(target_arch = "wasm32"))]
+fn opened_file_waiting() -> bool {
+    !cfg!(test) && crate::opened_file::has_pending()
 }
 
 #[component]
@@ -238,7 +264,9 @@ pub fn Root() -> Element {
 
 #[cfg(not(target_arch = "wasm32"))]
 fn route_for_configured_connection() -> Route {
-    if UrlConfig::_stored_base_url().is_some() {
+    if opened_file_waiting() {
+        Route::Preview {}
+    } else if UrlConfig::_stored_base_url().is_some() {
         Route::Dashboard {}
     } else {
         connect_route()

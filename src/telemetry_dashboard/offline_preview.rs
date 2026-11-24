@@ -167,6 +167,21 @@ pub fn OfflinePreview(
         });
     };
 
+    // A replay opened from another app (crate::opened_file), on entry and
+    // whenever another arrives while this view is open.
+    use_effect(move || {
+        let _revision = crate::opened_file::OPENED_FILE_REVISION();
+        if let Some(message) = crate::opened_file::take_rejection() {
+            file_status.set(message);
+        }
+        if let Some((name, bytes)) = crate::opened_file::take() {
+            match open_bytes(&name, &bytes) {
+                Ok(session) => replace(session),
+                Err(error) => file_status.set(format!("Could not open {name}: {error}")),
+            }
+        }
+    });
+
     let current = station.read().clone();
     let p = playback();
     let demo_mode = current.session.is_demo();

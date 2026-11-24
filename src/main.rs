@@ -12,6 +12,7 @@ mod native_station;
 mod debug_log;
 mod log_redaction;
 mod native_storage;
+mod opened_file;
 #[cfg(target_os = "ios")]
 mod startup_diagnostics;
 #[cfg(not(target_arch = "wasm32"))]
@@ -231,6 +232,19 @@ fn main() {
         window = window.with_fullscreen(Some(Fullscreen::Borderless(None)));
     }
     cfg = cfg.with_window(window);
+    // Replay files opened from other apps (docs/replay-bundle.md): Finder,
+    // Files, AirDrop and share sheets deliver them as tao `Opened` events,
+    // file managers and shells as a launch argument.
+    #[cfg(not(target_os = "android"))]
+    {
+        cfg = cfg.with_custom_event_handler(|event, _target| {
+            if let dioxus_desktop::tao::event::Event::Opened { urls } = event {
+                opened_file::offer_urls(urls);
+            }
+        });
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    opened_file::offer_launch_arguments();
     if let Some(icon) = load_desktop_window_icon() {
         cfg = cfg.with_icon(icon);
     }
