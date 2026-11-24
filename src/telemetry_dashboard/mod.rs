@@ -76,6 +76,7 @@ mod plumbing_drive;
 mod board_config_sync;
 pub(crate) mod prelude;
 mod recorded_media_view;
+mod bundle_media_options;
 mod recorded_replay_controls;
 mod recording_download;
 mod recording_store_view;

@@ -384,6 +384,7 @@ pub(super) fn RecordingStorePanel(
     let mut label = use_signal(String::new);
     let mut minutes = use_signal(|| "2".to_string());
     let mut pending_delete = use_signal(|| None::<String>);
+    let bundle_media = use_signal(super::bundle_media_options::BundleMedia::default);
     let mut draft = use_signal(|| None::<Settings>);
     use_effect(move || {
         let _ = refresh();
@@ -502,6 +503,7 @@ pub(super) fn RecordingStorePanel(
                 } }
             }
             h4 { "Event captures ({size_label(current.captures_bytes)})" }
+            super::bundle_media_options::BundleMediaToggles { choice: bundle_media }
             if current.groups.is_empty() { p { "No event captures yet. Launches, aborts and every station sequence are captured automatically." } }
             for group in current.groups.iter() {
                 details { key: "{group.event_type}", open: true,
@@ -548,7 +550,8 @@ pub(super) fn RecordingStorePanel(
                                             busy.set(true);
                                             spawn(async move {
                                                 let name = format!("{}.gsreplay", id.trim_end_matches(".db"));
-                                                let result = super::recording_download::download_csv_path_owned(&format!("/api/recordings/{id}/bundle"), &name, owner.clone()).await;
+                                                let query = bundle_media.peek().query();
+                                                let result = super::recording_download::download_csv_path_owned(&format!("/api/recordings/{id}/bundle{query}"), &name, owner.clone()).await;
                                                 if owner.is_current() { message.set(result.unwrap_or_else(|error| format!("Download failed: {error}"))); }
                                                 busy.set(false);
                                             });
