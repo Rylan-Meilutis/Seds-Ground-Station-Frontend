@@ -593,9 +593,15 @@ See [recorded-vehicle-replay.md](recorded-vehicle-replay.md) and GroundStation26
 #### 5.8.1 Flight plans, loss-of-signal prediction and map overlays
 
 The station computes; the UI renders. Nothing below is computed in the UI
-except the bearing and distance from the viewer's own location. Mock
-documents of these shapes live in `tests/fixtures/flight-predict-mock/`
-until the backend's own fixtures replace them.
+except the bearing and distance from the viewer's own location. The
+backend's contract fixtures are `tests/fixtures/backend-contract/flight-plans/`
+(`list`, `plan`, `run-forbidden`, `bundle-manifest`) and `.../los-prediction/`
+(`idle`, `simulate`); `tests/fixtures/flight-predict-mock/` adds hand-made
+predicting/resolved states and a plan with burn curves. Fields beyond the
+shapes below (`compute_ms`, `summary.liftoff_s`/`burnout_s`/`descent_s`/
+`impulse_sigma_rel`, `burn.thrust_factor`, `from_station.landing_bearing_deg`/
+`landing_distance_m`, `simulated`, `comparison.lost_ms`/`alt_error_m`) are
+read where shown and otherwise ignored; null strings read as empty.
 
 **Flight phases** (plan points, tracks): `pad`, `boost`, `coast`, `drogue`,
 `main`, `landed`; `apogee` is a marker. Palette (every renderer): pad

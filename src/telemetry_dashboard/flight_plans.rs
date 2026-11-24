@@ -40,11 +40,17 @@ pub(crate) fn file_name(id: &str, ext: &str) -> String {
     format!("{}.{ext}", if stem.is_empty() { "flight-plan" } else { stem.as_str() })
 }
 
+/// A string the station may send as null.
+pub(crate) fn nullable<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    Ok(<Option<String> as serde::Deserialize>::deserialize(d)?.unwrap_or_default())
+}
+
 // ------------------------------------------------------------ request
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct WeatherRequest {
+    #[serde(deserialize_with = "nullable")]
     pub source: String,
     pub manual: ManualWeather,
 }
@@ -76,12 +82,15 @@ pub(crate) struct DispersionRequest {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct PlanRequest {
+    #[serde(deserialize_with = "nullable")]
     pub kind: String,
+    #[serde(deserialize_with = "nullable")]
     pub label: String,
     pub fill_kg: Option<f64>,
     pub target_apogee_m: Option<f64>,
     pub supercharge_psi: Option<f64>,
     pub tank_temp_c: Option<f64>,
+    #[serde(deserialize_with = "nullable")]
     pub motor_model: String,
     pub weather: WeatherRequest,
     pub launch: LaunchRequest,
@@ -109,8 +118,11 @@ pub(crate) struct SummaryLanding {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct PlanSummary {
+    #[serde(deserialize_with = "nullable")]
     pub id: String,
+    #[serde(deserialize_with = "nullable")]
     pub label: String,
+    #[serde(deserialize_with = "nullable")]
     pub kind: String,
     pub created_ms: i64,
     pub created_by: Option<String>,
@@ -138,7 +150,11 @@ pub(crate) struct Figures {
     pub supercharge_psi: Option<f64>,
     pub tank_temp_c: Option<f64>,
     pub impulse_ns: Option<f64>,
+    pub impulse_sigma_rel: Option<f64>,
     pub burn_s: Option<f64>,
+    pub liftoff_s: Option<f64>,
+    pub burnout_s: Option<f64>,
+    pub descent_s: Option<f64>,
     pub apogee_m: Option<f64>,
     pub apogee_msl_m: Option<f64>,
     pub time_to_apogee_s: Option<f64>,
@@ -153,6 +169,7 @@ pub(crate) struct Figures {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct PlanEvent {
+    #[serde(deserialize_with = "nullable")]
     pub kind: String,
     pub t_s: f64,
     pub lat_deg: Option<f64>,
@@ -167,6 +184,7 @@ pub(crate) struct PlanEvent {
 #[serde(default)]
 pub(crate) struct PlanPoint {
     pub t_s: f64,
+    #[serde(deserialize_with = "nullable")]
     pub phase: String,
     pub u_m: Option<f64>,
     pub lat_deg: Option<f64>,
@@ -237,15 +255,20 @@ pub(crate) struct Dispersion {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct PlanDoc {
+    #[serde(deserialize_with = "nullable")]
     pub format: String,
     pub version: u32,
     pub predicted: bool,
+    #[serde(deserialize_with = "nullable")]
     pub id: String,
+    #[serde(deserialize_with = "nullable")]
     pub label: String,
+    #[serde(deserialize_with = "nullable")]
     pub kind: String,
     pub created_ms: i64,
     pub created_by: Option<String>,
     pub station_mode: Option<String>,
+    pub compute_ms: Option<f64>,
     pub vehicle_source: Option<String>,
     pub motor_model: Option<String>,
     pub site: Option<SitePoint>,
@@ -491,7 +514,13 @@ pub(crate) fn summary_rows(p: &PlanDoc) -> Vec<(String, String)> {
         ("Nitrous fill".to_owned(), fmt(s.fill_kg, " kg", 2)),
         ("Supercharge".to_owned(), fmt(s.supercharge_psi, " psi", 0)),
         ("Tank temperature".to_owned(), fmt(s.tank_temp_c, " °C", 1)),
-        ("Total impulse".to_owned(), fmt(s.impulse_ns.map(|v| v / 1000.0), " kN·s", 2)),
+        (
+            "Total impulse".to_owned(),
+            match (s.impulse_ns, s.impulse_sigma_rel) {
+                (Some(i), Some(r)) => format!("{:.2} kN·s (±{:.0} %)", i / 1000.0, r * 100.0),
+                (i, _) => fmt(i.map(|v| v / 1000.0), " kN·s", 2),
+            },
+        ),
         ("Burn time".to_owned(), fmt(s.burn_s, " s", 1)),
     ];
     if p.kind != "burn" {
@@ -501,7 +530,7 @@ pub(crate) fn summary_rows(p: &PlanDoc) -> Vec<(String, String)> {
             ("Time to apogee".to_owned(), fmt(s.time_to_apogee_s, " s", 1)),
             ("Max speed".to_owned(), format!("{} (Mach {})", fmt(s.max_speed_mps, " m/s", 0), fmt(s.max_mach, "", 2))),
             ("Rail exit speed".to_owned(), fmt(s.rail_exit_mps, " m/s", 1)),
-            ("Landing".to_owned(), format!("{} after ignition", fmt(s.landing_s, " s", 0))),
+            ("Landing".to_owned(), format!("{} after ignition{}", fmt(s.landing_s, " s", 0), s.descent_s.map(|d| format!(" ({d:.0} s descent)")).unwrap_or_default())),
             (
                 "Landing drift".to_owned(),
                 match (s.drift_m, s.drift_bearing_deg) {
@@ -625,6 +654,39 @@ mod tests {
         let request = build_request(&target, &list.limits).unwrap();
         assert_eq!((request.fill_kg, request.target_apogee_m), (None, Some(3048.0)));
         assert_eq!(request.site.unwrap().lat_deg, 31.758);
+    }
+
+    fn real<T: serde::de::DeserializeOwned>(name: &str) -> T {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/backend-contract/flight-plans").join(name);
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn decodes_the_backend_fixtures() {
+        let list: PlanList = real("list.json");
+        assert_eq!(list.limits, Limits { max_samples: 500, max_plans: 50 });
+        assert_eq!(list.defaults.label, "", "a null label reads as empty");
+        let form = Form::from_request(&list.defaults);
+        assert_eq!(form.fill_mode, "target", "defaults with only a target apogee size by target");
+        assert_eq!(form.weather_source, "planner");
+        let request = build_request(&form, &list.limits).unwrap();
+        assert_eq!((request.fill_kg, request.target_apogee_m), (None, Some(3048.0)));
+        assert_eq!(summary_line(&list.plans[0]), "Flight · 8.50 kg · apogee 3766 m · lands 1230 m toward 90° · 20 Monte Carlo samples · 1 warning");
+        let plan: PlanDoc = real("plan.json");
+        assert!(plan.predicted);
+        assert!(plan.burn.is_none());
+        assert!(!plan.thrust().is_empty(), "the thrust curve stands in for burn curves");
+        assert!(!plan.altitude_curve().is_empty());
+        assert_eq!(plan.map_overlay().unwrap().tracks.len(), 5);
+        let rows = summary_rows(&plan);
+        assert!(rows.iter().any(|r| r.0 == "Total impulse" && r.1 == "16.33 kN·s (±15 %)"), "{rows:?}");
+        assert!(dispersion_rows(&plan).iter().any(|r| r.1 == "2909–4737 m"));
+        let refusal: serde_json::Value = real("run-forbidden.json");
+        let text = super::super::igt::refusal(&format!("HTTP 403: {refusal}"));
+        assert_eq!(text, "Running a flight simulation needs permission to send commands (operator or administrator).");
+        let manifest: serde_json::Value = real("bundle-manifest.json");
+        assert_eq!(manifest["predicted"], true);
+        assert!(manifest["entries"].as_array().unwrap().iter().any(|e| e["path"] == "derived/flight_plan.json"));
     }
 
     #[test]

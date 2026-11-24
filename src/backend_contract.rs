@@ -52,6 +52,14 @@ pub(crate) const COVERED: &[&str] = &[
     "board-recovery/status-viewer",
     "fc-estimator/get",
     "flight-state/get-fill",
+    // Flight plans and loss-of-signal prediction: flight_plans.rs and
+    // los_prediction.rs `decodes_the_backend_fixtures`.
+    "flight-plans/bundle-manifest",
+    "flight-plans/list",
+    "flight-plans/plan",
+    "flight-plans/run-forbidden",
+    "los-prediction/idle",
+    "los-prediction/simulate",
     "network-diagnostics/radio-tx-budget",
     "radio/modem",
     // Opened with no station in offline_preview/tests.rs and local_station/tests.rs.

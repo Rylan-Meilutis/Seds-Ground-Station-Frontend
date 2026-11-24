@@ -82,16 +82,28 @@ pub(crate) struct LatLon {
 pub(crate) struct FromStation {
     pub bearing_deg: f64,
     pub distance_m: f64,
+    pub landing_bearing_deg: Option<f64>,
+    pub landing_distance_m: Option<f64>,
+}
+
+impl FromStation {
+    /// The station's bearing and distance to the predicted landing point.
+    pub(crate) fn to_landing(&self) -> Option<FromStation> {
+        Some(FromStation { bearing_deg: self.landing_bearing_deg?, distance_m: self.landing_distance_m?, ..Default::default() })
+    }
 }
 
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct Comparison {
     pub resolved_ms: i64,
+    #[serde(deserialize_with = "super::flight_plans::nullable")]
     pub resolved_by: String,
     pub predicted: Option<Predicted>,
     pub actual: Option<Predicted>,
     pub error_m: Option<f64>,
+    pub alt_error_m: Option<f64>,
+    pub lost_ms: Option<i64>,
     pub since_fix_s: Option<f64>,
 }
 
@@ -99,7 +111,9 @@ pub(crate) struct Comparison {
 #[derive(Deserialize, Serialize, Clone, Debug, PartialEq, Default)]
 #[serde(default)]
 pub(crate) struct LosState {
+    #[serde(deserialize_with = "super::flight_plans::nullable")]
     pub state: String,
+    #[serde(deserialize_with = "super::flight_plans::nullable")]
     pub label: String,
     pub advisory: bool,
     pub settings: Settings,
@@ -115,6 +129,8 @@ pub(crate) struct LosState {
     pub overlay: Option<MapOverlay>,
     pub comparison: Option<Comparison>,
     pub history: Vec<Comparison>,
+    /// A `POST …/simulate` reply (a replayed cut, not a live loss).
+    pub simulated: bool,
 }
 
 impl LosState {
@@ -230,9 +246,8 @@ pub(crate) fn card_rows(s: &LosState, viewer: Option<(f64, f64)>, metric: bool) 
             (Some(a), Some(b)) => format!(" (area {} × {})", distance_text(a * 2.0, metric), distance_text(b * 2.0, metric)),
             _ => String::new(),
         };
-        // The station's own bearing is to the predicted position; for the
-        // landing point it is only a fallback when nothing else is known.
-        if let Some(text) = direction_text(viewer, (l.lat_deg, l.lon_deg), None, metric) {
+        let station = s.from_station.as_ref().and_then(FromStation::to_landing);
+        if let Some(text) = direction_text(viewer, (l.lat_deg, l.lon_deg), station.as_ref(), metric) {
             rows.push(("Predicted landing".to_owned(), format!("{text}{area}")));
         } else {
             rows.push(("Predicted landing".to_owned(), format!("{:.5}°, {:.5}°{area}", l.lat_deg, l.lon_deg)));
@@ -243,7 +258,8 @@ pub(crate) fn card_rows(s: &LosState, viewer: Option<(f64, f64)>, metric: bool) 
     }
     if let Some(c) = &s.comparison {
         let by = if c.resolved_by == "gps_fix" { "a GPS fix" } else { "the signal" };
-        rows.push(("Resolved".to_owned(), format!("{by} came back; the prediction was off by {}", c.error_m.map(|m| distance_text(m, metric)).unwrap_or_else(|| "—".into()))));
+        let alt = c.alt_error_m.map(|m| format!(" ({} in altitude)", altitude_text(Some(m.abs()), metric))).unwrap_or_default();
+        rows.push(("Resolved".to_owned(), format!("{by} came back; the prediction was off by {}{alt}", c.error_m.map(|m| distance_text(m, metric)).unwrap_or_else(|| "—".into()))));
     }
     rows
 }
@@ -309,7 +325,11 @@ fn card(theme: &ThemeConfig, s: &LosState, viewer: Option<(f64, f64)>, metric: b
     let rows = card_rows(s, viewer, metric);
     let resolved = s.state == "resolved";
     let border = if resolved { theme.border.clone() } else { "#f472b6".to_string() };
-    let title = if resolved { format!("{} — resolved", s.label()) } else { s.label() };
+    let title = match (resolved, s.simulated) {
+        (true, _) => format!("{} — resolved", s.label()),
+        (false, true) => format!("{} (simulated cut in the replay)", s.label()),
+        _ => s.label(),
+    };
     rsx! {
         div { class: "gs26-los-card", role: "status", "aria-live": "polite", "data-los-state": "{s.state}",
             style: "margin:0 8px;display:grid;gap:4px;padding:8px 10px;border-radius:10px;border:2px dashed {border};background:rgba(244,114,182,0.10);color:{theme.text_primary};font-size:0.84rem;line-height:1.25;min-width:0;",
@@ -601,6 +621,31 @@ mod tests {
         assert_eq!(resolved.history.len(), 1);
     }
 
+    fn real(name: &str) -> LosState {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/backend-contract/los-prediction").join(name);
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn decodes_the_backend_fixtures() {
+        let idle = real("idle.json");
+        assert_eq!(idle.state, "idle");
+        assert!(!idle.shows_prediction());
+        assert_eq!(idle.settings, Settings { enabled: true, timeout_s: 5.0 });
+        let sim = real("simulate.json");
+        assert!(sim.simulated);
+        assert_eq!(sim.label(), "Predicted: no signal");
+        assert_eq!(sim.map_overlay().unwrap().markers.iter().map(|m| m.kind.as_str()).collect::<Vec<_>>(), ["last_fix", "predicted_position", "landing"]);
+        let rows = card_rows(&sim, Some((31.758, -102.046)), true);
+        assert!(rows.iter().any(|r| r.0 == "Predicted landing" && r.1.contains("from you")));
+        assert!(rows.iter().any(|r| r.0 == "Since last fix" && r.1 == "12 s"), "{rows:?}");
+        // Station fallback for the landing point.
+        let mut station = sim.clone();
+        station.from_station = Some(FromStation { bearing_deg: 70.0, distance_m: 900.0, landing_bearing_deg: Some(91.0), landing_distance_m: Some(1200.0) });
+        let rows = card_rows(&station, None, true);
+        assert!(rows.iter().any(|r| r.0 == "Predicted landing" && r.1.starts_with("1.20 km at 91° E from the station")), "{rows:?}");
+    }
+
     #[test]
     fn bearing_and_distance_text() {
         assert_eq!(bearing_deg((0.0, 0.0), (1.0, 0.0)).map(|b| b.round()), Some(0.0));
@@ -613,7 +658,7 @@ mod tests {
         assert_eq!(distance_text(1500.0, false), "0.93 mi");
         assert_eq!(seconds_text(140.0), "2 min 20 s");
         assert_eq!(seconds_text(12.3), "12 s");
-        let station = FromStation { bearing_deg: 70.1, distance_m: 1500.0 };
+        let station = FromStation { bearing_deg: 70.1, distance_m: 1500.0, ..Default::default() };
         assert_eq!(direction_text(None, (31.76, -102.03), Some(&station), true).unwrap(), "1.50 km at 70° ENE from the station");
         let from_you = direction_text(Some((31.75, -102.05)), (31.75, -102.04), Some(&station), true).unwrap();
         assert!(from_you.ends_with("at 90° E from you"), "{from_you}");
@@ -665,13 +710,17 @@ mod tests {
     #[test]
     fn card_renders_predicted_label_and_viewer_overlays_js() {
         fn app() -> Element {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/flight-predict-mock/los-predicting.json");
-            let state: LosState = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+            // The backend's simulated cut, shown as a live prediction.
+            let mut state = real("simulate.json");
+            state.simulated = false;
             rsx! { LosMapCard { theme: ThemeConfig::default(), viewer: Some((31.75, -102.05)), metric: true, initial: Some(state) } }
         }
         let mut dom = VirtualDom::new(app);
         dom.rebuild_in_place();
         let html = dioxus::ssr::render(&dom);
+        if let Some(dir) = std::env::var_os("GS_FLIGHT_PREDICT_PREVIEW_DIR") {
+            std::fs::write(std::path::Path::new(&dir).join("los-card.html"), &html).unwrap();
+        }
         assert!(html.contains("Predicted: no signal"));
         assert!(html.contains("data-los-state=\"predicting\""));
         assert!(html.contains("from you"));
