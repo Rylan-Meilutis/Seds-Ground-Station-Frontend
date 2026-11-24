@@ -26,6 +26,11 @@ This page covers what the app does on each device.
 - The opt-out and the device name are stored on the device only
   (`proximity_lock_prefs_v1`, per station and account); the device id is a
   random `prox-…` (`proximity_device_id_v1`).
+- The recovery search (Map tab) is separate and is the only feature that
+  sends a location track. It has its own explicit opt-in on each device, for
+  one running search, with a visible "Sharing" indicator and "Stop sharing"
+  (backend-contract.md, "Recovery search"). The proximity lock never uses
+  it, and opting in to one never opts in to the other.
 
 ## Decision on the device
 

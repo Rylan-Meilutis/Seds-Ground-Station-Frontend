@@ -87,6 +87,7 @@ schemas are those in [backend-contract.md](backend-contract.md) and
 | `derived/flight_plans.json` | no | `{"plans": [plan document, …]}`, the five most recent flight plans (`GET /api/flight_plans/{id}`) | comparing the recording with a prediction offline (map and altitude chart) |
 | `derived/flight_plan.json` | plan bundles only | `GET /api/flight_plans/{id}` | the plan itself: its landing area and markers on the map |
 | `derived/stations.json` | no | `GET /api/antenna/status` at export (not written by GroundStation26 yet) | flight replay: ground-station camera and masts |
+| `derived/recovery_search.json` | no | `GET /api/recovery_search/export?from_ms=<first row>&to_ms=<last row + 6 h>`, only when the recovery search has fixes in that window | the search coverage overlay (searched swaths, uncovered landing area, searcher tracks) on the replay map; also served as `GET /api/recovery_search` |
 | `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background, 3D terrain imagery |
 | `terrain/heightmap.json` | no | `GET /api/terrain/heightmap?lat=…&lon=…&extent_m=…&size=129`, centred on the track's first fix and covering the track plus 1 km (2–30 km), at most 1 MiB, only when the station has DEM tiles there | 3D terrain ([backend-contract.md §12](backend-contract.md#12-terrain-and-the-3d-map)) |
 

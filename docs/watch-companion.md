@@ -30,10 +30,12 @@ Wear OS watch ──Wear Data Layer──┘                                    
   gs.local:3000…" rather than nothing). When neither the phone nor the
   station answers, the watch keeps the last data, marks it with its age and
   keeps the compass running from the last known target fixes.
-* **No command path through the phone.** The watch may send the phone four
-  message types (`hello`, `activity`, `settings`, `tiles`). The phone ignores
-  anything else; no watch message reaches a station request other than
-  saving the user's own watch settings to their account. A page action is
+* **No command path through the phone.** The watch may send the phone six
+  message types (`hello`, `activity`, `settings`, `tiles`, and the recovery
+  search's `search_share` and `search_track`). The phone ignores anything
+  else. No watch message reaches a station request other than saving the
+  user's own watch settings to their account, and the watch's own recovery
+  search opt-in and track (below). A page action is
   sent by the watch itself to the station's ordinary `POST /api/command`
   with its watch token, so the station's authorization, action policy, mode
   gating and admission are exactly those of a phone press.
@@ -322,6 +324,8 @@ Watch → phone:
 {"v":1,"type":"activity","foreground":true,"page":"compass"}
 {"v":1,"type":"settings","settings":{ ...WatchSettings with updated_by "watch"... }}
 {"v":1,"type":"tiles","set":"9f2c4e1ab03d7c55","have":["11/449/824","13/1797/3297"]}
+{"v":1,"type":"search_share","sharing":true}
+{"v":1,"type":"search_track","session_id":"rs-…","points":[{"seq":12,"t_ms":1767225600000,"lat":31.76,"lon":-102.03,"acc_m":6.0}]}
 ```
 
 ## Watch layout
@@ -638,6 +642,50 @@ talking except a ping every 10 s. The microphone runs only while voice is
 joined. Leave voice when not needed: a joined session keeps the audio
 hardware and a socket alive (watchOS as a call, Wear OS as a foreground
 service).
+
+## Recovery search
+
+During a recovery search (backend-contract.md, "Recovery search") the watch
+can share its own track, relayed by the phone.
+
+* **Opt-in on the watch.** The Status page shows a "Recovery search" section
+  while the phone reports a running search. "Share watch track…" explains
+  what is sent and asks for confirmation. The watch then sends
+  `search_share` (`sharing: true`). The phone sends the opt-in to the
+  station for the watch as its own searcher device (`<phone device id>-w`,
+  "<user>'s watch", platform `watch`). The phone never opts the watch in by
+  itself.
+* **Snapshot.** Once the phone has seen a search status, every snapshot
+  carries `"search": {"active", "session_id", "sharing", "acked_seq",
+  "percent", "swath_m"}`. `sharing` is true only while the station's search
+  runs and the station accepted the watch's opt-in for that session.
+* **Recording.** The watch records only while its user wants to share and
+  the snapshot says `active` and `sharing` for the same session. While it
+  records it shows a red "● SHARING TRACK" and "Stop sharing". Fixes are
+  thinned (5 m or 30 s, accuracy at most 100 m), numbered by the watch and
+  kept in a persisted buffer of at most 5,000. Location runs while sharing
+  (Apple Watch: while the app is in front; Wear OS: while the app runs).
+* **Relay.** The watch sends `search_track` (at most 100 fixes, oldest first)
+  to a reachable phone every 2 s. The phone takes custody in its own
+  persisted outbox (`recovery_search_watch_outbox_v1`) and acknowledges the
+  highest contiguous sequence number it holds in the snapshot's `acked_seq`.
+  The watch drops what is acknowledged and resends the rest. The phone uploads
+  with the watch's own sequence numbers, so the station's de-duplication
+  covers a resend after a lost acknowledgement. The phone holds fixes only for
+  the watch's current opt-in and session.
+* **Stop.** "Stop sharing" on the watch sends `search_share`
+  (`sharing: false`), and the phone forwards the opt-out at once. The watch
+  discards its buffer. A new session, or the end of the late-upload window,
+  ends the opt-in, and the watch drops its buffer when the session changes.
+* An Apple Watch `search_share` is queued like `settings` when the phone is
+  not reachable. A Wear watch repeats it every 10 s until the snapshot shows
+  the station's answer.
+
+Code: phone `watch_companion/search_relay.rs`; WatchCore `Search.swift`,
+`GS26Watch/SearchPage.swift`; Wear core `Search.kt`, `PhoneLink.searchTick`
+and the Status page's `SearchSection`. Tests: `search_relay` (gating,
+out-of-order and repeated batches, the snapshot object), `SearchTests.swift`,
+`SearchTest.kt`.
 
 ## Building
 

@@ -744,6 +744,54 @@ GroundStation26 detail: `docs/backend/station-modes.md`,
 
 Detail: [proximity-lock.md](proximity-lock.md).
 
+#### Recovery search
+
+The Map tab's recovery search panel (`recovery_search.rs`,
+`recovery_search_view.rs`; GroundStation26 `docs/backend/recovery-search.md`).
+The runtime is mounted once in the dashboard. It polls the status every 5 s
+while a search exists (every 20 s otherwise) and hands the `overlay` to the map
+with `window.setGroundMapOverlays?.("search", [overlay, local track])`.
+
+| Method | Path | Body / response | Used by | Permission | On failure |
+| --- | --- | --- | --- | --- | --- |
+| GET | `/api/recovery_search?device_id=` | → `Status`: `active`, `session_id`, `accepting_uploads`, `settings.swath_width_m`, `target`, `stats` (`percent_covered`, areas, `searchers`, `sharing`, `points`, `distance_m`), `searchers[]`, `overlay` (MapOverlay `search_coverage`), `you` (this device: `sharing`, `opt_in_id`, `max_seq`) | panel, runtime | view_data | C |
+| POST | `/api/recovery_search/start` | `{}` or `{swath_width_m, target}` → `Status` | panel | send_commands | M |
+| POST | `/api/recovery_search/stop` | `{}` → `Status` | panel | send_commands | M |
+| PUT | `/api/recovery_search/settings` | `{swath_width_m?, target?: {polygon, source, label} \| null}` → `Status` | panel ("Set swath", "Use predicted landing area", "Remove area") | send_commands | M |
+| POST | `/api/recovery_search/opt_in` | `{device_id, device_name, platform, sharing, delete_my_track}` → `{session_id, sharing, opt_in_id, max_seq}` | "Share my track…", "Stop sharing", the watch relay | signed-in session | M (an opt-out sent offline is resent) |
+| POST | `/api/recovery_search/track` | `{v:1, session_id, opt_in_id, device_id, points:[{seq, t_ms, lat, lon, acc_m}]}` → `{accepted, duplicates, rejected, full, stored_points, max_seq}` | runtime upload | signed-in, opted in | 409 `search_off` / `session_mismatch`, 403 `not_opted_in`: stop sharing and discard the buffer; 400/413: drop that batch; anything else: keep and retry (2 s doubling to 60 s) |
+| DELETE | `/api/recovery_search/tracks` | → `Status` | panel ("Clear all tracks") | admin | M |
+| GET | `/api/los_prediction`, `/api/flight_plans`, `/api/flight_plans/{id}` | the landing ellipse polygon for "Use predicted landing area" | panel | view_data | M ("No prediction is available.") |
+
+Privacy (mandatory; compare [proximity-lock.md](proximity-lock.md), where no
+location ever leaves the device):
+
+- Sharing is an explicit opt-in on each device, for the current search only.
+  A confirmation states what is sent and to whom. A red "● Sharing your
+  location track" indicator shows while it is on, and "Stop sharing" ends it
+  at once (with an option to delete the uploaded track). A new search needs a
+  new opt-in.
+- The device records for sharing only while the station's search is running
+  **and** the station has accepted this device's opt-in for that session
+  (`recovery_search::mode`). It sends only fixes buffered under that opt-in.
+  The station refuses anything else and the device discards its buffer when
+  refused, when the search's late-upload window closes, or when the user
+  stops sharing.
+- "Draw my track on this map only (never sent)" records the device's own
+  track for its own map. It is never uploaded.
+- The station keeps the tracks only for the session. An administrator can
+  clear them.
+
+Offline tolerance: fixes are thinned on the device (one per 5 m of movement
+or every 30 s, accuracy at most 100 m), buffered in `recovery_search_outbox_v1`
+(at most 20,000 fixes, oldest dropped first, saved every 5 s and after each
+upload) and uploaded oldest first in batches of 200. Each fix has a sequence
+number that only grows, and the station keeps one fix per device and
+sequence number, so a retried or late batch merges once in time order. After
+a stop the station still merges fixes recorded before the stop for 30 min.
+The watch relay is in [watch-companion.md](watch-companion.md) ("Recovery
+search").
+
 ### 5.11 Firmware update
 
 | Method | Path | Body / response | Used by | Permission | On failure |
@@ -1516,6 +1564,13 @@ section 5. WebSocket upgrades are listed as `GET`.
 - `POST /api/proximity/override`
 - `POST /api/proximity/override/end`
 - `POST /api/proximity/dismiss`
+- `GET /api/recovery_search`
+- `POST /api/recovery_search/start`
+- `POST /api/recovery_search/stop`
+- `PUT /api/recovery_search/settings`
+- `POST /api/recovery_search/opt_in`
+- `POST /api/recovery_search/track`
+- `DELETE /api/recovery_search/tracks`
 
 5.11 Firmware update
 
