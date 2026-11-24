@@ -33,6 +33,8 @@ fn native_navigation_and_ipc_respect_each_originating_window_policy() {
     let webview = include_str!("../vendor-dioxus-desktop/src/webview.rs");
     let ipc = body(app, "pub fn handle_browser_open(");
     let navigation = body(webview, ".with_navigation_handler(move |var|");
+    let recovery = include_str!("../vendor-dioxus-desktop/src/recovery.rs");
+    let allow_reload = body(recovery, "pub(crate) fn allow_app_document_navigation(");
     let station = "https://station.invalid:3443";
     let fixture: serde_json::Value = serde_json::from_str(include_str!("../docs/api-examples/live-streams.json")).unwrap();
     let mut paths = vec![fixture["program_url"].as_str().unwrap(), "/api/media-assets/recorded-vehicle?ticket=EXAMPLE"];
@@ -49,6 +51,7 @@ fn native_navigation_and_ipc_respect_each_originating_window_policy() {
 use std::{{collections::HashMap,sync::atomic::{{AtomicBool,AtomicUsize,Ordering}}}};
 #[macro_export] macro_rules! report_error {{($($arg:tt)*)=>{{let _=format_args!($($arg)*);}}}}
 mod tracing {{pub use crate::report_error as error;}}
+mod recovery {{use std::sync::atomic::{{AtomicBool,Ordering}};pub(crate) fn allow_app_document_navigation(loaded_before:bool,reload_armed:&AtomicBool)->bool{allow_reload}}}
 static OPENS:AtomicUsize=AtomicUsize::new(0);
 mod webbrowser {{pub fn open(_: &str)->Result<(),String> {{super::OPENS.fetch_add(1,super::Ordering::SeqCst);Ok(())}}}}
 type WindowId=u32;
@@ -62,6 +65,7 @@ fn navigate(external_browser_enabled:bool,url:&str,trusted:bool)->bool {{
  let in_app_navigation_handler:Option<Box<dyn Fn(&str)->bool>>=Some(Box::new(move |_|trusted));
  let navigation_handler:Option<Box<dyn Fn(&str)->bool>>=Some(Box::new(|_|false));
  let page_loaded=AtomicBool::new(false);
+ let reload_armed=AtomicBool::new(false);
  let actual=move |var:String| {navigation}; actual(url.into())
 }}
 fn main() {{
