@@ -636,10 +636,13 @@ pub fn Version() -> Element {
 
 #[component]
 pub fn Dashboard() -> Element {
-    // The offline workspace's local session is dropped when its route
-    // unmounts; the live dashboard never runs beside one.
+    // The local station (demo, replay file) is dropped when /preview
+    // unmounts: a station's dashboard never runs beside one or through it.
     #[cfg(debug_assertions)]
-    use_effect(|| debug_assert_eq!(telemetry_dashboard::local_station::live_sessions(), 0, "offline session alive on the dashboard route"));
+    use_effect(|| {
+        debug_assert!(!telemetry_dashboard::station_link::is_local(), "local station selected on the dashboard route");
+        debug_assert_eq!(telemetry_dashboard::local_station::live_sessions(), 0, "local session alive on the dashboard route");
+    });
     #[cfg(not(target_arch = "wasm32"))]
     {
         let nav = use_navigator();

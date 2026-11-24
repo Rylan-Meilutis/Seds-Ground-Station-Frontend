@@ -551,6 +551,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory, with `phases`, `events` and a `phase` per point ([section 12](#12-terrain-and-the-3d-map)) | vehicle replay, 3D map | view_data | M |
 | GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export; 3D replay → Flight replay (whole recording) | view_data | M |
 | GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `terrain` (bool, default = `tiles`) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
+| POST | `/api/recordings/import` | `.gsreplay` bytes (≤256 MiB) → 201 `{id, label, rows, alerts, start_ms, end_ms, source, csv_sha256}`; 409 `{error, id}` duplicate; 400/413/422 ([replay-bundle.md](replay-bundle.md#import-into-a-station)) | not yet in the UI | admin | M |
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
 | GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import | view_data | M |
 | GET | `/api/recordings/{id}/sd/sources/{sha256}` | file | SD recording import | view_data | M |
@@ -1068,11 +1069,11 @@ optional backend field named in its row first.
   wildcard. Run it with `python3 -m unittest tests.test_backend_contract_docs`.
   Routes built only from constants (`format!("{LIST_PATH}/...")`) are not
   seen by the scan; keep their rows by hand.
-- `src/telemetry_dashboard/local_station/tests.rs` decodes every route the
-  demo serves with the live dashboard's own types (section 11), and
-  `offline_preview/tests.rs` opens the backend's replay-export fixture
-  (`tests/fixtures/backend-contract/replay-export/flight.json`) in every mode
-  with no station or cache (section 10).
+- `src/telemetry_dashboard/local_station/tests.rs` decodes every route and
+  frame the local station serves with the live dashboard's own types
+  (section 11), opens the backend's replay-export and bundle fixtures in every
+  mode with no station or cache (section 10), and `exports` tests compare
+  each offline export with the station's export byte for byte.
 - When adding a route to the UI: add a row to the relevant table and to the
   appendix, link the schema (or give a concise one here), and ask the backend
   to add a contract fixture.
@@ -1127,20 +1128,21 @@ Two file types open with no station:
 
 A portable replay file (`*.seds-replay.json`) opens on any device with no
 station connected and nothing cached: **Explore offline** on the connection
-page (native) or a failed-connection card (web, native) opens the offline
-workspace; **Open replay file** (or dropping the file on the window) loads it.
-Every page then reads the file only: Dashboard (the file's layout
-`state_tab`), Mission (its flight states and actions, read-only), Data (all
-channels, charted over the whole recording), Diagrams, Network (senders and
-their packet counts), Map (GPS track on a grid, no tiles), Replay & summary
-(flight or burn figures and the 3D player), Recordings (file details).
+page (native) or a failed-connection card (web, native) opens `/preview`;
+**Open replay file** (or dropping the file on the window, or opening it from
+another app) loads it. The live dashboard then runs against a local station
+serving the file (section 11): its Dashboard (the file's layout
+`state_tab`), Data, Live diagrams, Map, 3D replay, Connection Status and Data
+Export tabs read the file's rows, played from the first row; commands answer
+that a replay is read-only.
 
 Platforms: the browser and desktop use the file picker and drag and drop; iOS
 and Android use the same file input, which opens the system document picker.
-Opening a file from another app (share sheet / "Open in") is not registered
-yet: it needs a document type (`CFBundleDocumentTypes`/UTI on iOS, an
-`ACTION_VIEW` intent filter on Android) that forwards the file to the
-`/preview` route.
+`.gsreplay` is registered as a document type on iOS and macOS (UTI
+`com.ubseds.gsreplay`), as an `ACTION_VIEW`/`ACTION_SEND` intent filter on
+Android, and as a file association in the Linux and Windows packages; an
+opened file is forwarded to `/preview`
+([replay-bundle.md](replay-bundle.md#opening-files-from-other-apps)).
 
 What the file contains. The station's
 `GET /api/recordings/{id}/replay/export` produces the samples and the app
@@ -1175,8 +1177,10 @@ plans' `overlay` drawn for comparison; 404 on a station without flight plans),
 `/replay/trajectory`. See [recorded-vehicle-replay.md](recorded-vehicle-replay.md#flight-replay).
 
 A station-made bundle (`GET /api/recordings/{id}/bundle`) completes
-`replay.json` with `boards`, `vehicle_geometry`, `layout` and `mode` itself, so
-a bundle fetched by any client (or by `curl`) is complete.
+`replay.json` with `boards`, `vehicle_geometry`, `layout`, `view_config`,
+`valve_mappings` and `mode` itself, so a bundle fetched by any client (or by
+`curl`) is complete. Each manifest entry names the station `route` it
+answers, so the local station serves the live replay tabs from the bundle.
 
 Predicted data: a replay file or bundle with `"predicted": true` (in
 `replay.json` or `manifest.json`) is a flight plan played as a recording
@@ -1188,28 +1192,31 @@ the altitude chart ([replay-bundle.md](replay-bundle.md#predicted-bundles-flight
 
 ## 11. Demo mode: a local reference station
 
-With no station, the offline workspace starts in demo mode (banner "Demo
-mode — no station connected"). The demo is a station implemented on the
-device (`src/telemetry_dashboard/local_station/`): `Session::get(path)`
-answers `/api/auth/session`, `/api/layout`, `/api/boards`, `/flightstate`,
-`/api/recent`, `/api/gps`, `/api/alerts`, `/api/recordings`,
-`/api/calibration` and `/api/vehicle/geometry` (when a file carries it) in
-the station's JSON, and the tests decode each with the live dashboard's types.
-Use it as a minimal working example of these routes.
+With no station, `/preview` runs the live dashboard against a station
+answered on the device (`src/telemetry_dashboard/local_station/`), selected
+once at the connection boundary (`station_link.rs`; details in
+[offline-preview.md](offline-preview.md)). `LocalStation::request` answers
+the routes of this contract with the station's JSON, and
+`LocalStation::frames` produces the `/ws` frames of section 4.1, which go
+through the same handlers as a station's socket. The tests decode each route
+and frame with the live dashboard's types, so the demo is also a minimal
+working example of the contract.
 
 The scenario loops every 380 s: idle, pre-fill, nitrogen and nitrous fill,
 armed, a 10 s countdown, the GroundStation26 IGT `nominal_10k` flight (about
 10,000 ft AGL, 2 Hz) and landing, with all seven boards reporting and four
 example warnings. The dashboard, data tabs and actions come from the demo's
-layout, not from code in the pages. Commands get a local acknowledgement
-("Nothing was sent; no station is connected"); a replay answers that it is
-read-only.
+layout, not from code in the pages. Commands and writes are answered by the
+local station ("Nothing was sent; no station is connected"; a replay answers
+that it is read-only); nothing leaves the device.
 
-Cost when a station is connected: none. The session, its 250 ms clock task
-and its data exist only while the offline workspace route is mounted and are
-dropped with it; the live transport (`dashboard_transport.rs`) and telemetry
-path do not reference it. A debug assertion on the dashboard route and a
-render test check that no session is alive after leaving the workspace.
+Cost when a station is connected: the WebSocket supervisor checks the
+selection once per connection and each HTTP helper once per request (a
+thread-local read); the live socket, row decode and ingest path are
+unchanged. The local station, its rows and its scratch preferences exist only
+while the `/preview` route is mounted. A debug assertion on the dashboard
+route and `local_station::tests::selecting_a_local_station_reroutes_and_releases_everything`
+check that nothing stays selected or alive.
 
 ---
 
@@ -1488,6 +1495,7 @@ section 5. WebSocket upgrades are listed as `GET`.
 - `GET /api/recordings/{id}/replay/trajectory`
 - `GET /api/recordings/{id}/replay/export`
 - `GET /api/recordings/{id}/bundle`
+- `POST /api/recordings/import`
 - `GET /api/vehicle/geometry`
 - `GET /api/recordings/{id}/sd/sources`
 - `GET /api/recordings/{id}/sd/sources/{sha256}`

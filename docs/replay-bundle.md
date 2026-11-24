@@ -11,9 +11,11 @@ station connected, on any device with nothing cached:
 - optionally, map tiles.
 
 Producers: GroundStation26 `GET /api/recordings/{id}/bundle`, available as
-**Download replay bundle** in the Recordings panel. Consumers: the UI's offline
-workspace (**Explore offline → Open replay file**, or drop the file on the
-window).
+**Download replay bundle** in the Recordings panel. Consumers: the UI's live
+dashboard on a local station (**Explore offline → Open replay file**, drop
+the file on the window, or open it from another app;
+[offline-preview.md](offline-preview.md)), and GroundStation26
+`POST /api/recordings/import`.
 
 Another station or tool can produce bundles by following this page.
 
@@ -46,7 +48,7 @@ Another station or tool can produce bundles by following this page.
   "tiles": {"included": 0, "bytes": 0, "budget_bytes": 1048576, "complete": true},
   "terrain": {"included": false, "reason": "no DEM tiles are cached on this station"},
   "missing": [{"path": "derived/flight_review.json", "route": "/api/flight_review/recording/…", "status": 404}],
-  "entries": [{"path": "replay.json", "bytes": 232028, "sha256": "…", "media_type": "application/json"}]
+  "entries": [{"path": "replay.json", "bytes": 232028, "sha256": "…", "media_type": "application/json", "route": "/api/recordings/groundstation_recording_2026-01-01_00-00-00_000.db/replay/export"}]
 }
 ```
 
@@ -59,17 +61,19 @@ Another station or tool can produce bundles by following this page.
 | `tiles` | Map tiles included, their bytes, the budget, and whether the budget cut them short. |
 | `terrain` | Whether `terrain/heightmap.json` is included: `{included: true, bytes, extent_m, size, zoom, source, attribution}`, or `{included: false, reason?}`. Absent in older bundles. |
 | `missing` | Optional resources the station could not supply, with the route and HTTP status. |
-| `entries` | Every other entry, with size and SHA-256 (lower-case hex). Readers verify every hash and refuse a bundle whose listed entry is absent or differs. |
+| `entries` | Every other entry, with size, SHA-256 (lower-case hex), media type and, when the entry is the body of a station route, `route`: the path and query exactly as a client requests them (the real recording id in place of `{id}`). Readers verify every hash and refuse a bundle whose listed entry is absent or differs. A reader may answer any GET whose path and query equal an entry's `route` with that entry's bytes (the UI's local station does). Entries with no `route` (`derived/burn_reports.json`, `derived/fire_archive.json`, `exports/*`, `config/report_context.json`, `derived/calibration_history.json`) are filtered lists or export inputs, not route bodies. |
 
 ## Entries
 
 Each entry is the body of the named station route at export time. The
 schemas are those in [backend-contract.md](backend-contract.md) and
-[backend-api.md](backend-api.md).
+[backend-api.md](backend-api.md). JSON entries are the route's JSON value with
+keys sorted (`serde_json` order), not necessarily the route's bytes;
+`data/telemetry.csv` is the route's bytes.
 
 | Path | Required | Source route | Used for |
 | --- | --- | --- | --- |
-| `replay.json` | yes | `GET /api/recordings/{id}/replay/export`, completed with `layout`, `boards`, `vehicle_geometry`, `mode` and `configuration_provenance` when the export lacks them | the rows (`samples`), flight states, replay context and the 3D player; the portable replay format of [backend-contract.md §10](backend-contract.md#10-offline-replay-files) |
+| `replay.json` | yes | `GET /api/recordings/{id}/replay/export`, completed with `layout`, `boards`, `view_config`, `valve_mappings`, `vehicle_geometry`, `mode` and `configuration_provenance` when the export lacks them | the rows (`samples`), flight states, replay context and the 3D player; the portable replay format of [backend-contract.md §10](backend-contract.md#10-offline-replay-files) |
 | `data/telemetry.csv` | yes | `GET /api/recordings/{id}/csv`, byte for byte | the CSV export offline |
 | `config/layout.json` | no | `GET /api/recordings/{id}/replay/layout?view={default_view}`, else `GET /api/layout` | dashboard, data tabs, units, actions |
 | `config/boards.json` | no | `GET /api/boards` | board names |
@@ -78,7 +82,17 @@ schemas are those in [backend-contract.md](backend-contract.md) and
 | `config/diagrams.json` | no | `GET /api/diagrams` | the station's diagram topologies |
 | `config/map_config.json` | no | `GET /api/map_config` | tile zoom range |
 | `models/vehicle_geometry.json` | no | `GET /api/vehicle/geometry` | 3D vehicle (generic rocket without it) |
-| `derived/context.json` | no | `GET /api/recordings/{id}/replay/context`, when the export has no `replay_context` | mode |
+| `derived/context.json` | no | `GET /api/recordings/{id}/replay/context` | mode, replay views |
+| `config/layout/{view}.json` | no | `GET /api/recordings/{id}/replay/layout?view={view}` for each replay view other than the default (`normal`, `test_fire`, `testing`, `hitl`, `integrated_ground_test`) | replay view switcher |
+| `config/station_layout.json` | no | `GET /api/layout` (when `config/layout.json` is not already it) | 3D player, export fill-ins |
+| `config/vehicle_visualization.json` | no | `GET /api/vehicle_visualization` | 3D player view configuration (also in `replay.json` `view_config`) |
+| `derived/snapshot.json` | no | `GET /api/recordings/{id}/replay` | `upper_id` and time range for diagnostics and the 3D replay |
+| `derived/flight_snapshot.json` | no | `GET /api/recordings/{id}/replay/flight` | recorded broadcast programme range |
+| `derived/overlays.json` | no | `GET /api/recordings/{id}/replay/overlays` | thrust overlay |
+| `derived/sd_sources.json` | no | `GET /api/recordings/{id}/sd/sources` (first page) | SD import list |
+| `derived/recordings.json` | no | `GET /api/recordings`, only this recording's entry (`active: false`) | recording pickers |
+| `derived/burn_reports/{id}.json` | no | `GET /api/burn_reports/{id}` for each related report | burn report detail |
+| `derived/fire_archive/{id}/thrust.json` | no | `GET /api/fire_archive/{id}/thrust` for each related fire | thrust curve |
 | `derived/alerts.json` | no | `GET /api/recordings/{id}/replay/alerts` | warnings list |
 | `derived/trajectory.json` | no | `GET /api/recordings/{id}/replay/trajectory?upper_id=…`, with the station's flight `phases`, `events` and per-point `phase` | track (coloured by phase), tile selection, `GET /api/flight_phases` offline |
 | `derived/flight_review.json` | no | `GET /api/flight_review/recording/{id}` | flight/motor summary figures |
@@ -151,6 +165,30 @@ prediction.
   station's format. GroundStation26 and the UI both check this against the
   fixture `replay-bundle/flight.csv`.
 
+## Routes that are not snapshot
+
+`/api/recordings/{id}/replay/window` (playhead window, type groups,
+`after_id` cursor) and `/api/recordings/report?request=` (user window and
+channels) take arbitrary parameters. The UI's local station computes the
+window from `replay.json` `samples` (`id <= upper_id`, `id > after_id`,
+`start_ms..=end_ms`, `data_type` in `types`, id order, pages of 5,000, the
+last row of each source before the window as seeds) and the report as
+described below. `GET /api/burn_reports` and `GET /api/fire_archive` are
+answered as `{"reports": derived/burn_reports.json}` and
+`{"fires": derived/fire_archive.json}`.
+
+## Import into a station
+
+GroundStation26 `POST /api/recordings/import` (administrators; body: the
+bundle, at most 256 MiB) applies the reading rules above and stores
+`data/telemetry.csv` (plus `derived/alerts.json`) as a recording
+`event.imported.<folder>.db` (kind `imported`). Its CSV export equals the
+bundle's CSV byte for byte. Responses: 201
+`{id,label,rows,alerts,start_ms,end_ms,source,csv_sha256}`; 400 unreadable,
+unsafe or inconsistent bundle; 403 not an administrator; 409 `{error,id}`
+already imported (same source recording and CSV); 413 too large; 422 newer
+version or SD-merged recording.
+
 ## Exports offline
 
 The UI answers the station's export routes for the bundle's recording from
@@ -198,7 +236,7 @@ station.
 
 | Recording | Rows | Recording database | Bundle |
 | --- | --- | --- | --- |
-| Contract fixture (nominal 10k ft flight, 0.5 Hz) | 601 | — | 70 KB (13 KB of it the flight review export) |
+| Contract fixture (nominal 10k ft flight, 0.5 Hz) | 601 | — | 105 KB (13 KB of it the flight review export, about 35 KB the five replay-view layouts) |
 | Synthetic ten-minute capture at flight rates (100 Hz IMU, 50 Hz loadcell/PT/baro, 5 Hz GPS) | 154,200 | 20.3 MB | 4.3 MB |
 
 The second row comes from GroundStation26
@@ -232,9 +270,11 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
 - UI `local_station/tests.rs`: a plan bundle opens labelled Predicted with its
   plan; `derived/flight_plans.json` plans are offered for comparison.
 - UI `tests/offline-replay-predicted.test.mjs`: the 3D player's Predicted label.
-- UI `offline_preview/tests.rs`: renders every page from the bundle.
+- UI `local_station/tests.rs` also serves the bundle as a station: the
+  recording's routes, replay snapshot and windows, the store listing.
 - UI `tests/offline-preview-browser.mjs`: opens the bundle in a fresh browser
-  profile.
+  profile and drives the live dashboard's tabs on it, with zero network;
+  downloads the CSV from Data Export and compares it with the station's.
 
 ## Opening files from other apps
 

@@ -266,11 +266,11 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 ## Running The Frontend
 
 **Explore offline** (connection setup or a failed connection, or `/preview` on
-the web) opens the offline workspace with no station: a looping demo
-(fill, countdown and a 10,000 ft flight) that fills every page, and **Open
-replay file** for exported `*.seds-replay.json` recordings, which work on a
+the web) runs the normal dashboard against a station answered on the device: a
+looping demo (fill, countdown and a 10,000 ft flight), or a replay bundle
+(`*.gsreplay`) or `*.seds-replay.json` opened from a file or another app, on a
 fresh device with nothing cached. Commands are acknowledged locally and never
-sent. See [Offline workspace](docs/offline-preview.md).
+sent. See [Demo mode and replay files](docs/offline-preview.md).
 
 Web:
 
