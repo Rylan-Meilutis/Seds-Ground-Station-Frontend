@@ -297,6 +297,7 @@ pub fn OfflinePreview(
                     at.set(next.start_ms());
                     diagram.set(if next.mode == Mode::Flight { "av_bay".into() } else { "fill".into() });
                     session.set(Rc::new(next));
+                    toast.set(None);
                     clock.set(Clock::Paused);
                     data_group.set(String::new());
                     player_loaded.set(false);
@@ -429,7 +430,7 @@ pub fn OfflinePreview(
                     if !demo_mode {
                         button { r#type: "button", onclick: move |_| {
                             session.set(Rc::new(demo::session(super::current_wallclock_ms() - demo::OPEN_AT_MS)));
-                            at.set(demo::OPEN_AT_MS); clock.set(Clock::Playing); data_group.set(String::new()); player_loaded.set(false);
+                            at.set(demo::OPEN_AT_MS); clock.set(Clock::Playing); toast.set(None); data_group.set(String::new()); player_loaded.set(false);
                         }, "Back to demo" }
                     }
                     button { r#type: "button", onclick: move |_| on_exit.call(()), "Exit" }
