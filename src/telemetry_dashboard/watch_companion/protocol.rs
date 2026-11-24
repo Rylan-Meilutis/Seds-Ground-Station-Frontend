@@ -253,6 +253,16 @@ pub enum WatchMessage {
         #[serde(default)]
         have: Vec<String>,
     },
+    /// Recovery search: the watch user turned sharing the watch's track on
+    /// or off (the phone sends the opt-in to the station).
+    SearchShare { sharing: bool },
+    /// Recovery search: fixes the watch recorded while opted in, with the
+    /// watch's own sequence numbers (docs/watch-companion.md).
+    SearchTrack {
+        session_id: String,
+        #[serde(default)]
+        points: Vec<super::search_relay::WatchFix>,
+    },
 }
 
 impl WatchMessage {

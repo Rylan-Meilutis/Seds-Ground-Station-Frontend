@@ -270,6 +270,47 @@ fn altitude_comparison(session: &Session, plan: &super::flight_plans::PlanDoc) -
     ])
 }
 
+/// A bundle's recovery search overlay (`derived/recovery_search.json`) as
+/// SVG paths `(d, fill, fill opacity, stroke)`: searched swaths green, the
+/// uncovered part of the landing area red, each searcher's track in its
+/// colour (the same MapOverlay the live map draws).
+fn search_paths(overlay: Option<&Value>, z: f64) -> Vec<(String, String, f64, String)> {
+    let Some(overlay) = overlay else { return Vec::new() };
+    let path = |points: &Value, close: bool| -> String {
+        let mut d = String::new();
+        for (i, p) in points.as_array().into_iter().flatten().enumerate() {
+            let (Some(lat), Some(lon)) = (p[0].as_f64(), p[1].as_f64()) else { continue };
+            let (x, y) = world_px(lat, lon, z);
+            d.push_str(&format!("{}{x:.1} {y:.1}", if i == 0 { "M" } else { "L" }));
+        }
+        if close && !d.is_empty() {
+            d.push('Z');
+        }
+        d
+    };
+    let mut out = Vec::new();
+    for area in overlay["areas"].as_array().into_iter().flatten() {
+        let (fill, opacity) = match area["kind"].as_str() {
+            Some("search_swath") => ("#22c55e", 0.3),
+            Some("uncovered") => ("#ef4444", 0.25),
+            _ => continue,
+        };
+        out.push((path(&area["polygon"], true), fill.to_string(), opacity, "none".to_string()));
+    }
+    for track in overlay["tracks"].as_array().into_iter().flatten() {
+        let color = track["color"].as_str().unwrap_or("#0ea5e9").to_string();
+        out.push((path(&track["points"], false), "none".to_string(), 0.0, color));
+    }
+    out
+}
+
+fn overlay_points(overlay: Option<&Value>) -> Vec<(f64, f64)> {
+    let Some(overlay) = overlay else { return Vec::new() };
+    let areas = overlay["areas"].as_array().into_iter().flatten().flat_map(|a| a["polygon"].as_array().cloned().unwrap_or_default());
+    let tracks = overlay["tracks"].as_array().into_iter().flatten().flat_map(|t| t["points"].as_array().cloned().unwrap_or_default());
+    areas.chain(tracks).filter_map(|p| Some((p[0].as_f64()?, p[1].as_f64()?))).collect()
+}
+
 /// The recorded GPS track in Web Mercator, over a bundle's map tiles when it
 /// carries them and over a tile-sized grid otherwise. Nothing is fetched.
 fn track_map(session: &Session, at: i64, plan: Option<&super::flight_plans::PlanDoc>) -> Element {
@@ -287,7 +328,8 @@ fn track_map(session: &Session, at: i64, plan: Option<&super::flight_plans::Plan
     let extra = overlay.into_iter().flat_map(|o| {
         o.areas.iter().flat_map(|a| a.polygon.iter().map(|p| (p[0], p[1]))).chain(o.markers.iter().map(|m| (m.lat_deg, m.lon_deg)))
     });
-    for (la, lo) in all.iter().map(|p| (p.0, p.1)).chain(extra) {
+    let search = session.recovery_search.as_ref().map(|s| &s["overlay"]);
+    for (la, lo) in all.iter().map(|p| (p.0, p.1)).chain(extra).chain(overlay_points(search)) {
         (la0, la1, lo0, lo1) = (la0.min(la), la1.max(la), lo0.min(lo), lo1.max(lo));
     }
     // The deepest zoom whose tiles all exist in the bundle, else one that fits the track.
@@ -325,6 +367,13 @@ fn track_map(session: &Session, at: i64, plan: Option<&super::flight_plans::Plan
     let drift = ((all.last().unwrap().0 - all[0].0) * 110_540.0).hypot((all.last().unwrap().1 - all[0].1) * 111_320.0 * coslat);
     let grid_m = 40_075_016.0 * coslat / 2f64.powf(z);
     let position = track.last().map(|p| format!("{:.5}°, {:.5}° · {:.0} m", p.0, p.1, p.2)).unwrap_or_else(|| "On the pad".into());
+    let search_note = session.recovery_search.as_ref().map(|s| {
+        format!(
+            "Recovery search: {} · {} searchers (searched green, not yet searched red).",
+            s["overlay"]["label"].as_str().unwrap_or("search coverage"),
+            s["stats"]["searchers"].as_u64().unwrap_or(0)
+        )
+    });
     let note = if tiled.is_some() { "Map tiles from the replay bundle.".to_string() } else { format!("No map tiles offline; grid squares are {grid_m:.0} m.") };
     let xy = |lat: f64, lon: f64| world_px(lat, lon, z);
     let plan_tracks: Vec<(String, String)> = match overlay {
@@ -351,6 +400,9 @@ fn track_map(session: &Session, at: i64, plan: Option<&super::flight_plans::Plan
             for (ix, iy, href) in images { image { x: "{ix}", y: "{iy}", width: "256", height: "256", href: "{href}" } }
             for d in plan_areas.iter() { path { d: "{d}", fill: "#a78bfa", fill_opacity: "0.12", stroke: "#a78bfa", stroke_width: "2", stroke_dasharray: "6 4", vector_effect: "non-scaling-stroke" } }
             for (d, color) in plan_tracks.iter() { path { "data-plan-track": "", d: "{d}", fill: "none", stroke: "{color}", stroke_opacity: "0.55", stroke_width: "3", stroke_dasharray: "7 5", vector_effect: "non-scaling-stroke" } }
+            for (d, fill, opacity, stroke) in search_paths(search, z) {
+                path { "data-search-layer": "", d: "{d}", fill: "{fill}", fill_opacity: "{opacity}", stroke: "{stroke}", stroke_width: "2", vector_effect: "non-scaling-stroke" }
+            }
             path { d: "{full}", fill: "none", stroke: "#94a3b8", stroke_width: "2", stroke_dasharray: "5 4", vector_effect: "non-scaling-stroke" }
             path { d: "{flown}", fill: "none", stroke: if predicted_track { "#a78bfa" } else { "#67d5c8" }, stroke_width: "3", stroke_dasharray: if predicted_track { "7 4" } else { "none" }, vector_effect: "non-scaling-stroke" }
             for (x, y, label) in plan_markers.iter() { circle { cx: "{x}", cy: "{y}", r: "{r * 0.8}", fill: "#a78bfa", stroke: "#111827", stroke_width: "2", vector_effect: "non-scaling-stroke", title { "{label}" } } }
@@ -364,6 +416,9 @@ fn track_map(session: &Session, at: i64, plan: Option<&super::flight_plans::Plan
             p { class: "gs26-preview-note", "data-plan-compare-map": "", strong { "{label}" } " drawn dashed in phase colours with its landing area; the recorded track is solid." }
         }
         p { class: "gs26-preview-note", "Rocket: {position} · landing {drift:.0} m from the pad (blue). {note}" }
+        if let Some(text) = search_note {
+            p { class: "gs26-preview-note", "data-search-replay": "", "{text}" }
+        }
     }
 }
 

@@ -68,6 +68,17 @@ pub(crate) const COVERED: &[&str] = &[
     "replay-export/flight",
     // With replay-bundle/flight.gsreplay and flight.csv: opened with no station
     // and its CSV export compared with the station's (local_station/tests.rs).
+    // Recovery search (backend_contract_tests::recovery_search_*).
+    "recovery-search/cleared",
+    "recovery-search/opt-in",
+    "recovery-search/refused-clear-operator",
+    "recovery-search/refused-not-opted-in",
+    "recovery-search/refused-start-viewer",
+    "recovery-search/started",
+    "recovery-search/status",
+    "recovery-search/stopped",
+    "recovery-search/track-accepted",
+    "recovery-search/track-duplicate",
     "replay-bundle/flight.manifest",
     "replay-trajectory/flight",
     "requests/gse-self-test-confirmation",

@@ -312,3 +312,43 @@ fn fc_estimator_frame_and_route_decode_into_the_launch_notice() {
     assert_eq!(idle.state, "unknown");
     assert_eq!(fc_estimator_notice::notice(&idle), None, "nothing on the pad");
 }
+
+/// Recovery search: the station's replies decode with the UI's types, the
+/// opt-in arms the outbox, uploads are acknowledged, and the refusals a
+/// device must stop on are classified as such.
+#[test]
+fn recovery_search_replies_decode_and_drive_the_outbox() {
+    use recovery_search::{Failure, OptInReply, Outbox, Status, UploadReply, classify};
+    let status: Status = decode("recovery-search/status");
+    assert!(status.active && status.accepting_uploads);
+    assert_eq!(status.overlay["kind"], "search_coverage");
+    assert!(status.stats.percent_covered.is_some_and(|p| p > 0.0 && p < 100.0));
+    assert_eq!(status.searchers.len(), 1);
+    assert_eq!(status.target.as_ref().map(|t| t.source.as_str()), Some("los_prediction"));
+    let kinds: Vec<&str> = status.overlay["areas"].as_array().unwrap().iter().filter_map(|a| a["kind"].as_str()).collect();
+    assert!(kinds.contains(&"search_swath") && kinds.contains(&"uncovered"));
+    let opt: OptInReply = decode("recovery-search/opt-in");
+    let mut outbox = Outbox::new("gs|viewer", &opt.device_id);
+    outbox.arm(opt.session_id.as_deref().unwrap(), opt.opt_in_id.as_deref().unwrap(), opt.max_seq);
+    // Reloaded with the station's view of this device: still sharing.
+    outbox.reconcile(&status);
+    assert!(outbox.armed());
+    let accepted: UploadReply = decode("recovery-search/track-accepted");
+    assert_eq!((accepted.accepted, accepted.max_seq), (25, Some(25)));
+    let duplicate: UploadReply = decode("recovery-search/track-duplicate");
+    assert_eq!((duplicate.accepted, duplicate.duplicates), (0, 25));
+    let refused = format!("HTTP 403: {}", fixture("recovery-search/refused-not-opted-in"));
+    assert_eq!(classify(&refused), Failure::Refused);
+    let stopped: Status = decode("recovery-search/stopped");
+    assert!(!stopped.active && stopped.accepting_uploads, "late uploads still merge after a stop");
+    let cleared: Status = decode("recovery-search/cleared");
+    assert_eq!(cleared.stats.points, 0);
+    let started: Status = decode("recovery-search/started");
+    assert!(started.active && started.searchers.is_empty());
+    // Operator-only and admin-only refusals carry a code and a message.
+    for name in ["recovery-search/refused-start-viewer", "recovery-search/refused-clear-operator"] {
+        let refusal = fixture(name);
+        assert_eq!(refusal["code"], "forbidden", "{name}");
+        assert!(igt::refusal(&format!("HTTP 403: {refusal}")).len() > 10, "{name}");
+    }
+}

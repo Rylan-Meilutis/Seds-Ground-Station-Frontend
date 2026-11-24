@@ -161,6 +161,8 @@ pub(crate) struct Session {
     pub terrain: Option<Value>,
     /// A bundle's `derived/trajectory.json` with its flight phases.
     pub trajectory: Option<Value>,
+    /// A bundle's `derived/recovery_search.json` (`GET /api/recovery_search`).
+    pub recovery_search: Option<Value>,
     index: BTreeMap<(String, String), Vec<usize>>,
 }
 
@@ -208,7 +210,7 @@ impl Session {
         LIVE_SESSIONS.with(|n| n.set(n.get() + 1));
         Self {
             source, title, mode, provenance, layout, boards, samples, states, alerts, calibration, recordings, replay_document, vehicle_geometry, notes, epoch_ms,
-            diagrams: Vec::new(), derived: Vec::new(), tiles: BTreeMap::new(), csv: None, manifest: None, predicted: None, plans: Vec::new(), terrain: None, trajectory: None, index,
+            diagrams: Vec::new(), derived: Vec::new(), tiles: BTreeMap::new(), csv: None, manifest: None, predicted: None, plans: Vec::new(), terrain: None, trajectory: None, recovery_search: None, index,
         }
     }
 
@@ -487,6 +489,7 @@ impl Session {
                     "source_sender_id": trajectory["source_sender_id"], "points": points, "sampled": trajectory["sampled"],
                 })
             }
+            "/api/recovery_search" => self.recovery_search.clone()?,
             _ => return None,
         })
     }

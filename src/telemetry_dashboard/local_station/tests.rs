@@ -295,6 +295,48 @@ fn stored_bundle(mut manifest: serde_json::Value, files: &[(&str, Vec<u8>)]) -> 
     out
 }
 
+/// A stored (uncompressed) ZIP of `files`, as a station writes one.
+fn stored_zip(files: &std::collections::BTreeMap<String, Vec<u8>>) -> Vec<u8> {
+    let (mut out, mut central) = (Vec::new(), Vec::new());
+    for (name, data) in files {
+        let offset = out.len() as u32;
+        let header = |sig: u32, central_entry: bool| {
+            let mut h = sig.to_le_bytes().to_vec();
+            if central_entry {
+                h.extend(20u16.to_le_bytes());
+            }
+            h.extend(20u16.to_le_bytes());
+            h.extend([0u8; 4]); // flags, method 0 (stored)
+            h.extend([0u8; 8]); // time, date, crc32 (not checked by the reader)
+            h.extend((data.len() as u32).to_le_bytes());
+            h.extend((data.len() as u32).to_le_bytes());
+            h.extend((name.len() as u16).to_le_bytes());
+            h.extend(0u16.to_le_bytes());
+            if central_entry {
+                h.extend([0u8; 6]); // comment, disk, internal attributes
+                h.extend(0u32.to_le_bytes()); // external attributes
+                h.extend(offset.to_le_bytes());
+            }
+            h
+        };
+        out.extend(header(0x0403_4b50, false));
+        out.extend(name.as_bytes());
+        out.extend(data);
+        central.extend(header(0x0201_4b50, true));
+        central.extend(name.as_bytes());
+    }
+    let start = out.len() as u32;
+    out.extend(&central);
+    out.extend(0x0605_4b50u32.to_le_bytes());
+    out.extend([0u8; 4]);
+    out.extend((files.len() as u16).to_le_bytes());
+    out.extend((files.len() as u16).to_le_bytes());
+    out.extend((central.len() as u32).to_le_bytes());
+    out.extend(start.to_le_bytes());
+    out.extend(0u16.to_le_bytes());
+    out
+}
+
 #[test]
 fn a_flight_plan_bundle_is_labelled_predicted_and_carries_its_plan() {
     let plan: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/flight-predict-mock/plan.json")).unwrap();
@@ -319,4 +361,20 @@ fn a_flight_plan_bundle_is_labelled_predicted_and_carries_its_plan() {
     let session = bundle::open("flight.gsreplay", &bytes).unwrap();
     assert_eq!(session.predicted, None);
     assert_eq!(session.plans.len(), 1, "duplicate plan ids are dropped");
+}
+
+#[test]
+fn a_bundle_with_recovery_search_tracks_serves_the_coverage_overlay() {
+    let mut files = bundle::unzip(BUNDLE).unwrap();
+    assert!(bundle::open("flight.gsreplay", BUNDLE).unwrap().recovery_search.is_none());
+    let search = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/backend-contract/recovery-search/stopped.json")).unwrap();
+    files.insert("derived/recovery_search.json".into(), search);
+    let bytes = stored_zip(&files);
+    assert_eq!(bundle::unzip(&bytes).unwrap(), files, "the test writer round-trips");
+    let s = bundle::open("flight.gsreplay", &bytes).unwrap();
+    let served = s.get("/api/recovery_search", s.end_ms()).expect("served like the station's route");
+    assert_eq!(served["overlay"]["kind"], "search_coverage");
+    let status: super::super::recovery_search::Status = serde_json::from_value(served).unwrap();
+    assert!(!status.active);
+    assert!(status.overlay["areas"].as_array().unwrap().iter().any(|a| a["kind"] == "uncovered"));
 }

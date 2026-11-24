@@ -3415,6 +3415,7 @@ fn TelemetryDashboardInner() -> Element {
                         igt_view::IgtStatusPoller {}
                         igt_view::IgtBanner {}
                         proximity_lock_view::ProximityRuntime {}
+                        recovery_search_view::RecoverySearchRuntime {user_gps, user_location_manual}
                         proximity_lock_view::ProximityBanner {}
                         recovery_marker::RecoveryRuntime {}
                         launch_zero_notice::LaunchZeroNotice {action_policy, theme:theme.clone()}

@@ -148,6 +148,14 @@ impl Rate {
                         super::map_sync::on_report(set, have);
                     }
                 }
+                Some(WatchMessage::SearchShare { sharing }) => {
+                    super::search_relay::on_share(sharing);
+                    self.force = true;
+                }
+                Some(WatchMessage::SearchTrack { session_id, points }) => {
+                    super::search_relay::on_track(session_id, points);
+                    self.force = true;
+                }
                 None => {}
             }
         }
@@ -175,7 +183,9 @@ impl Rate {
 }
 
 fn publish(snapshot: &super::protocol::Snapshot, urgent: bool) {
-    if let Ok(json) = serde_json::to_string(snapshot)
+    let mut value = serde_json::to_value(snapshot).unwrap_or_default();
+    super::search_relay::annotate(&mut value);
+    if let Ok(json) = serde_json::to_string(&value)
         && json.len() <= super::protocol::MAX_MESSAGE_BYTES
     {
         bridge::publish(&json, urgent);

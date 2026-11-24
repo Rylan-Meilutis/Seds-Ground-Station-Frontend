@@ -241,6 +241,7 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
     session.csv = files.get("data/telemetry.csv").cloned().map(std::rc::Rc::new);
     session.terrain = json(&files, "terrain/heightmap.json").filter(|t| t["available"] == true);
     session.trajectory = json(&files, "derived/trajectory.json");
+    session.recovery_search = json(&files, "derived/recovery_search.json").filter(|v| v["overlay"].is_object());
     session.notes.push(format!(
         "Bundle from {} ({}), {} entries, made {}.",
         manifest["source"]["station_name"].as_str().unwrap_or("a station"),

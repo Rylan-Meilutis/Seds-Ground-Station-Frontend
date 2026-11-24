@@ -18,6 +18,9 @@ pub(crate) mod phone_status;
 pub(crate) mod protocol;
 mod publisher;
 pub(crate) mod registry;
+// The browser build has no watch: only the phone's relay step runs there.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+pub(crate) mod search_relay;
 pub(crate) mod settings;
 mod settings_section;
 pub(crate) mod snapshot;
