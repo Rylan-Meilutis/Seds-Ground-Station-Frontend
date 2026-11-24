@@ -1888,18 +1888,21 @@ fn apply_telemetry_history_settings(retention_ms: u64, view_window_ms: u64) {
 }
 
 /// Calibration must not reuse stale display/cache values after a disconnect.
-pub(crate) fn fresh_daq_calibration_value(data_type: &str, now_ms: i64) -> Option<f32> {
-    let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text("DAQ"));
+/// `data_type`'s newest value from `sender`, only when it was received within
+/// the last 2 s (calibration reads only a current reading of the board being
+/// calibrated).
+pub(crate) fn fresh_calibration_value(data_type: &str, sender: &str, now_ms: i64) -> Option<f32> {
+    let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text(sender));
     let latest = LATEST_TELEMETRY.lock().ok()?;
     let row = latest.get(&key)?;
     fresh_calibration_sample(row, now_ms)
 }
 
-/// Like [`fresh_daq_calibration_value`], but a fresh over-range row is
+/// Like [`fresh_calibration_value`], but a fresh over-range row is
 /// reported as over range rather than as no reading.
-pub(crate) fn fresh_daq_calibration_reading(data_type: &str, now_ms: i64) -> over_range::Reading {
+pub(crate) fn fresh_calibration_reading(data_type: &str, sender: &str, now_ms: i64) -> over_range::Reading {
     use over_range::Reading;
-    let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text("DAQ"));
+    let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text(sender));
     let Ok(latest) = LATEST_TELEMETRY.lock() else { return Reading::Missing; };
     let Some(row) = latest.get(&key) else { return Reading::Missing; };
     let fresh = now_ms

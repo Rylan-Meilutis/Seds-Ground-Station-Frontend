@@ -219,7 +219,27 @@ pub(crate) struct CalibrationSensorSpec {
     fit_modes: Vec<String>,
     #[serde(default)]
     formatter: Option<ValueFormatter>,
+    /// The board whose rows calibrate this sensor
+    /// (`/api/calibration_config` `sensors[].sender_id`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sender_id: Option<String>,
 }
+
+impl CalibrationSensorSpec {
+    /// The sender this sensor is read from: the station's `sender_id`; for a
+    /// station that names none, [`LOAD_CELL_SENDER`] for a load cell and any
+    /// sender otherwise. A named sender is read only while fresh (2 s).
+    fn reading_sender(&self) -> Option<&str> {
+        match self.sender_id.as_deref().map(str::trim) {
+            Some(sender) if !sender.is_empty() => Some(sender),
+            _ => is_load_cell(&self.data_type).then_some(LOAD_CELL_SENDER),
+        }
+    }
+}
+
+/// The load cells' board on a station whose calibration config names no
+/// sender (before `sensors[].sender_id`).
+const LOAD_CELL_SENDER: &str = "DAQ";
 
 fn default_capture_target_samples() -> usize {
     200
@@ -396,24 +416,23 @@ fn is_load_cell(data_type: &str) -> bool {
     matches!(data_type, "KG1000" | "KG50")
 }
 
-/// Live Raw must show only a current reading from the board being calibrated.
-/// Load cells accept only DAQ rows received within the last 2 s.
+/// Live Raw must show only a current reading from the board being calibrated:
+/// with a sender ([`CalibrationSensorSpec::reading_sender`]) only its rows
+/// received within the last 2 s.
 #[cfg(test)]
-fn latest_raw(data_type: &str) -> Option<f32> {
-    if is_load_cell(data_type) {
-        super::fresh_daq_calibration_value(data_type, now_ms() as i64)
-    } else {
-        super::latest_telemetry_value(data_type, None, 0)
+fn latest_raw(data_type: &str, sender: Option<&str>) -> Option<f32> {
+    match sender {
+        Some(sender) => super::fresh_calibration_value(data_type, sender, now_ms() as i64),
+        None => super::latest_telemetry_value(data_type, None, 0),
     }
 }
 
 /// [`latest_raw`], but an ADC over-range reading is reported as such so the
 /// view shows OVR instead of a number or "no reading".
-fn latest_raw_reading(data_type: &str) -> super::over_range::Reading {
-    if is_load_cell(data_type) {
-        super::fresh_daq_calibration_reading(data_type, now_ms() as i64)
-    } else {
-        super::latest_telemetry_reading(data_type, None, 0)
+fn latest_raw_reading(data_type: &str, sender: Option<&str>) -> super::over_range::Reading {
+    match sender {
+        Some(sender) => super::fresh_calibration_reading(data_type, sender, now_ms() as i64),
+        None => super::latest_telemetry_reading(data_type, None, 0),
     }
 }
 
@@ -435,6 +454,7 @@ type CaptureResult = (calibration_capture::CaptureSummary, Option<f32>);
 
 async fn capture_average_raw_sample<F>(
     data_type: String,
+    sender: Option<String>,
     samples: usize,
     calibration: CalibrationFile,
     mut on_progress: F,
@@ -457,7 +477,7 @@ where
                 captured_samples.len(), target,
             ));
         }
-        let row = super::latest_telemetry_row(&data_type, load_cell.then_some("DAQ"));
+        let row = super::latest_telemetry_row(&data_type, sender.as_deref());
         let next_raw = if let Some(row) = row {
             if row.over_range_at(0).is_some() && now_ms() as i64 - super::telemetry_row_received_ms(&row) <= 2_000 {
                 return Err(format!(
@@ -484,7 +504,7 @@ where
             // Die temperature is only an input when a thermal correction is
             // configured for this channel; otherwise it is optional metadata,
             // so a stale temperature cannot block a load-cell capture.
-            let temperature = fresh_temperature();
+            let temperature = fresh_temperature(sender.as_deref());
             if thermal_correction_enabled(&calibration, &data_type) && temperature.is_none() {
                 return Err("Fresh ADC temperature required: a temperature correction is enabled for this load cell".to_string());
             }
@@ -2789,6 +2809,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                 let capture_calibration = cfg.read().clone().unwrap_or_default();
                                 match capture_average_raw_sample(
                                     sensor.data_type.clone(),
+                                    sensor.reading_sender().map(str::to_owned),
                                     effective_capture_sample_count,
                                     capture_calibration,
                                     |completed, target| {
@@ -3254,6 +3275,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             let capture_calibration = cfg.read().clone().unwrap_or_default();
                                             match capture_average_raw_sample(
                                                 sensor.data_type.clone(),
+                                                sensor.reading_sender().map(str::to_owned),
                                                 effective_capture_sample_count,
                                                 capture_calibration,
                                                 |completed, target| {
@@ -3417,7 +3439,8 @@ fn CalibrationLiveMetrics(
     channel_key: String,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
-    let reading = selected_sensor.as_ref().map(|sensor| latest_raw_reading(&sensor.data_type));
+    let reading = selected_sensor.as_ref().map(|sensor| latest_raw_reading(&sensor.data_type, sensor.reading_sender()));
+    let sender = selected_sensor.as_ref().and_then(|sensor| sensor.reading_sender());
     let over = reading.and_then(|r| r.over_range());
     let raw = reading.and_then(|r| r.value());
     let unit = selected_sensor
@@ -3436,7 +3459,7 @@ fn CalibrationLiveMetrics(
     };
     let live_value = ovr_or(over, live_value);
     let value = calibration.as_ref().and_then(|cfg| {
-        raw.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature()))
+        raw.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature(sender)))
             .and_then(|raw| eval_fit_key(cfg, &channel_key, raw))
     });
     rsx! {
@@ -3454,10 +3477,10 @@ fn ThermalCompensationMetrics(
     dirty: bool,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
-    let reading = selected_sensor.as_ref().map(|sensor| latest_raw_reading(sensor.data_type.as_str()));
+    let reading = selected_sensor.as_ref().map(|sensor| latest_raw_reading(sensor.data_type.as_str(), sensor.reading_sender()));
     let over = reading.and_then(|r| r.over_range());
     let raw_live = reading.and_then(|r| r.value());
-    let temperature = fresh_temperature();
+    let temperature = fresh_temperature(selected_sensor.as_ref().and_then(|sensor| sensor.reading_sender()));
     let cfg = calibration.as_ref();
     let corrected_raw = cfg.and_then(|cfg| raw_live.and_then(|raw| thermal_raw(cfg, &channel_key, raw, temperature)));
     let calibrated_live = cfg.and_then(|cfg| corrected_raw.and_then(|raw| eval_fit_key(cfg, &channel_key, raw)));
@@ -3512,8 +3535,9 @@ struct ThermalCalibration { reference_c: f32, raw_per_c: f32, #[serde(default)] 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 struct TemperatureCapture { expected: f32, raw: f32, temperature_c: Option<f32> }
 fn thermal_sensor(channel: &str) -> &str { match channel { "ch1" => "KG1000", "kg50" => "KG50", _ => channel } }
-fn fresh_temperature() -> Option<f32> {
-    super::fresh_daq_calibration_value("DAQ_ADC_TEMPERATURE", now_ms() as i64)
+/// The ADC die temperature of the board a load cell is read from.
+fn fresh_temperature(sender: Option<&str>) -> Option<f32> {
+    super::fresh_calibration_value("DAQ_ADC_TEMPERATURE", sender.unwrap_or(LOAD_CELL_SENDER), now_ms() as i64)
         .filter(|t| (-40.0..=125.0).contains(t))
 }
 fn thermal_correction_enabled(cfg: &CalibrationFile, channel: &str) -> bool {
@@ -3964,12 +3988,61 @@ mod capture_safeguard_tests {
             live_row("DAQ", now - 5_000, 7.25),
             live_row("GW", now, 5.5),
         ]);
-        let shown = latest_raw("KG1000");
+        let shown = latest_raw("KG1000", Some("DAQ"));
         assert_ne!(shown, Some(5.5), "another sender's KG1000 row must not be shown");
         assert_ne!(shown, Some(7.25), "a DAQ row older than 2 s must not be shown");
         let now = now_ms() as i64;
         super::super::update_latest_telemetry_batch(&[live_row("DAQ", now, 0.0123457)]);
-        assert_eq!(latest_raw("KG1000"), Some(0.0123457));
+        assert_eq!(latest_raw("KG1000", Some("DAQ")), Some(0.0123457));
+    }
+
+    fn spec(data_type: &str, sender_id: Option<&str>) -> CalibrationSensorSpec {
+        serde_json::from_value(serde_json::json!({
+            "id": data_type, "label": data_type, "data_type": data_type, "channel": "ch1", "sender_id": sender_id,
+        }))
+        .unwrap()
+    }
+
+    /// SEDS: the station names DAQ for the load cells and no sender for the
+    /// ox tank PT; a station that names none keeps the same sources.
+    #[test]
+    fn sensors_are_read_from_the_sender_the_station_names() {
+        let shipped: CalibrationTabLayout = serde_json::from_value(serde_json::json!({"sensors": [
+            {"id": "KG1000", "label": "1000kg", "data_type": "KG1000", "channel": "ch1", "sender_id": "DAQ"},
+            {"id": "KG50", "label": "50kg", "data_type": "KG50", "channel": "kg50", "sender_id": "DAQ"},
+            {"id": "IADC", "label": "Ox Tank Pressure", "data_type": "OX_TANK_PRESSURE", "channel": "iadc"},
+        ]}))
+        .unwrap();
+        let senders: Vec<_> = shipped.sensors.iter().map(|s| (s.label.as_str(), s.reading_sender())).collect();
+        assert_eq!(senders, [("1000kg", Some("DAQ")), ("50kg", Some("DAQ")), ("Ox Tank Pressure", None)]);
+        assert_eq!(spec("KG1000", None).reading_sender(), Some("DAQ"));
+        assert_eq!(spec("KG50", Some(" ")).reading_sender(), Some("DAQ"));
+        assert_eq!(spec("OX_TANK_PRESSURE", None).reading_sender(), None);
+        assert_eq!(spec("KG1000", Some("LC")).reading_sender(), Some("LC"));
+        // Round trip keeps the field, and omits it when unnamed.
+        assert_eq!(serde_json::to_value(spec("KG1000", Some("LC"))).unwrap()["sender_id"], "LC");
+        assert!(serde_json::to_value(spec("KG1000", None)).unwrap().get("sender_id").is_none());
+    }
+
+    #[test]
+    fn a_load_cell_on_another_board_is_read_from_that_board() {
+        // Its own data type, so parallel tests' KG1000 rows do not interfere.
+        let sensor = spec("SENDER_TEST_LOAD", Some("LCB"));
+        let row = |sender: &str, received_ms: i64, value: f32| {
+            let mut row = live_row(sender, received_ms, value);
+            row.data_type = "SENDER_TEST_LOAD".into();
+            row.refresh_interned_ids();
+            row
+        };
+        let now = now_ms() as i64;
+        super::super::update_latest_telemetry_batch(&[row("DAQ", now, 9.0)]);
+        assert_eq!(latest_raw(&sensor.data_type, sensor.reading_sender()), None, "not another board's row");
+        super::super::update_latest_telemetry_batch(&[row("LCB", now - 5_000, 2.0)]);
+        assert_eq!(latest_raw(&sensor.data_type, sensor.reading_sender()), None, "not a stale row");
+        let now = now_ms() as i64;
+        super::super::update_latest_telemetry_batch(&[row("LCB", now, 3.5)]);
+        assert_eq!(latest_raw(&sensor.data_type, sensor.reading_sender()), Some(3.5));
+        assert_eq!(latest_raw(&sensor.data_type, Some("DAQ")), Some(9.0));
     }
 
     #[test]
@@ -3983,8 +4056,8 @@ mod capture_safeguard_tests {
         row.over_range_low = 1;
         row.refresh_interned_ids();
         super::super::update_latest_telemetry_batch(&[row.clone()]);
-        assert_eq!(latest_raw_reading("KG50"), Reading::OverRange(OverRange::Low));
-        assert_eq!(latest_raw("KG50"), None, "never a number");
+        assert_eq!(latest_raw_reading("KG50", Some("DAQ")), Reading::OverRange(OverRange::Low));
+        assert_eq!(latest_raw("KG50", Some("DAQ")), None, "never a number");
         assert_eq!(ovr_or(Some(OverRange::Low), "-".into()), "−OVR");
         assert_eq!(ovr_or(None, "-".into()), "-");
         // An old over-range row is just no reading, like any stale row.
@@ -3992,6 +4065,6 @@ mod capture_safeguard_tests {
         row.timestamp_ms = now - 5_000;
         row.source_timestamp_ms = Some(now - 5_000);
         super::super::update_latest_telemetry_batch(&[row]);
-        assert_eq!(latest_raw_reading("KG50"), Reading::Missing);
+        assert_eq!(latest_raw_reading("KG50", Some("DAQ")), Reading::Missing);
     }
 }
