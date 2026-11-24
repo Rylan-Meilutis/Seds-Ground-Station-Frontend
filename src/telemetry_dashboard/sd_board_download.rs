@@ -238,6 +238,17 @@ async fn pause(ms: u32) {
     tokio::time::sleep(std::time::Duration::from_millis(ms.into())).await;
 }
 
+/// The board to select once `/api/sd_download` lists `boards`: the current
+/// one while the station still offers it, otherwise the first listed board.
+/// `None` keeps the current selection (no change, or an empty list).
+fn board_selection(current: &str, boards: &[String]) -> Option<String> {
+    if boards.is_empty() || boards.iter().any(|b| b == current) {
+        None
+    } else {
+        Some(boards[0].clone())
+    }
+}
+
 const PANEL: &str = "border:1px solid #334155;border-radius:10px;padding:10px 12px;margin:10px 0;display:flex;flex-direction:column;gap:8px;";
 const ROW: &str = "display:grid;grid-template-columns:22px minmax(0,1fr) auto auto;gap:8px;align-items:center;padding:5px 6px;border-radius:6px;font-size:13px;";
 const CHIP: &str = "font-size:11px;padding:2px 8px;border-radius:999px;white-space:nowrap;";
@@ -246,6 +257,7 @@ const BAR: &str = "height:6px;border-radius:3px;background:#1e293b;overflow:hidd
 #[component]
 pub(super) fn SdBoardDownload(busy: bool, onselect: EventHandler<DownloadedSource>) -> Element {
     let mut status = use_signal(Status::default);
+    // Shown until the station's board list arrives; then its first board.
     let mut board = use_signal(|| "DAQ".to_string());
     let mut selected = use_signal(BTreeSet::<String>::new);
     let mut queue = use_signal(Vec::<(String, String)>::new);
@@ -268,6 +280,12 @@ pub(super) fn SdBoardDownload(busy: bool, onselect: EventHandler<DownloadedSourc
                     && owner.is_current()
                 {
                     let running = next.jobs.iter().any(|j| active_phase(&j.phase));
+                    let current = board.peek().clone();
+                    if let Some(first) = board_selection(&current, &next.boards) {
+                        board.set(first);
+                        selected.set(BTreeSet::new());
+                        queue.set(Vec::new());
+                    }
                     status.set(next);
                     // Start the next queued file once nothing is running.
                     if !running && let Some((dir, name)) = queue.with_mut(|q| (!q.is_empty()).then(|| q.remove(0))) {
@@ -506,6 +524,15 @@ mod tests {
             files_for_queue(&s, "DAQ", &all),
             vec![("LAUNCH".to_string(), "L1.CSV".to_string()), ("UTC".to_string(), "T.CSV".to_string())]
         );
+    }
+
+    #[test]
+    fn board_selection_follows_the_station_list() {
+        let boards = |names: &[&str]| names.iter().map(|n| n.to_string()).collect::<Vec<_>>();
+        assert_eq!(board_selection("DAQ", &boards(&["DAQ", "FC"])), None);
+        assert_eq!(board_selection("DAQ", &boards(&["FC", "PB"])).as_deref(), Some("FC"), "another vehicle's first board");
+        assert_eq!(board_selection("FC", &boards(&["DAQ", "FC"])), None, "an operator's choice is kept");
+        assert_eq!(board_selection("DAQ", &[]), None, "no list yet: the fallback stays");
     }
 
     #[test]
