@@ -251,6 +251,16 @@ async fn download_csv_to_directory(
 pub(super) async fn saved_bytes(path: &str, owner: std::rc::Rc<ExportOwner>, max_bytes: usize) -> Result<Vec<u8>, String> {
     owner.check()?;
     let url = export_url(&owner, path)?;
+    // A local station (demo, replay file) answers here; nothing is fetched.
+    if let Some(reply) = super::station_link::request("GET", path, None) {
+        if !reply.ok() {
+            return Err(format!("HTTP {}: {}", reply.status, reply.text().chars().take(200).collect::<String>()));
+        }
+        if reply.body.len() > max_bytes {
+            return Err(format!("The download exceeds {} MiB.", max_bytes >> 20));
+        }
+        return Ok(reply.body);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     {
         let client = auth::build_native_http_client(owner.skip_tls(), std::time::Duration::from_secs(10), std::time::Duration::from_secs(120))?;
@@ -1076,6 +1086,26 @@ pub(super) async fn save_replay_file(
     }
 }
 
+/// Puts the station's terrain around the recorded track into a standalone
+/// replay (`replay_terrain`): the heightmap, then imagery tiles up to the cap.
+/// Returns what it added, in words for the export status. A station without
+/// terrain there, or an unreachable terrain route, leaves the file as it was.
+pub(super) async fn embed_standalone_terrain(file: &mut serde_json::Value, owner: std::rc::Rc<ExportOwner>) -> Result<String, String> {
+    use super::replay_terrain::{STANDALONE_TERRAIN_MAX_BYTES, TILE_MAX_BYTES, embed, heightmap_path};
+    let Some(path) = heightmap_path(file) else {
+        return Ok("No terrain: the recording has no GPS fix.".into());
+    };
+    let heightmap = saved_json::<serde_json::Value>(&path, owner.clone()).await.unwrap_or(serde_json::Value::Null);
+    owner.check()?;
+    let embedded = embed(file, heightmap, STANDALONE_TERRAIN_MAX_BYTES, |tile| {
+        let owner = owner.clone();
+        async move { saved_bytes(&tile, owner, TILE_MAX_BYTES).await.ok() }
+    })
+    .await;
+    owner.check()?;
+    Ok(embedded.note())
+}
+
 /// The standalone file carries its player, data and config. It runs from file://
 /// without a web server, login, external models, scripts or network requests.
 pub(super) fn offline_replay_script() -> Result<String, String> {
@@ -1086,6 +1116,7 @@ pub(super) fn offline_replay_script() -> Result<String, String> {
         "three":include_str!("../../station_ui/rendering/three/three.module.js"),
         "scene":include_str!("../../station_ui/rendering/three/replay-scene.js"),
         "software":include_str!("../../station_ui/rendering/three/software-renderer.js"),
+        "terrain":include_str!("../../station_ui/rendering/three/terrain.js"),
         "license":include_str!("../../station_ui/rendering/three/LICENSE")
     });
     let assets = serde_json::to_string(&assets)
@@ -1104,8 +1135,9 @@ globalThis.GSLoadReplay3D=()=>loading||=(async()=>{{
  const three=moduleURL(assets.three.replaceAll("'./three.core.js'",JSON.stringify(core)));
  const scene=moduleURL(assets.scene);
  const software=moduleURL(assets.software.replaceAll("'./three.module.js'",JSON.stringify(three)));
+ const terrain=moduleURL(assets.terrain.replaceAll("'./replay-scene.js'",JSON.stringify(scene)));
  const [T,visuals,fallback]=await Promise.all([import(three),import(scene),import(software)]);
- return {{T,...visuals,SoftwareRenderer:fallback.SoftwareRenderer}};
+ return {{T,...visuals,SoftwareRenderer:fallback.SoftwareRenderer,loadTerrain:()=>import(terrain)}};
 }})();
 addEventListener('pagehide',()=>{{for(const url of urls)URL.revokeObjectURL(url);}},{{once:true}});
 }}
@@ -1215,6 +1247,47 @@ fn actual_inverted_valve_export_keeps_saved_labels_and_raw_values() {
     assert_eq!(restored["valve_mappings"][2]["true_label"], "On");
     assert_eq!(restored["samples"][0]["values"][6], 2);
     if let Some(path) = std::env::var_os("GS_REPLAY_INVERTED_HTML_PROOF") {
+        std::fs::write(path, html).unwrap();
+    }
+}
+
+/// The standalone HTML of a flight with the station's terrain embedded
+/// (`replay_terrain::embed`): the fixture heightmap and a 256 px imagery tile
+/// for every tile the scene paints. `GS_REPLAY_TERRAIN_HTML_PROOF` saves it for
+/// `tests/standalone-terrain-browser.mjs`.
+#[cfg(test)]
+#[test]
+fn standalone_html_export_carries_terrain_and_imagery() {
+    let mut data: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/backend-contract/replay-export/flight.json")).unwrap();
+    for (field, empty) in [("schema", serde_json::json!({})), ("view_config", serde_json::json!({"stages": [], "ground_systems": []})), ("layout", serde_json::json!({})), ("valve_mappings", serde_json::json!([]))] {
+        if data[field].is_null() {
+            data[field] = empty;
+        }
+    }
+    let heightmap: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/backend-contract/terrain/heightmap.json")).unwrap();
+    let path = super::replay_terrain::heightmap_path(&data).unwrap();
+    assert!(path.starts_with("/api/terrain/heightmap?lat=31.758017&lon=-102.045990&extent_m="), "{path}");
+    // A green-brown 256 px PNG with a grid line, as a stand-in for station imagery.
+    let mut tile = Vec::new();
+    image::RgbImage::from_fn(256, 256, |x, y| if x == 0 || y == 0 { image::Rgb([60, 60, 40]) } else { image::Rgb([150, 140, 90]) })
+        .write_to(&mut std::io::Cursor::new(&mut tile), image::ImageFormat::Png)
+        .unwrap();
+    let embedded = tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(super::replay_terrain::embed(
+        &mut data,
+        heightmap.clone(),
+        super::replay_terrain::STANDALONE_TERRAIN_MAX_BYTES,
+        |_| std::future::ready(Some(tile.clone())),
+    ));
+    assert!(embedded.heightmap && embedded.tiles == super::replay_terrain::imagery_tiles(&heightmap).len());
+    let html = portable_replay_html(&data).unwrap();
+    let encoded = html.split("id=\"recording\">").nth(1).unwrap().split("</script>").next().unwrap();
+    let restored: serde_json::Value = serde_json::from_str(encoded).unwrap();
+    assert_eq!(restored["replay_extras"]["terrain"], heightmap);
+    assert_eq!(restored["replay_extras"]["terrain_tiles"].as_object().unwrap().len(), embedded.tiles);
+    // The scene's terrain module travels in the file too.
+    assert!(html.contains("loadTerrain:()=>import(terrain)") && html.contains("decodeHeightmap"));
+    assert!(html.len() < data.to_string().len() + 2 * 1024 * 1024 + 400_000, "terrain stays within its cap");
+    if let Some(path) = std::env::var_os("GS_REPLAY_TERRAIN_HTML_PROOF") {
         std::fs::write(path, html).unwrap();
     }
 }

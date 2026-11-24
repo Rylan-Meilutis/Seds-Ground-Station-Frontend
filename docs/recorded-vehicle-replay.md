@@ -120,11 +120,16 @@ Height is the barometric altitude above the pad when it is recorded (GPS height 
 the weakest axis, worst in boost), else the GPS altitude; between fixes the
 position is interpolated for display.
 
-**Ground.** The scene imports `./terrain.js` (`loadTerrain`, owned by the 3D-map
-work) and places the track, pad, stations, overlays and the landing point on its
-`heightAt`; the track is shifted by the terrain height at the pad. Without it
-(or in a standalone file) the ground is a curved surface at the pad altitude with
-a scale grid, labelled as such.
+**Ground.** The scene loads `terrain.js` (`loadTerrain`; the player script ships
+it as a module next to the scene) and places the track, pad, stations, overlays
+and the landing point on its `heightAt`; the track is shifted by the terrain
+height at the pad. The heightmap comes from `replay_extras.terrain`: a bundle's
+`terrain/heightmap.json`, the station's `GET /api/terrain/heightmap` around the
+track when the dashboard opens a recording (centred on the first fix, the track
+plus 1 km, 2–30 km, as a bundle requests it; `replay_terrain.rs`), or the copy
+inside a standalone file. Without one the ground is a curved surface at the pad
+altitude with a scale grid, labelled as such; the player never fetches terrain
+itself.
 
 **Sensors.** The HUD and the charts bind generically: for each role the recorded
 data types are matched by name and the channel by the layout's data-tab channel
@@ -227,7 +232,16 @@ about historical configuration.
 **Export portable replay** saves all saved channels in that recording (up to
 200,000 rows and 64 MiB; larger selections fail explicitly without truncation).
 Choose standalone HTML to open the saved file directly without a server, app
-login, external scripts or a connection. Choose portable JSON to import through
+login, external scripts or a connection. The standalone file also carries the
+station's terrain around the track, when the station has it, within 4 MiB: the
+heightmap first (`replay_extras.terrain`; without it there is no terrain), then
+the imagery tiles the 3D scene paints (`replay_extras.terrain_tiles`,
+`{"z/x/y": base64 JPEG}`), nearest the pad first, until the cap. Tiles over the
+cap are left out (the scene paints what it has over the terrain) and the export
+status says how many were included. The GroundStation does not produce this
+file, so it is not one of the exports a replay bundle reproduces byte for
+byte; exported from a replay bundle offline, it takes the bundle's heightmap and
+tiles. Choose portable JSON to import through
 **3D replay → Import an offline replay** or into the standalone HTML player.
 The file carries saved receive/source timestamps, decoded values, schema,
 export-time vehicle configuration, layout/units and explicit valve mappings.

@@ -1043,7 +1043,10 @@ pub(super) fn ReplayFileExport(recording: String) -> Element {
                     if file["vehicle_geometry"].is_null()&&let Some(g)=super::vehicle_geometry::station_json_now().and_then(|t|serde_json::from_str::<serde_json::Value>(&t).ok()){file["vehicle_geometry"]=g;}
                     if export_visual_config&&!file["sd_provenance"].is_null(){file["configuration_provenance"]="Imported source schema/configuration retained; missing view/layout supplied from station at export.".into();}
                     if file["configuration_provenance"].is_null(){file["configuration_provenance"]="Station configuration at export; not a claim of historical capture-time configuration.".into();}
-                    super::recording_download::save_replay_file(&file,html,owner.clone()).await
+                    // A standalone file carries its own terrain and imagery (capped); nothing else can supply it offline.
+                    let terrain=if html {Some(super::recording_download::embed_standalone_terrain(&mut file,owner.clone()).await?)} else {None};
+                    let saved=super::recording_download::save_replay_file(&file,html,owner.clone()).await?;
+                    Ok::<String,String>(match terrain {Some(note)=>format!("{saved} {note}"),None=>saved})
                 }.await;
                 if owner.is_current(){status.set(result.unwrap_or_else(|e:String|format!("Replay export failed: {e}")));}busy.set(false);
             });

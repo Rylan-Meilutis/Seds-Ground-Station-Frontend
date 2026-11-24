@@ -76,12 +76,13 @@ step "Producing test inputs"
 inputs="$work/inputs"
 mkdir -p "$inputs"
 GS_REPLAY_HTML_PROOF="$inputs/replay.html" GS_REPLAY_INVERTED_HTML_PROOF="$inputs/replay-inverted.html" \
-  cargo test -- actual_offline_html_export_contains actual_inverted_valve_export --test-threads=1 > "$work/replay-proofs.log" 2>&1 \
+  GS_REPLAY_TERRAIN_HTML_PROOF="$inputs/replay-terrain.html" \
+  cargo test -- actual_offline_html_export_contains actual_inverted_valve_export standalone_html_export_carries_terrain --test-threads=1 > "$work/replay-proofs.log" 2>&1 \
   || { tail -20 "$work/replay-proofs.log"; exit 1; }
 (cd "$gs" && GS_DISPLAY_HISTORY_FIXTURE="$inputs/history.json" cargo test -p groundstation_backend display_history_tests) \
   > "$work/history-fixture.log" 2>&1 || { tail -20 "$work/history-fixture.log"; exit 1; }
 export GS_UI_BUNDLE="$release" GS_FRONTEND_PUBLIC="$release"
-export GS_REPLAY_HTML_PROOF="$inputs/replay.html" GS_REPLAY_INVERTED_HTML_PROOF="$inputs/replay-inverted.html"
+export GS_REPLAY_HTML_PROOF="$inputs/replay.html" GS_REPLAY_INVERTED_HTML_PROOF="$inputs/replay-inverted.html" GS_REPLAY_TERRAIN_HTML_PROOF="$inputs/replay-terrain.html"
 export GS_HISTORY_FIXTURE="$inputs/history.json" GS_CHAMBER_LAYOUT="$gs/backend/layout/layout.json"
 export GS_PAIRED_WEB_ROOT="$(preview paired_settings_preview)" GS_STATION_POSITIONS_BUNDLE="$(preview station_positions_preview)"
 export GS_UI_ARTIFACTS="$work/artifacts"

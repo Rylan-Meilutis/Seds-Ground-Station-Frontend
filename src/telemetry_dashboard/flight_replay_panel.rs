@@ -4,7 +4,8 @@
 //!
 //! - Recording: `GET /api/recordings/{id}/replay/export` (the rows), plus the
 //!   optional `/replay` snapshot and `/replay/trajectory`, the flight review,
-//!   `/api/antenna/status` (station positions) and the latest flight plans as
+//!   `/api/antenna/status` (station positions), the heightmap under the track
+//!   (`/api/terrain/heightmap`, see `replay_terrain`) and the latest flight plans as
 //!   overlays (`/api/flight_plans`). A missing optional route only removes its part.
 //! - Live: the dashboard's own telemetry store (no extra request for rows); the
 //!   player follows the newest data until the operator scrubs.
@@ -83,6 +84,12 @@ async fn recording_document(id: &str) -> Result<(Value, Value), String> {
     }
     if let Some(stations) = optional("/api/antenna/status").await {
         extras.insert("stations".into(), stations);
+    }
+    // The ground under the track, as a replay bundle snapshots it (flat ground without it).
+    if let Some(path) = super::replay_terrain::heightmap_path(&document)
+        && let Some(terrain) = optional(&path).await.filter(|t| t["available"] == true)
+    {
+        extras.insert("terrain".into(), terrain);
     }
     extras.insert("overlays".into(), Value::Array(plan_overlays(&latest_plans().await)));
     Ok((document, Value::Object(extras)))

@@ -444,7 +444,9 @@ function mount(root,input,options={}){
   const onStatus=status=>{visualUnavailable=status==='lost';host.dataset.renderer=visualUnavailable?'unavailable':visual?.software?'canvas3d':'webgl';updateVisualNote();};
   if(useFlight){
    const geometry=p.vehicle_geometry||extras.vehicle_geometry;
-   visual=visuals.mountFlightScene(visuals.T,visuals.SoftwareRenderer,host,{geometry,timeline:model.timeline,onStatus,onTerrain:()=>updateVisualNote(),onCamera:()=>markCamera(),railLength_m:extras.flight_plan?.inputs?.launch?.rail_length_m,loadTerrain:options.loadTerrain,fetchJson:options.fetchJson,terrainBundle:extras.terrain?.available===true?{heightmap:extras.terrain,offline:!options.fetchJson}:undefined});
+   // Terrain the file or the app carries: the heightmap and, in a standalone file, its imagery tiles.
+   const terrainBundle=extras.terrain?.available===true?{heightmap:extras.terrain,tiles:terrainTiles(extras.terrain_tiles),offline:!options.fetchJson}:undefined;
+   visual=visuals.mountFlightScene(visuals.T,visuals.SoftwareRenderer,host,{geometry,timeline:model.timeline,onStatus,onTerrain:()=>updateVisualNote(),onCamera:()=>markCamera(),railLength_m:extras.flight_plan?.inputs?.launch?.rail_length_m,loadTerrain:options.loadTerrain||(terrainBundle?visuals.loadTerrain:undefined),fetchJson:options.fetchJson,terrainBundle});
    flightScene=true;visual.setStations(model.stations);visual.setOverlays(model.overlays);visual.setTrack(trackForScene(),null,{timeline:model.timeline});
   }else{
    visual=visuals.mountReplayCanvas(visuals.T,visuals.SoftwareRenderer,host,p.mode==='test_fire'?'test_fire':'flight',onStatus,p.vehicle_geometry);flightScene=false;
@@ -534,7 +536,17 @@ function mount(root,input,options={}){
   setStations:list=>{extras.stations=list;model.stations=normalizeStations(list);visual?.setStations?.(model.stations);if(visuals)setCameraButtons();},
   append,dispose:()=>{disposed=true;clearInterval(timer);visual?.dispose();}};
 }
+/** Imagery tiles saved in a standalone file ({"z/x/y": base64 JPEG}) as bytes; undefined when none. */
+function terrainTiles(saved){
+ if(!saved||typeof saved!=='object'||Array.isArray(saved))return undefined;
+ const out={};let count=0;
+ for(const [key,value] of Object.entries(saved)){
+  if(count>=128||!/^\d{1,2}\/\d{1,8}\/\d{1,8}$/.test(key)||typeof value!=='string')continue;
+  try{const text=atob(value);const bytes=new Uint8Array(text.length);for(let i=0;i<text.length;i++)bytes[i]=text.charCodeAt(i);out[key]=bytes;count++;}catch{}
+ }
+ return count?out:undefined;
+}
 function validateSeries(p){const series=new Map();for(const r of p.samples){let s=series.get(r.data_type);if(!s){s=new Map();series.set(r.data_type,s);}let l=s.get(r.sender_id);if(!l){l=[];s.set(r.sender_id,l);}l.push(r);}Object.defineProperty(p,'__series',{value:series,configurable:true});}
 globalThis.GSOfflineReplay={MAX_BYTES,LEGACY_NAMES,validate,value,state,tankFillFraction,replayValveState,header,mount,
- PHASE_COLORS,PHASE_LABELS,FLIGHT_STATE_NAMES,flightPhaseOf,flightTimeline,phaseAt,formatTClock,createClock,SPEEDS,discoverChannels,gpsTrack,flightModel,predictedInfo,normalizeStations,channelRows,channelValue,formatChannel,eventKindOf};
+ PHASE_COLORS,PHASE_LABELS,FLIGHT_STATE_NAMES,flightPhaseOf,flightTimeline,phaseAt,formatTClock,createClock,SPEEDS,discoverChannels,gpsTrack,flightModel,predictedInfo,normalizeStations,terrainTiles,channelRows,channelValue,formatChannel,eventKindOf};
 })();
