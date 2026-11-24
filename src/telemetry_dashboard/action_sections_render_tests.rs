@@ -25,7 +25,9 @@ fn layout() -> ActionsTabLayout {
 
 fn policy() -> ActionPolicyMsg {
     let control = |cmd: &str| serde_json::json!({"cmd":cmd,"enabled":true,"blink":"none","actuated":null,"epoch_fence":"ordinary"});
-    let mut controls: Vec<_> = ["Abort","NitrogenClose","Nitrogen","Launch","DeployParachute","ToggleAvBayUnderglow","CustomOperatorCommand"]
+    // The station lists the GSE sequence commands, so their buttons are added.
+    let mut controls: Vec<_> = ["Abort","NitrogenClose","Nitrogen","Launch","DeployParachute","ToggleAvBayUnderglow","CustomOperatorCommand",
+        "ValveSelfTest","NitrogenTest","StartFill","PauseFill","CancelFill","Turbocharge"]
         .into_iter().map(control).collect();
     // A running QD retraction and a prompted (blinking) HITL interlock.
     let mut qd = control("RetractPlumbing");

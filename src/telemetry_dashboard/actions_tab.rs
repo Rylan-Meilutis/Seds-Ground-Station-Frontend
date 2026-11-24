@@ -15,8 +15,10 @@ use super::{
     translate_text,
 };
 
-// These controls must remain available even in older or custom layouts.
-fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
+// Older or custom layouts may omit the GSE sequence buttons. Each is added
+// only when the station's action policy lists its command, so a vehicle
+// without these sequences never shows them.
+fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig, policy: &ActionPolicyMsg) {
     for (cmd, label) in [
         ("ValveSelfTest", "Valve self-test"),
         ("NitrogenTest", "Nitrogen test"),
@@ -25,7 +27,8 @@ fn ensure_sequence_actions(actions: &mut Vec<ActionSpec>, theme: &ThemeConfig) {
         ("CancelFill", "Cancel fill"),
         ("Turbocharge", "Turbocharge"),
     ] {
-        if !actions.iter().any(|action| action.cmd == cmd) {
+        let offered = policy.controls.iter().any(|control| control.cmd == cmd);
+        if offered && !actions.iter().any(|action| action.cmd == cmd) {
             actions.push(serde_json::from_value::<ActionSpec>(serde_json::json!({"cmd":cmd,"label":label,"group":"GSE sequence actions","section":"sequences","border":theme.border,"bg":theme.panel_background_alt,"fg":theme.text_primary})).expect("valid GSE action specification"));
         }
     }
@@ -139,6 +142,27 @@ mod network_utc_reason_tests {
 mod sequence_action_tests {
     use super::*;
 
+    /// The station's real `/api/action_policy`, which lists every sequence command.
+    fn station_policy() -> ActionPolicyMsg {
+        crate::backend_contract::decode("action-policy/get")
+    }
+
+    #[test]
+    fn sequence_buttons_are_added_only_for_commands_the_policy_lists() {
+        let theme = ThemeConfig::default();
+        let mut policy = station_policy();
+        policy.controls.retain(|control| control.cmd != "Turbocharge" && control.cmd != "NitrogenTest");
+        let mut actions = Vec::new();
+        ensure_sequence_actions(&mut actions, &theme, &policy);
+        let cmds = actions.iter().map(|a| a.cmd.as_str()).collect::<Vec<_>>();
+        assert_eq!(cmds, ["ValveSelfTest", "StartFill", "PauseFill", "CancelFill"]);
+
+        policy.controls.clear();
+        let mut none = Vec::new();
+        ensure_sequence_actions(&mut none, &theme, &policy);
+        assert!(none.is_empty(), "a vehicle without these commands shows no foreign buttons");
+    }
+
     #[test]
     fn new_supply_press_retires_abandoned_intent_but_touch_companion_does_not() {
         let mut first = SupplyGestureOrigin::Pointer { id: 7, touch_companion_pending: true };
@@ -162,7 +186,7 @@ mod sequence_action_tests {
         let dom=super::super::command_owner::legacy_test_dom("http://legacy-sequence-fixture.invalid");
         dom.in_scope(ScopeId::ROOT, || {
         let mut actions = Vec::new();
-        ensure_sequence_actions(&mut actions, &ThemeConfig::default());
+        ensure_sequence_actions(&mut actions, &ThemeConfig::default(), &station_policy());
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let sender = crate::telemetry_dashboard::WsSender { tx };
         for expected in ["NitrogenTest", "StartFill", "Turbocharge"] {
@@ -190,7 +214,7 @@ mod sequence_action_tests {
     fn all_layouts_retain_fill_nitrogen_and_self_test_without_duplicates() {
         let theme = ThemeConfig::default();
         let mut actions = Vec::new();
-        ensure_sequence_actions(&mut actions, &theme);
+        ensure_sequence_actions(&mut actions, &theme, &station_policy());
         assert_eq!(actions.len(), 6);
         assert!(!actions.iter().any(|a| redundant_supply_close(&a.cmd)), "No extra per-supply Close action");
         for cmd in [
@@ -205,13 +229,13 @@ mod sequence_action_tests {
         }
         actions[0].label = "Custom self-test label".into();
         let original = actions.clone();
-        ensure_sequence_actions(&mut actions, &theme);
+        ensure_sequence_actions(&mut actions, &theme, &station_policy());
         assert_eq!(actions, original);
     }
     #[test]
     fn cold_flow_row_follows_self_test_once_even_in_a_custom_layout() {
         let mut actions = Vec::new();
-        ensure_sequence_actions(&mut actions, &ThemeConfig::default());
+        ensure_sequence_actions(&mut actions, &ThemeConfig::default(), &station_policy());
         actions[0].label = "Custom dry valve test".into();
         actions.push(actions[0].clone());
         let refs = actions.iter().collect::<Vec<_>>();
@@ -933,7 +957,7 @@ pub fn ActionsTab(
         if *gse_request_gate.peek()!=next {gse_request_gate.set(next);}
     });
     let mut all_actions = layout.actions.clone();
-    ensure_sequence_actions(&mut all_actions, &theme);
+    ensure_sequence_actions(&mut all_actions, &theme, &action_policy.read());
     all_actions.retain(|action| !redundant_supply_close(&action.cmd) && action.cmd != "AutoColdFlow");
     // Recover station is listed only while the station reports its own Abort latch.
     let station_recovery = action_policy.read().station_recovery.clone();
