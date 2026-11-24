@@ -58,9 +58,11 @@ try {
  if(await confirm.count())await confirm.first().click();
  await page.getByText(/Replay is read-only: .* was not sent\./).first().waitFor();
  // The station's CSV export comes back out of the bundle byte for byte.
- await open('Data Export',['(replay bundle)']);
- const picker=page.locator('select').filter({has:page.locator('option',{hasText:'(replay bundle)'})}).first();
- await picker.selectOption({index:1});
+ const recording=JSON.parse(fs.readFileSync(fixture('replay-bundle/flight.manifest.json'),'utf8')).source.recording;
+ await open('Data Export');
+ const picker=page.locator(`select:has(option[value="${recording}"])`).first();
+ await picker.waitFor({state:'attached',timeout:20000});
+ await picker.selectOption(recording);
  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download full recording CSV'}).click()]);
  assert(fs.readFileSync(await download.path()).equals(fs.readFileSync(fixture('replay-bundle/flight.csv'))),'bundle CSV export equals the station CSV');
  // A portable replay file too.
