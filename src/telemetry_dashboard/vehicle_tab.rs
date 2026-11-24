@@ -927,7 +927,7 @@ mod tests {
     fn shared_scene_and_text_valves_use_named_saved_states_and_expire_together(){
         use super::super::vehicle_replay::{Frame,Index,Sample};
         let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:Some(999),sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),None],phase:None,valid_until_ms:None}]))),at_ms:1500};
-        let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0,"label":"Saved pilot name"}]});
+        let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0,"label":"Saved pilot name"},{"index":1},{"index":2}]});
         let rows=replay_visual_valves(&layout,&frame);
         assert_eq!(rows[0]["label"],"Saved pilot name");assert_eq!(rows[0]["state"],"Open");assert_eq!(rows[1]["state"],"Closed");assert_eq!(rows[2]["state"],"Unknown");
         frame.at_ms=9000;let stale=replay_visual_valves(&layout,&frame);assert!(stale.iter().all(|row|row["state"]=="Unknown" && row["value"].is_null()));
@@ -937,7 +937,7 @@ mod tests {
     fn saved_valve_labels_preserve_inverted_custom_and_unknown_raw_samples() {
         use super::super::vehicle_replay::{Frame,Index,Sample};
         let mut frame=Frame{data:Some(std::rc::Rc::new(Index::new(vec![Sample{id:1,timestamp_ms:1000,source_timestamp_ms:None,sender_id:"VB".into(),data_type:"VALVE_STATE".into(),values:vec![Some(1.0),Some(0.0),Some(1.0),Some(0.0),Some(1.0),None,Some(2.0)],phase:None,valid_until_ms:None}]))),at_ms:1500};
-        let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0},{"index":1},{"index":2},{"index":3},{"index":4}],"valve_labels":[{"true_label":"Closed","false_label":"Open","unknown_label":"No saved sample"},{"true_label":"Closed","false_label":"Open"},{"true_label":"On","false_label":"Off"},{"true_label":"Ouvert","false_label":"Fermé"},{"true_label":" cLoSeD ","false_label":" OpEn "}]});
+        let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":0},{"index":1},{"index":2},{"index":3},{"index":4},{"index":5},{"index":6}],"valve_labels":[{"true_label":"Closed","false_label":"Open","unknown_label":"No saved sample"},{"true_label":"Closed","false_label":"Open"},{"true_label":"On","false_label":"Off"},{"true_label":"Ouvert","false_label":"Fermé"},{"true_label":" cLoSeD ","false_label":" OpEn "}]});
         let rows=replay_visual_valves(&layout,&frame);
         for (index,expected) in ["Closed","Open","On","Fermé"," cLoSeD ","Unknown","Unknown"].into_iter().enumerate(){assert_eq!(rows[index]["state"],expected);}
         assert_eq!(rows[0]["value"],1.0);assert_eq!(rows[1]["value"],0.0);assert!(rows[5]["value"].is_null());assert_eq!(rows[6]["value"],2.0);
@@ -982,10 +982,12 @@ mod tests {
     }
 }
 
-/// This mapping is the persisted VALVE_STATE order from telemetry_task. Preserve
-/// it in every portable file; the offline viewer never guesses channel order.
+/// The persisted VALVE_STATE order from telemetry_task, used only when the
+/// layout has no VALVE_STATE block. When it has one, a portable file carries
+/// exactly the valves the layout names (labels and state words from the
+/// layout, this table filling gaps); the offline viewer never guesses order.
 fn saved_valve_mappings(layout: &serde_json::Value) -> serde_json::Value {
-    let mut mappings=serde_json::json!([
+    let table=serde_json::json!([
         {"label":"Pilot valve","data_type":"VALVE_STATE","index":0,"true_label":"Open","false_label":"Closed"},
         {"label":"Normally-open valve","data_type":"VALVE_STATE","index":1,"true_label":"Open","false_label":"Closed"},
         {"label":"Dump valve","data_type":"VALVE_STATE","index":2,"true_label":"Open","false_label":"Closed"},
@@ -994,22 +996,25 @@ fn saved_valve_mappings(layout: &serde_json::Value) -> serde_json::Value {
         {"label":"Nitrous valve","data_type":"VALVE_STATE","index":5,"true_label":"Open","false_label":"Closed"},
         {"label":"Plumbing","data_type":"VALVE_STATE","index":6,"true_label":"Retracted","false_label":"Extended"}
     ]);
-    fn labels(value: &serde_json::Value, mappings: &mut serde_json::Value) {
+    fn labels(value: &serde_json::Value, table: &serde_json::Value, mappings: &mut BTreeMap<u64, serde_json::Value>) {
         if value["data_type"] == "VALVE_STATE"
             && let Some(items)=value.get("valves").and_then(|v|v.as_array()).or_else(||value.get("items").and_then(|v|v.as_array()))
         {
             for (ordinal,item) in items.iter().enumerate() {
-                if let Some(index)=item["index"].as_u64().filter(|i|*i<7) {
-                    if let Some(label)=item["label"].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize]["label"]=label.into();}
+                if let Some(index)=item["index"].as_u64().filter(|i|*i<128) {
+                    let mapping=mappings.entry(index).or_insert_with(|| table.get(index as usize).cloned().unwrap_or_else(||
+                        serde_json::json!({"label":format!("Valve {index}"),"data_type":"VALVE_STATE","index":index,"true_label":"Open","false_label":"Closed"})));
+                    if let Some(label)=item["label"].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mapping["label"]=label.into();}
                     let labels=value.get("valve_labels").and_then(|v|v.get(ordinal)).filter(|v|v.is_object()).or_else(||value.get("boolean_labels"));
-                    if let Some(labels)=labels { for field in ["true_label","false_label","unknown_label"] { if let Some(text)=labels[field].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mappings[index as usize][field]=text.into();} } }
+                    if let Some(labels)=labels { for field in ["true_label","false_label","unknown_label"] { if let Some(text)=labels[field].as_str().filter(|s|!s.is_empty()&&s.len()<=128) {mapping[field]=text.into();} } }
                 }
             }
         }
-        match value { serde_json::Value::Object(m)=>{for child in m.values(){labels(child,mappings);}},serde_json::Value::Array(a)=>{for child in a{labels(child,mappings);}},_=>{} }
+        match value { serde_json::Value::Object(m)=>{for child in m.values(){labels(child,table,mappings);}},serde_json::Value::Array(a)=>{for child in a{labels(child,table,mappings);}},_=>{} }
     }
-    labels(layout,&mut mappings);
-    mappings
+    let mut mappings=BTreeMap::new();
+    labels(layout,&table,&mut mappings);
+    if mappings.is_empty() { table } else { serde_json::Value::Array(mappings.into_values().collect()) }
 }
 
 #[component]
@@ -1079,8 +1084,28 @@ fn OfflineReplayImport() -> Element {
 fn portable_valve_mapping_keeps_configured_names_and_state_words() {
     let layout=serde_json::json!({"data_type":"VALVE_STATE","valves":null,"items":[{"index":1,"label":"Saved vent"}],"valve_labels":[{"true_label":"Opened","false_label":"Shut","unknown_label":"No saved sample"}]});
     let mappings=saved_valve_mappings(&layout);
-    assert_eq!(mappings[1]["label"],"Saved vent");
-    assert_eq!(mappings[1]["false_label"],"Shut");
-    assert_eq!(mappings[1]["unknown_label"],"No saved sample");
-    assert_eq!(mappings[4]["label"],"Nitrogen valve");
+    assert_eq!(mappings.as_array().unwrap().len(),1,"only the valve the layout names");
+    assert_eq!(mappings[0]["index"],1);
+    assert_eq!(mappings[0]["label"],"Saved vent");
+    assert_eq!(mappings[0]["false_label"],"Shut");
+    assert_eq!(mappings[0]["unknown_label"],"No saved sample");
+    let fallback=saved_valve_mappings(&serde_json::json!({}));
+    assert_eq!(fallback.as_array().unwrap().len(),7,"no VALVE_STATE block: the built-in order");
+    assert_eq!(fallback[4]["label"],"Nitrogen valve");
+}
+
+#[cfg(test)]
+#[test]
+fn portable_valve_mapping_follows_the_station_layout() {
+    let layout=crate::backend_contract::fixture("replay-export/flight")["layout"].clone();
+    let mappings=saved_valve_mappings(&layout);
+    let rows=mappings.as_array().unwrap();
+    assert_eq!(rows.iter().map(|m|m["index"].as_u64().unwrap()).collect::<Vec<_>>(),[0,1,2,3,4,5,6]);
+    assert_eq!(rows[1]["label"],"Vent","the layout's VALVE_STATE widget names, not the built-in table");
+    assert_eq!(rows[6]["label"],"Fill Lines");
+    // Another vehicle's valve beyond the built-in seven keeps its own name.
+    let other=serde_json::json!({"data_type":"VALVE_STATE","valves":[{"index":9,"label":"Main LOX"}]});
+    let mapped=saved_valve_mappings(&other);
+    assert_eq!(mapped.as_array().unwrap().len(),1);
+    assert_eq!((mapped[0]["index"].as_u64(),mapped[0]["label"].as_str()),(Some(9),Some("Main LOX")));
 }
