@@ -34,6 +34,76 @@ pub struct AntennaStatus {
     pub rrls: Option<StationFix>,
 }
 
+/// `GET /api/los_prediction`, read leniently: only what the watch needs,
+/// every field optional (older stations do not have the route at all).
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LosPrediction {
+    /// `idle`, `armed`, `predicting` or `resolved`.
+    pub state: Option<String>,
+    pub label: Option<String>,
+    pub since_fix_s: Option<f64>,
+    pub predicted_now: Option<LosPoint>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct LosPoint {
+    pub lat_deg: Option<f64>,
+    pub lon_deg: Option<f64>,
+    pub alt_msl_m: Option<f64>,
+}
+
+/// Label of the predicted rocket target when the station sends none.
+pub const PREDICTED_LABEL: &str = "Predicted: no signal";
+/// Id of the predicted rocket target (shown when `rocket` is selected).
+pub const PREDICTED_ROCKET_ID: &str = "rocket_predicted";
+
+/// The station's predicted rocket position while the rocket is silent.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PredictedFix {
+    pub lat: f64,
+    pub lon: f64,
+    pub alt_m: Option<f64>,
+    /// Time since the last real rocket fix, at send time.
+    pub since_fix_ms: i64,
+    pub label: String,
+}
+
+impl LosPrediction {
+    /// The predicted position, only while the station is `predicting` and
+    /// `predicted_now` is a valid position. `extra_age_ms` is how long ago
+    /// the phone received this status.
+    pub fn predicted_fix(&self, extra_age_ms: i64) -> Option<PredictedFix> {
+        if self.state.as_deref() != Some("predicting") {
+            return None;
+        }
+        let p = self.predicted_now.as_ref()?;
+        let (lat, lon) = (p.lat_deg?, p.lon_deg?);
+        if !geodesy::LatLon::new(lat, lon).valid() {
+            return None;
+        }
+        let since_fix_ms = self
+            .since_fix_s
+            .filter(|s| s.is_finite())
+            .map(|s| (s.max(0.0) * 1000.0).round() as i64)
+            .unwrap_or(0);
+        Some(PredictedFix {
+            lat,
+            lon,
+            alt_m: p.alt_msl_m.filter(|a| a.is_finite()),
+            since_fix_ms: since_fix_ms.saturating_add(extra_age_ms.max(0)),
+            label: self
+                .label
+                .as_deref()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .unwrap_or(PREDICTED_LABEL)
+                .to_string(),
+        })
+    }
+}
+
 /// A telemetry sample: value and wall-clock receive time.
 pub type Sample = (f64, i64);
 
@@ -54,6 +124,10 @@ pub struct Inputs<'a> {
     /// Rocket position from the phone's own telemetry store, as a fallback
     /// when antenna status is unavailable: `(lat, lon, alt, received_ms)`.
     pub rocket_from_telemetry: Option<(f64, f64, Option<f64>, i64)>,
+    /// The station's loss-of-signal prediction while it is `predicting`;
+    /// sent as `rocket_predicted` right after `rocket` when `rocket` is a
+    /// compass target.
+    pub rocket_predicted: Option<PredictedFix>,
     pub settings: &'a WatchSettings,
     /// The GS's watch action list for this account; empty shows no actions.
     pub catalog: &'a [super::actions::CatalogAction],
@@ -240,8 +314,27 @@ fn station_target(
             fix.source.clone()
         },
         fallback: fix.manual,
+        predicted: false,
         demo_offset: None,
     })
+}
+
+fn predicted_target(fix: &PredictedFix) -> Target {
+    Target {
+        id: PREDICTED_ROCKET_ID,
+        label: fix.label.clone(),
+        lat: fix.lat,
+        lon: fix.lon,
+        alt_m: fix.alt_m,
+        age_ms: fix.since_fix_ms.max(0),
+        // A prediction is never stale by age: its age is the time since
+        // the last fix, which is exactly why it exists.
+        stale: false,
+        source: "Prediction".into(),
+        fallback: false,
+        predicted: true,
+        demo_offset: None,
+    }
 }
 
 pub fn targets(input: &Inputs<'_>) -> Vec<Target> {
@@ -283,6 +376,9 @@ pub fn targets(input: &Inputs<'_>) -> Vec<Target> {
             )
         });
         out.extend(target);
+        if *id == "rocket" {
+            out.extend(input.rocket_predicted.as_ref().map(predicted_target));
+        }
     }
     out
 }
@@ -353,6 +449,7 @@ pub fn demo(seq: u64, now_ms: i64, settings: &WatchSettings, account: Account) -
         telemetry: &demo_values,
         antenna: None,
         rocket_from_telemetry: None,
+        rocket_predicted: None,
         settings,
         catalog: &[],
         policy: None,
@@ -376,6 +473,7 @@ pub fn demo(seq: u64, now_ms: i64, settings: &WatchSettings, account: Account) -
             stale: false,
             source: "Example data".into(),
             fallback: false,
+            predicted: false,
             demo_offset: Some(DemoOffset {
                 north_m: *n,
                 east_m: *e,
@@ -422,6 +520,7 @@ mod tests {
             telemetry,
             antenna,
             rocket_from_telemetry: None,
+            rocket_predicted: None,
             settings,
             catalog: &[],
             policy: None,
@@ -601,6 +700,75 @@ mod tests {
         let mut i = input(&settings, &none, None);
         i.rocket_from_telemetry = Some((32.99, -106.97, None, 98_000));
         assert!(build(&i).targets.is_empty());
+    }
+
+    /// `predicted_target` vectors: the phone relays the station's
+    /// loss-of-signal prediction as the same `rocket_predicted` target the
+    /// GS puts in `/api/watch/status`, right after the rocket.
+    #[test]
+    fn predicted_target_vectors_match_relayed_prediction() {
+        let raw = include_str!("../../../watch/test-vectors.json");
+        let v: serde_json::Value = serde_json::from_str(raw).unwrap();
+        let p = &v["predicted_target"];
+        let los: LosPrediction = serde_json::from_value(p["los_prediction"].clone()).unwrap();
+        for case in p["not_predicting"].as_array().unwrap() {
+            let other: LosPrediction = serde_json::from_value(case.clone()).unwrap();
+            assert_eq!(other.predicted_fix(0), None, "{case}");
+        }
+        let none = |_: &str, _: Option<&str>, _: usize| None;
+        let status = AntennaStatus {
+            rocket: Some(StationFix {
+                latitude: 32.99,
+                longitude: -106.97,
+                altitude_m: Some(2500.0),
+                age_ms: 12_300,
+                stale: false,
+                manual: false,
+                source: "FC GPS".into(),
+            }),
+            ..AntennaStatus::default()
+        };
+        let settings = WatchSettings::default();
+        let mut i = input(&settings, &none, Some((&status, 0)));
+        i.rocket_predicted = los.predicted_fix(0);
+        let s = build(&i);
+        let ids: Vec<_> = s.targets.iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["rocket", PREDICTED_ROCKET_ID]);
+        let json = serde_json::to_value(&s.targets).unwrap();
+        assert_eq!(json[1], p["expect_target"]);
+        assert_eq!(json[0]["predicted"], false, "always serialized");
+        // The rocket item still reads the real fix.
+        assert_eq!(s.items["rocket_fix_age"].text, "12s");
+
+        // The prediction rides on the rocket target selection.
+        let mut settings = WatchSettings::default();
+        settings.compass.targets = vec!["ground_station".into()];
+        let mut i = input(&settings, &none, Some((&status, 0)));
+        i.rocket_predicted = los.predicted_fix(0);
+        assert!(build(&i).targets.is_empty());
+    }
+
+    #[test]
+    fn prediction_is_lenient_and_defaults_its_label() {
+        let los: LosPrediction = serde_json::from_str(
+            r#"{"state":"predicting","label":null,"since_fix_s":null,"unknown":1,
+                "predicted_now":{"lat_deg":32.99,"lon_deg":-106.97,"alt_msl_m":null}}"#,
+        )
+        .unwrap();
+        let fix = los.predicted_fix(2_000).unwrap();
+        assert_eq!(
+            (fix.label.as_str(), fix.since_fix_ms, fix.alt_m),
+            (PREDICTED_LABEL, 2_000, None)
+        );
+        // Without a rocket fix the prediction still shows (it is all there is).
+        let none = |_: &str, _: Option<&str>, _: usize| None;
+        let settings = WatchSettings::default();
+        let mut i = input(&settings, &none, None);
+        i.rocket_predicted = Some(fix);
+        let s = build(&i);
+        assert_eq!(s.targets.len(), 1);
+        assert!(s.targets[0].predicted && !s.targets[0].stale);
+        assert_eq!(s.items["rocket_fix_age"].text, "--");
     }
 
     #[test]

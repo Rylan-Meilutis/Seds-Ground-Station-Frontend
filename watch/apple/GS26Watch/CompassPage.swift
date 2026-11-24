@@ -9,6 +9,11 @@ import WatchCore
 /// otherwise, centred on the watch (or the target before the first fix) and
 /// zoomed to fit the watch and the target. The Digital Crown zooms in and
 /// out from the fitted zoom; switching target returns to it.
+///
+/// While the station predicts the rocket position after losing its signal,
+/// `rocket_predicted` follows the rocket: pink, a hollow arrow and a dashed
+/// ring on the map, labelled "Predicted: no signal", its age read as the
+/// time since the last fix.
 struct CompassPage: View {
     /// This page is the one on screen (crown focus).
     let visible: Bool
@@ -69,10 +74,11 @@ struct CompassPage: View {
                                      minZ: MapTiles.minFitZoom, maxZ: MapTiles.maxFitZoom)
             } ?? 15
             let zoom = min(max(fit + zoomOffset, MapTiles.minViewZoom), MapTiles.maxViewZoom)
-            let wanted = Set(link.settings?.compass.targets ?? [])
+            let wanted = link.settings?.compass.targets ?? []
             let markers = targets.compactMap { t -> MapMarker? in
-                guard wanted.isEmpty || wanted.contains(t.id), let p = Compass.position(of: t, watch: watch) else { return nil }
-                return MapMarker(id: t.id, position: p, selected: t.id == selected.id, stale: t.stale)
+                guard Compass.wants(t.id, wanted: wanted), let p = Compass.position(of: t, watch: watch) else { return nil }
+                return MapMarker(id: t.id, position: p, selected: t.id == selected.id, stale: t.stale,
+                                 predicted: t.predicted)
             }
             MapBackground(
                 tiles: link.tiles,
@@ -89,6 +95,8 @@ struct CompassPage: View {
         VStack(spacing: 2) {
             HStack(spacing: 4) {
                 Text(t.label).font(.headline).lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                    .foregroundStyle(t.predicted ? Color.predicted : Color.primary)
                 if count > 1 { Image(systemName: "chevron.right.circle").font(.caption2) }
                 if t.stale {
                     Text("STALE")
@@ -106,7 +114,7 @@ struct CompassPage: View {
                 if let bearing = t.bearingText {
                     Text("\(bearing) \(t.north == .magnetic ? "M" : "T")")
                 }
-                Text("fix \(t.ageText)")
+                Text(t.ageLine)
             }
             .font(.caption2.monospacedDigit())
             .foregroundStyle(.secondary)
@@ -126,7 +134,8 @@ struct CompassPage: View {
         } else {
             VStack(spacing: 2) {
                 if let rotation = t.arrowRotation {
-                    ArrowView(rotation: rotation).opacity(location.needsCalibration ? 0.4 : 1)
+                    ArrowView(rotation: rotation, predicted: t.predicted)
+                        .opacity(location.needsCalibration ? 0.4 : 1)
                 }
                 if location.needsCalibration {
                     HintText("Move your wrist in a figure-8")
@@ -148,17 +157,24 @@ private struct HintText: View {
     }
 }
 
+extension Color {
+    /// Loss-of-signal prediction pink (#f472b6), shared with the station map.
+    static let predicted = Color(red: 244.0 / 255, green: 114.0 / 255, blue: 182.0 / 255)
+}
+
 /// Arrow that turns the short way round instead of spinning through 360.
+/// A predicted target gets a hollow pink arrow.
 struct ArrowView: View {
     let rotation: Double
+    var predicted = false
     @State private var shown: Double = 0
 
     var body: some View {
-        Image(systemName: "location.north.fill")
+        Image(systemName: predicted ? "location.north" : "location.north.fill")
             .resizable()
             .scaledToFit()
             .frame(width: 54, height: 54)
-            .foregroundStyle(.tint)
+            .foregroundStyle(predicted ? AnyShapeStyle(Color.predicted) : AnyShapeStyle(.tint))
             .rotationEffect(.degrees(shown))
             .animation(.easeOut(duration: 0.25), value: shown)
             .onChange(of: rotation, initial: true) {

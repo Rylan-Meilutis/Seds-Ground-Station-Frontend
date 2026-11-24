@@ -113,6 +113,61 @@ final class CompassTests: XCTestCase {
         XCTAssertTrue(Compass.displays(targets: [rocket, gs], settings: s, reading: CompassReading(), receivedAtMs: 0, nowMs: 0).isEmpty)
     }
 
+    /// `predicted_target` vectors from watch/test-vectors.json (the Wear OS
+    /// core checks the same ones in ModelTest.kt).
+    struct PredictedVectors: Decodable {
+        struct Expect: Decodable {
+            let id: String
+            let label: String
+            let predicted: Bool
+            let stale: Bool
+            let age_line: String
+        }
+        struct Case: Decodable {
+            let name: String
+            let compass_targets: [String]
+            let now_ms: Int64
+            let expect: [Expect]
+        }
+        struct Section: Decodable {
+            let expect_target: Target
+            let targets: [Target]
+            let compass: [Case]
+        }
+        let predicted_target: Section
+    }
+
+    func testPredictedTargetVectors() throws {
+        let packageDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let url = packageDir.appendingPathComponent("../../test-vectors.json").standardizedFileURL
+        let v = try JSONDecoder().decode(PredictedVectors.self, from: Data(contentsOf: url)).predicted_target
+        XCTAssertTrue(v.expect_target.predicted)
+        XCTAssertEqual(v.expect_target.id, Compass.predictedRocketId)
+        XCTAssertFalse(v.targets[2].predicted, "absent means not predicted")
+        XCTAssertGreaterThanOrEqual(v.compass.count, 3)
+        for c in v.compass {
+            var s = WatchSettings()
+            s.compass.targets = c.compass_targets
+            let got = Compass.displays(targets: v.targets, settings: s, reading: CompassReading(position: here),
+                                       receivedAtMs: 0, nowMs: c.now_ms)
+            XCTAssertEqual(got.map(\.id), c.expect.map(\.id), c.name)
+            for (d, e) in zip(got, c.expect) {
+                XCTAssertEqual(d.label, e.label, c.name)
+                XCTAssertEqual(d.predicted, e.predicted, c.name)
+                XCTAssertEqual(d.stale, e.stale, "\(c.name) \(e.id)")
+                XCTAssertEqual(d.ageLine, e.age_line, c.name)
+            }
+        }
+    }
+
+    func testPredictedTargetRidesOnRocket() {
+        XCTAssertTrue(Compass.wants("rocket_predicted", wanted: ["rocket"]))
+        XCTAssertTrue(Compass.wants("rocket_predicted", wanted: []))
+        XCTAssertFalse(Compass.wants("rocket_predicted", wanted: ["ground_station"]))
+        XCTAssertTrue(Compass.wants("rrls", wanted: ["rrls"]))
+    }
+
     func testClockText() {
         XCTAssertEqual(clockText(LaunchClock(kind: "tminus", ms: 5_000), elapsedMs: 1_500), "T- 00:03")
         XCTAssertEqual(clockText(LaunchClock(kind: "tminus", ms: 5_000), elapsedMs: 9_000), "T- 00:00")

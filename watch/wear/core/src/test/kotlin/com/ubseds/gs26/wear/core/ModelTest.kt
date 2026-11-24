@@ -1,14 +1,19 @@
 package com.ubseds.gs26.wear.core
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.long
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 
 class ModelTest {
     /** The documented example (docs/watch-companion.md) with the elided parts filled in. */
@@ -54,6 +59,7 @@ class ModelTest {
         assertEquals(1234.0, s.items["altitude"]!!.value!!, 0.0)
         assertNull(s.targets[1].altM)
         assertTrue(s.targets[1].fallback)
+        assertFalse("absent means not predicted", s.targets[1].predicted)
         assertEquals(1730000000000L, s.settings.updatedMs)
         assertEquals(5, s.settings.cycle.intervalS)
         assertEquals(15L, s.linkTimeoutS)
@@ -242,5 +248,48 @@ class ModelTest {
         assertEquals(Math.toDegrees(kotlin.math.atan2(400.0, 300.0)), Geodesy.normalizeDeg(v.arrowDeg!!), 0.05)
         // Without a watch fix there is nothing to offset from.
         assertNull(Compass.view(t, null, 0.0, 0.0, WatchSettings(), 0, 0).distanceM)
+    }
+
+    private fun vectorFile(): File {
+        System.getProperty("gs26.testVectors")?.let { File(it) }?.takeIf { it.isFile }?.let { return it }
+        var dir: File? = File("").absoluteFile
+        while (dir != null) {
+            listOf(File(dir, "test-vectors.json"), File(dir, "watch/test-vectors.json"))
+                .firstOrNull { it.isFile }?.let { return it }
+            dir = dir.parentFile
+        }
+        error("watch/test-vectors.json not found from ${File("").absolutePath}")
+    }
+
+    /** `predicted_target` vectors (CompassTests.swift checks the same ones). */
+    @Test
+    fun predictedTargetVectors() {
+        val v = Json.parseToJsonElement(vectorFile().readText()).jsonObject["predicted_target"]!!.jsonObject
+        fun target(e: JsonElement) = Protocol.json.decodeFromJsonElement(Target.serializer(), e)
+        val expectTarget = target(v["expect_target"]!!)
+        assertTrue(expectTarget.predicted)
+        assertEquals(Compass.PREDICTED_ROCKET_ID, expectTarget.id)
+        val targets = v["targets"]!!.jsonArray.map(::target)
+        assertFalse("absent means not predicted", targets[2].predicted)
+        val cases = v["compass"]!!.jsonArray.map { it.jsonObject }
+        assertTrue(cases.size >= 3)
+        val watch = LatLon(32.9904, -106.975)
+        for (c in cases) {
+            val name = c["name"]!!.jsonPrimitive.content
+            val wanted = c["compass_targets"]!!.jsonArray.map { it.jsonPrimitive.content }
+            val settings = WatchSettings().let { it.copy(compass = it.compass.copy(targets = wanted)) }
+            val snapshot = Snapshot(v = Protocol.VERSION, targets = targets, settings = settings)
+            val now = c["now_ms"]!!.jsonPrimitive.long
+            val got = Compass.orderedTargets(snapshot, settings)
+                .map { Compass.view(it, watch, null, 0.0, settings, 0, now) }
+            val expect = c["expect"]!!.jsonArray.map { it.jsonObject }
+            assertEquals(name, expect.map { it["id"]!!.jsonPrimitive.content }, got.map { it.id })
+            for ((d, e) in got.zip(expect)) {
+                assertEquals(name, e["label"]!!.jsonPrimitive.content, d.label)
+                assertEquals(name, e["predicted"]!!.jsonPrimitive.boolean, d.predicted)
+                assertEquals("$name ${d.id}", e["stale"]!!.jsonPrimitive.boolean, d.stale)
+                assertEquals(name, e["age_line"]!!.jsonPrimitive.content, d.ageLine)
+            }
+        }
     }
 }

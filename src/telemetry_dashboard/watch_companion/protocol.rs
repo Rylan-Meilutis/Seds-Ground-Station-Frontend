@@ -86,6 +86,10 @@ pub struct Target {
     pub source: String,
     /// Saved/manual position rather than a live GPS fix.
     pub fallback: bool,
+    /// Model estimate, not a fix: the station's loss-of-signal prediction
+    /// (`rocket_predicted`). Never stale by age; the age is the time since
+    /// the last real fix.
+    pub predicted: bool,
     /// Demo only: place the target relative to the watch's own position.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub demo_offset: Option<DemoOffset>,

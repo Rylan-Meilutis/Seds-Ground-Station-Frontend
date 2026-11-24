@@ -187,6 +187,12 @@ data class Target(
     val stale: Boolean = false,
     val source: String = "",
     val fallback: Boolean = false,
+    /**
+     * Model estimate, not a fix: the station's loss-of-signal prediction
+     * (`rocket_predicted`). Never stale by age; the age is the time since the
+     * last real fix. Absent (older phones/stations) means false.
+     */
+    val predicted: Boolean = false,
     @SerialName("demo_offset") val demoOffset: DemoOffset? = null,
 )
 

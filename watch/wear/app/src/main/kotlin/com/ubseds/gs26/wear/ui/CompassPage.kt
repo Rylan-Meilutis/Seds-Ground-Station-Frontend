@@ -32,6 +32,7 @@ import androidx.compose.ui.input.rotary.onRotaryScrollEvent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
@@ -65,6 +66,11 @@ import kotlin.math.abs
  * otherwise, centred on the watch (or the target before the first fix) and
  * zoomed to fit the watch and the target. Rotary input zooms; switching
  * target returns to the fitted zoom.
+ *
+ * While the station predicts the rocket position after losing its signal,
+ * `rocket_predicted` follows the rocket: pink, a hollow arrow and a dashed
+ * ring on the map, labelled "Predicted: no signal", its age read as the time
+ * since the last fix.
  */
 @Composable
 fun CompassPage(
@@ -145,7 +151,9 @@ fun CompassPage(
     ) {
         if (showMap && mapCenter != null) {
             val markers = targets.mapNotNull { t ->
-                Compass.position(t, watchPos)?.let { MapMarker(t.id, it, t.id == targets[selected].id, t.stale) }
+                Compass.position(t, watchPos)?.let {
+                    MapMarker(t.id, it, t.id == targets[selected].id, t.stale, predicted = t.predicted)
+                }
             }
             MapLayer(
                 cache = link.tiles,
@@ -155,11 +163,16 @@ fun CompassPage(
                 onVisible = { keys -> if (visible) link.fetchMissingTiles(keys) },
             )
         }
-        view.arrowDeg?.let { Arrow(it, if (view.stale) Dim else Color(0xFF4FC3F7)) }
+        view.arrowDeg?.let {
+            Arrow(it, if (view.predicted) Predicted else if (view.stale) Dim else Color(0xFF4FC3F7), hollow = view.predicted)
+        }
 
         Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(view.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    view.label, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1,
+                    color = if (view.predicted) Predicted else Color.Unspecified,
+                )
                 if (view.stale) {
                     Text(
                         "STALE", fontSize = 9.sp, color = Color.Black, fontWeight = FontWeight.Bold,
@@ -181,7 +194,7 @@ fun CompassPage(
                 else -> view.bearingText?.let { Text(it, fontSize = 12.sp) }
             }
             if (heading?.needsCalibration == true) Hint("Move watch in a figure-8", Amber)
-            Text("fix ${view.ageText}", fontSize = 10.sp, color = Dim)
+            Text(view.ageLine, fontSize = 10.sp, color = Dim)
             if (targets.size > 1) Text("${selected + 1}/${targets.size} · tap for next", fontSize = 9.sp, color = Dim)
         }
     }
@@ -192,9 +205,12 @@ private fun Hint(text: String, color: Color = Dim) {
     Text(text, fontSize = 11.sp, color = color, textAlign = TextAlign.Center, modifier = Modifier.padding(horizontal = 24.dp))
 }
 
-/** Arrow around the rim, pointing [deg] clockwise from 12 o'clock. */
+/** Loss-of-signal prediction pink (#f472b6), shared with the station map. */
+internal val Predicted = Color(0xFFF472B6)
+
+/** Arrow around the rim, pointing [deg] clockwise from 12 o'clock; [hollow] for a predicted target. */
 @Composable
-private fun Arrow(deg: Double, color: Color) {
+private fun Arrow(deg: Double, color: Color, hollow: Boolean = false) {
     Canvas(Modifier.fillMaxSize()) {
         rotate(deg.toFloat()) {
             val c = center
@@ -209,7 +225,7 @@ private fun Arrow(deg: Double, color: Color) {
                 lineTo(c.x - half, base)
                 close()
             }
-            drawPath(path, color)
+            if (hollow) drawPath(path, color, style = Stroke(width = 3f)) else drawPath(path, color)
         }
     }
 }

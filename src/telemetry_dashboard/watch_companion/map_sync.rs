@@ -68,12 +68,14 @@ pub fn set_id(tiles: &[String]) -> String {
 
 /// Centres of the tile set from the snapshot's targets: rocket first (the
 /// recovery target), then the ground station, then the RRLS. Demo targets
-/// (placed relative to the watch) are never centres.
+/// (placed relative to the watch) and predicted positions
+/// (`rocket_predicted`, a moving model estimate near the last rocket fix,
+/// which is already a centre) are never centres.
 pub fn centres_from_targets(targets: &[super::protocol::Target]) -> Vec<Centre> {
     ["rocket", "ground_station", "rrls"]
         .iter()
         .filter_map(|id| targets.iter().find(|t| t.id == *id))
-        .filter(|t| t.demo_offset.is_none())
+        .filter(|t| t.demo_offset.is_none() && !t.predicted)
         .filter(|t| super::geodesy::LatLon::new(t.lat, t.lon).valid())
         .map(|t| Centre {
             id: t.id.to_string(),
@@ -676,6 +678,7 @@ mod tests {
             stale: false,
             source: String::new(),
             fallback: false,
+            predicted: false,
             demo_offset: demo.then_some(DemoOffset {
                 north_m: 1.0,
                 east_m: 1.0,
@@ -691,5 +694,16 @@ mod tests {
             vec!["ground_station", "rrls"]
         );
         assert!(centres_from_targets(&[t("rocket", 32.9, true)]).is_empty());
+        let predicted = Target {
+            predicted: true,
+            ..t("rocket_predicted", 32.95, false)
+        };
+        assert_eq!(
+            centres_from_targets(&[predicted, t("rocket", 32.9, false)])
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["rocket"]
+        );
     }
 }

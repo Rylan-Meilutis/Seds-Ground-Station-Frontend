@@ -3945,5 +3945,220 @@
     "result": 0
    }
   ]
+ },
+ "_comment_predicted": "Predicted rocket position from the station's loss-of-signal prediction (docs/watch-companion.md 'Predicted rocket position'). los_prediction: GET /api/los_prediction as the phone polls it; expect_target: the rocket_predicted target the phone (and GS /api/watch/status) sends for it, received just now. not_predicting: answers that send no predicted target (not predicting, no or invalid predicted_now). compass: the watch's compass list for `targets` received at 0 ms, shown at now_ms with settings compass.targets (stale_after_s 30): rocket_predicted follows rocket whenever rocket is wanted (it is never in settings), is never stale by age, and its age line reads '<age> since last fix'; other targets read 'fix <age>'. A target without `predicted` is not predicted.",
+ "predicted_target": {
+  "los_prediction": {
+   "state": "predicting",
+   "label": "Predicted: no signal",
+   "advisory": true,
+   "settings": {
+    "enabled": true,
+    "timeout_s": 5
+   },
+   "last_fix": {
+    "t_ms": 0,
+    "lat_deg": 32.99,
+    "lon_deg": -106.97,
+    "alt_msl_m": 2500,
+    "alt_agl_m": 1610,
+    "ve_mps": 3.5,
+    "vn_mps": -1.0,
+    "vu_mps": -25.0,
+    "source": "FC GPS"
+   },
+   "signal_lost_ms": 0,
+   "since_fix_s": 12.3,
+   "phase": "drogue",
+   "predicted_now": {
+    "lat_deg": 32.9921,
+    "lon_deg": -106.9655,
+    "alt_msl_m": 2190.0,
+    "alt_agl_m": 1300,
+    "sigma_m": 25
+   },
+   "landing": null,
+   "station": null,
+   "from_station": null,
+   "wind_source": "manual",
+   "overlay": null,
+   "comparison": null,
+   "history": []
+  },
+  "not_predicting": [
+   {
+    "state": "armed",
+    "label": "Predicted: no signal",
+    "since_fix_s": 0.4,
+    "predicted_now": {
+     "lat_deg": 32.9921,
+     "lon_deg": -106.9655,
+     "alt_msl_m": 2190.0
+    }
+   },
+   {
+    "state": "resolved",
+    "label": "Predicted: no signal",
+    "since_fix_s": 30,
+    "predicted_now": {
+     "lat_deg": 32.9921,
+     "lon_deg": -106.9655,
+     "alt_msl_m": 2190.0
+    }
+   },
+   {
+    "state": "predicting",
+    "label": "Predicted: no signal",
+    "since_fix_s": 6,
+    "predicted_now": null
+   },
+   {
+    "state": "predicting",
+    "label": "Predicted: no signal",
+    "since_fix_s": 6,
+    "predicted_now": {
+     "lat_deg": null,
+     "lon_deg": -106.9655
+    }
+   },
+   {
+    "state": "predicting",
+    "label": "Predicted: no signal",
+    "since_fix_s": 6,
+    "predicted_now": {
+     "lat_deg": 999.0,
+     "lon_deg": -106.9655
+    }
+   },
+   {
+    "state": "idle",
+    "label": "Predicted: no signal",
+    "settings": {
+     "enabled": false,
+     "timeout_s": 5
+    }
+   }
+  ],
+  "expect_target": {
+   "id": "rocket_predicted",
+   "label": "Predicted: no signal",
+   "lat": 32.9921,
+   "lon": -106.9655,
+   "alt_m": 2190.0,
+   "age_ms": 12300,
+   "stale": false,
+   "source": "Prediction",
+   "fallback": false,
+   "predicted": true
+  },
+  "targets": [
+   {
+    "id": "rocket",
+    "label": "Rocket",
+    "lat": 32.99,
+    "lon": -106.97,
+    "alt_m": 2500.0,
+    "age_ms": 12300,
+    "stale": false,
+    "source": "FC GPS",
+    "fallback": false,
+    "predicted": false
+   },
+   {
+    "id": "rocket_predicted",
+    "label": "Predicted: no signal",
+    "lat": 32.9921,
+    "lon": -106.9655,
+    "alt_m": 2190.0,
+    "age_ms": 12300,
+    "stale": false,
+    "source": "Prediction",
+    "fallback": false,
+    "predicted": true
+   },
+   {
+    "id": "ground_station",
+    "label": "Ground station (saved)",
+    "lat": 32.98,
+    "lon": -106.98,
+    "alt_m": null,
+    "age_ms": 0,
+    "stale": false,
+    "source": "Saved GroundStation (manual)",
+    "fallback": true
+   }
+  ],
+  "compass": [
+   {
+    "name": "prediction_follows_rocket",
+    "compass_targets": [
+     "ground_station",
+     "rocket"
+    ],
+    "now_ms": 20000,
+    "expect": [
+     {
+      "id": "ground_station",
+      "label": "Ground station (saved)",
+      "predicted": false,
+      "stale": false,
+      "age_line": "fix 20s"
+     },
+     {
+      "id": "rocket",
+      "label": "Rocket",
+      "predicted": false,
+      "stale": true,
+      "age_line": "fix 32s"
+     },
+     {
+      "id": "rocket_predicted",
+      "label": "Predicted: no signal",
+      "predicted": true,
+      "stale": false,
+      "age_line": "32s since last fix"
+     }
+    ]
+   },
+   {
+    "name": "rocket_not_wanted_no_prediction",
+    "compass_targets": [
+     "ground_station"
+    ],
+    "now_ms": 0,
+    "expect": [
+     {
+      "id": "ground_station",
+      "label": "Ground station (saved)",
+      "predicted": false,
+      "stale": false,
+      "age_line": "fix 0s"
+     }
+    ]
+   },
+   {
+    "name": "prediction_never_stale_by_age",
+    "compass_targets": [
+     "rocket"
+    ],
+    "now_ms": 600000,
+    "expect": [
+     {
+      "id": "rocket",
+      "label": "Rocket",
+      "predicted": false,
+      "stale": true,
+      "age_line": "fix 10m 12s"
+     },
+     {
+      "id": "rocket_predicted",
+      "label": "Predicted: no signal",
+      "predicted": true,
+      "stale": false,
+      "age_line": "10m 12s since last fix"
+     }
+    ]
+   }
+  ]
  }
 }

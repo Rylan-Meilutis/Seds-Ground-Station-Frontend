@@ -11,6 +11,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
@@ -29,7 +30,14 @@ import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /** A target drawn on the map. */
-data class MapMarker(val id: String, val pos: LatLon, val selected: Boolean, val stale: Boolean)
+data class MapMarker(
+    val id: String,
+    val pos: LatLon,
+    val selected: Boolean,
+    val stale: Boolean,
+    /** The station's predicted position (no signal): a dashed pink ring. */
+    val predicted: Boolean = false,
+)
 
 /** What the map draws: centre, zoom, rotation (map degrees clockwise from north-up). */
 data class MapView(val center: LatLon, val zoom: Double, val rotationDeg: Double, val user: LatLon?)
@@ -99,10 +107,28 @@ fun MapLayer(
             }
             val user = view.user?.let(toScreen)
             markers.firstOrNull { it.selected }?.let { m ->
-                if (user != null) drawLine(Color.White.copy(alpha = 0.8f), user, toScreen(m.pos), strokeWidth = 2f)
+                if (user == null) return@let
+                if (m.predicted) {
+                    drawLine(
+                        Predicted.copy(alpha = 0.9f), user, toScreen(m.pos), strokeWidth = 2f,
+                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(6f, 5f)),
+                    )
+                } else {
+                    drawLine(Color.White.copy(alpha = 0.8f), user, toScreen(m.pos), strokeWidth = 2f)
+                }
             }
             for (m in markers) {
                 val at = toScreen(m.pos)
+                if (m.predicted) {
+                    // Hollow dashed ring: an estimate, not a fix.
+                    val ring = if (m.selected) 9f else 7f
+                    drawCircle(Color.Black.copy(alpha = 0.6f), ring, at, style = Stroke(4f))
+                    drawCircle(
+                        Predicted, ring, at,
+                        style = Stroke(2.5f, pathEffect = PathEffect.dashPathEffect(floatArrayOf(5f, 4f))),
+                    )
+                    continue
+                }
                 val color = (MarkerColors[m.id] ?: Color.White).let { if (m.stale) it.copy(alpha = 0.5f) else it }
                 val radius = if (m.selected) 7f else 5f
                 drawCircle(color, radius, at)

@@ -21,16 +21,30 @@ data class CompassTarget(
     val fallbackLabel: String?,
     /** "Within N m — look around" when closer than [Compass.NEAR_M]. */
     val nearText: String?,
-)
+    /** The station's predicted position (no signal), not a fix: drawn pink and hollow, never stale by age. */
+    val predicted: Boolean = false,
+) {
+    /** Age line under the bearing: `fix 12s`, or `12s since last fix` for a predicted target. */
+    val ageLine: String get() = if (predicted) "$ageText since last fix" else "fix $ageText"
+}
 
 object Compass {
     const val NEAR_M = 30.0
     const val FALLBACK_LABEL = "saved position"
+    /** The station's predicted rocket position while the rocket is silent. */
+    const val PREDICTED_ROCKET_ID = "rocket_predicted"
 
-    /** Snapshot targets in the order configured in settings, skipping ones the phone did not send. */
+    /**
+     * Snapshot targets in the order configured in settings, skipping ones the
+     * phone did not send. The predicted rocket position is never in settings
+     * and follows `rocket`.
+     */
     fun orderedTargets(snapshot: Snapshot, settings: WatchSettings): List<Target> {
         val byId = snapshot.targets.associateBy { it.id }
-        return settings.compass.targets.mapNotNull { byId[it] }
+        return settings.compass.targets
+            .filter { it != PREDICTED_ROCKET_ID }
+            .flatMap { id -> if (id == "rocket") listOf(id, PREDICTED_ROCKET_ID) else listOf(id) }
+            .mapNotNull { byId[it] }
     }
 
     /** Text for a true-north angle in the user's chosen reference. */
@@ -71,9 +85,11 @@ object Compass {
             } else null,
             ageMs = age,
             ageText = Format.age(age),
-            stale = target.stale || age > settings.compass.staleAfterS * 1000L,
+            // A prediction's age is the time since the last fix, so it never goes stale by age.
+            stale = target.stale || (!target.predicted && age > settings.compass.staleAfterS * 1000L),
             fallbackLabel = if (target.fallback) FALLBACK_LABEL else null,
             nearText = if (near) "Within ${Format.distance(distance!!, settings.metric)} — look around" else null,
+            predicted = target.predicted,
         )
     }
 

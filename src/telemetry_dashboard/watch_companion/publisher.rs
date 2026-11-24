@@ -6,7 +6,7 @@
 //! sign-in and connection failures.
 use super::protocol::{Account, Clock, Mode, Station, WatchMessage};
 use super::settings::{Editor, WatchSettings};
-use super::snapshot::{self, AntennaStatus, Inputs};
+use super::snapshot::{self, AntennaStatus, Inputs, LosPrediction, PredictedFix};
 use super::{PUBLISH_REQUESTED, SYNC_REQUESTED, WATCH_SYNC, bridge, registry, sleep_ms};
 use crate::telemetry_dashboard::types::BoardStatusEntry;
 use crate::telemetry_dashboard::{
@@ -30,6 +30,47 @@ const MAP_TICK_MS: f64 = 15_000.0;
 /// Last antenna status and the monotonic time it arrived, kept so a
 /// `no_station` snapshot can still carry the last known targets.
 static LAST_ANTENNA: Mutex<Option<(AntennaStatus, f64)>> = Mutex::new(None);
+
+/// Last `GET /api/los_prediction` and the monotonic time it arrived. Polled
+/// next to the antenna status so the phone can relay the station's
+/// predicted rocket position (`rocket_predicted`) like `/api/watch/status`.
+static LAST_LOS: Mutex<Option<(LosPrediction, f64)>> = Mutex::new(None);
+/// A prediction older than this is dropped rather than shown frozen.
+const PREDICTION_MAX_AGE_MS: f64 = 30_000.0;
+/// After this many 404s in a row (a station without the route) the
+/// prediction poll slows to `LOS_MISSING_INTERVAL_MS`.
+const LOS_MISSING_AFTER: u32 = 3;
+const LOS_MISSING_INTERVAL_MS: f64 = 30_000.0;
+
+/// The station's current predicted rocket position, if the last
+/// prediction poll is recent and says `predicting`.
+fn last_prediction(now: f64) -> Option<PredictedFix> {
+    let (status, at) = LAST_LOS.lock().ok()?.clone()?;
+    prediction_at(&status, now - at)
+}
+
+fn prediction_at(status: &LosPrediction, age_ms: f64) -> Option<PredictedFix> {
+    let age_ms = age_ms.max(0.0);
+    if age_ms > PREDICTION_MAX_AGE_MS {
+        return None;
+    }
+    status.predicted_fix(age_ms as i64)
+}
+
+/// `http_get_json` reports the HTTP status in its error text.
+fn is_not_found(err: &str) -> bool {
+    err.contains("(404)")
+}
+
+/// Prediction poll interval: the antenna interval, slowed down while the
+/// station keeps answering 404 (older station).
+fn los_interval(antenna_interval: f64, missing: u32) -> f64 {
+    if missing >= LOS_MISSING_AFTER {
+        antenna_interval.max(LOS_MISSING_INTERVAL_MS)
+    } else {
+        antenna_interval
+    }
+}
 
 /// Snapshot sequence shared by every publisher, so the watch never sees it
 /// go backwards when the phone moves between the Connect screen and a
@@ -244,6 +285,7 @@ fn no_station_snapshot(
         telemetry: &none,
         antenna: antenna.as_ref().map(|(s, at)| (s, (now - at) as i64)),
         rocket_from_telemetry: None,
+        rocket_predicted: last_prediction(now),
         settings,
         catalog,
         policy: None,
@@ -346,6 +388,12 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
         let mut last_direct = f64::NEG_INFINITY;
         let mut last_map = f64::NEG_INFINITY;
         let mut last_antenna_poll = f64::NEG_INFINITY;
+        let mut last_los_poll = f64::NEG_INFINITY;
+        let mut los_missing = 0u32;
+        // A prediction from the previous station must not carry over.
+        if let Ok(mut slot) = LAST_LOS.lock() {
+            *slot = None;
+        }
         let mut was_eligible = false;
         loop {
             let now = monotonic_now_ms();
@@ -393,6 +441,32 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                         *slot = Some((status, monotonic_now_ms()));
                     }
                 }
+                // The prediction only matters while the rocket is a compass target.
+                let wants_prediction = settings.compass_enabled()
+                    && settings.compass.targets.iter().any(|t| t == "rocket");
+                if wants_prediction && now - last_los_poll >= los_interval(antenna_interval, los_missing) {
+                    last_los_poll = now;
+                    match crate::telemetry_dashboard::http_get_json::<LosPrediction>(
+                        "/api/los_prediction",
+                    )
+                    .await
+                    {
+                        Ok(status) => {
+                            los_missing = 0;
+                            if let Ok(mut slot) = LAST_LOS.lock() {
+                                *slot = Some((status, monotonic_now_ms()));
+                            }
+                        }
+                        Err(err) if is_not_found(&err) => {
+                            los_missing = los_missing.saturating_add(1);
+                            if let Ok(mut slot) = LAST_LOS.lock() {
+                                *slot = None;
+                            }
+                        }
+                        // Transient failures keep the last answer until it ages out.
+                        Err(_) => {}
+                    }
+                }
                 if rate.due(monotonic_now_ms(), active, &settings) {
                     let seq = next_seq();
                     let antenna = LAST_ANTENNA.lock().ok().and_then(|g| g.clone());
@@ -428,6 +502,7 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                             .as_ref()
                             .map(|(s, at)| (s, (monotonic_now_ms() - at) as i64)),
                         rocket_from_telemetry: rocket_from_telemetry(),
+                        rocket_predicted: last_prediction(monotonic_now_ms()),
                         settings: &settings,
                         catalog: &catalog,
                         policy: Some(&policy),
@@ -537,6 +612,23 @@ mod tests {
         assert_eq!(value["station"]["link"], "offline");
         assert_eq!(value["station"]["address"], "");
         assert!(choosing.seq > sign_in.seq);
+    }
+
+    #[test]
+    fn prediction_relay_ages_out_and_backs_off_on_missing_route() {
+        let status: LosPrediction = serde_json::from_str(
+            r#"{"state":"predicting","label":"Predicted: no signal","since_fix_s":12.3,
+                "predicted_now":{"lat_deg":31.7591,"lon_deg":-102.039,"alt_msl_m":2190}}"#,
+        )
+        .unwrap();
+        let fix = prediction_at(&status, 1_500.0).unwrap();
+        assert_eq!(fix.since_fix_ms, 13_800, "poll age adds to the time since the fix");
+        assert!(prediction_at(&status, PREDICTION_MAX_AGE_MS + 1.0).is_none());
+        assert!(is_not_found("Export request failed (404): Not Found"));
+        assert!(!is_not_found("HTTP GET /api/los_prediction timed out"));
+        assert_eq!(los_interval(1_000.0, LOS_MISSING_AFTER - 1), 1_000.0);
+        assert_eq!(los_interval(1_000.0, LOS_MISSING_AFTER), LOS_MISSING_INTERVAL_MS);
+        assert_eq!(los_interval(60_000.0, LOS_MISSING_AFTER), 60_000.0);
     }
 
     #[test]

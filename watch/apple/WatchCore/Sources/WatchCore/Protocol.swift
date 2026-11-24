@@ -151,10 +151,15 @@ public struct Target: Decodable, Equatable {
     public var source: String
     /// Saved/manual position rather than a live GPS fix.
     public var fallback: Bool
+    /// Model estimate, not a fix: the station's loss-of-signal prediction
+    /// (`rocket_predicted`). Never stale by age; the age is the time since
+    /// the last real fix. Absent (older phones/stations) means false.
+    public var predicted: Bool
     public var demoOffset: DemoOffset?
 
     enum CodingKeys: String, CodingKey {
-        case id, label, lat, lon, altM = "alt_m", ageMs = "age_ms", stale, source, fallback, demoOffset = "demo_offset"
+        case id, label, lat, lon, altM = "alt_m", ageMs = "age_ms", stale, source, fallback, predicted
+        case demoOffset = "demo_offset"
     }
 
     public init(from decoder: Decoder) throws {
@@ -168,6 +173,7 @@ public struct Target: Decodable, Equatable {
         stale = c.soft(.stale, false)
         source = c.soft(.source, "")
         fallback = c.soft(.fallback, false)
+        predicted = c.soft(.predicted, false)
         demoOffset = c.softOptional(.demoOffset)
     }
 }

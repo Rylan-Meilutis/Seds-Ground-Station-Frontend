@@ -37,11 +37,26 @@ public struct TargetDisplay: Equatable, Identifiable {
     public var ageText: String
     public var savedPosition: Bool
     public var savedPositionLabel: String? { savedPosition ? "saved position" : nil }
+    /// The station's predicted position (no signal), not a fix: drawn as a
+    /// pink hollow ring, never stale by age.
+    public var predicted: Bool = false
+    /// Age line under the bearing: `fix 12s`, or `12s since last fix` for a
+    /// predicted target.
+    public var ageLine: String { predicted ? "\(ageText) since last fix" : "fix \(ageText)" }
 }
 
 public enum Compass {
     /// Inside this radius GPS and compass error dominate the arrow.
     public static let nearRadiusM = 30.0
+    /// The station's predicted rocket position while the rocket is silent.
+    public static let predictedRocketId = "rocket_predicted"
+
+    /// Whether the compass shows target `id` for the configured target ids:
+    /// the predicted rocket position is never in settings and rides on
+    /// `rocket`.
+    public static func wants(_ id: String, wanted: [String]) -> Bool {
+        wanted.isEmpty || wanted.contains(id) || (id == predictedRocketId && wanted.contains("rocket"))
+    }
 
     /// Target position; demo targets sit at the watch position plus offset.
     public static func position(of target: Target, watch: LatLon?) -> LatLon? {
@@ -63,7 +78,9 @@ public enum Compass {
     ) -> TargetDisplay {
         let metric = settings.metric
         let ageMs = target.ageMs + max(0, nowMs - receivedAtMs)
-        let stale = target.stale || ageMs > Int64(settings.compass.staleAfterS) * 1000
+        // A prediction's age is the time since the last fix, so it never
+        // goes stale by age.
+        let stale = target.stale || (!target.predicted && ageMs > Int64(settings.compass.staleAfterS) * 1000)
         var distance: Double?
         var bearing: Double?
         if let watch = reading.position, let pos = position(of: target, watch: watch) {
@@ -95,16 +112,22 @@ public enum Compass {
             stale: stale,
             ageMs: ageMs,
             ageText: formatAge(ageMs),
-            savedPosition: target.fallback
+            savedPosition: target.fallback,
+            predicted: target.predicted
         )
     }
 
-    /// Targets in the order chosen in settings (only those the phone sent).
+    /// Targets in the order chosen in settings (only those the phone sent),
+    /// with `rocket_predicted` right after `rocket`.
     public static func displays(
         targets: [Target], settings: WatchSettings, reading: CompassReading, receivedAtMs: Int64, nowMs: Int64
     ) -> [TargetDisplay] {
-        let wanted = settings.compass.targets
-        let ordered = wanted.isEmpty ? targets : wanted.compactMap { id in targets.first { $0.id == id } }
+        let wanted = settings.compass.targets.filter { $0 != predictedRocketId }
+        let ordered = wanted.isEmpty ? targets : wanted.flatMap { id -> [Target] in
+            var ids = [id]
+            if id == "rocket" { ids.append(predictedRocketId) }
+            return ids.compactMap { i in targets.first { $0.id == i } }
+        }
         return ordered.map {
             display($0, settings: settings, reading: reading, receivedAtMs: receivedAtMs, nowMs: nowMs)
         }

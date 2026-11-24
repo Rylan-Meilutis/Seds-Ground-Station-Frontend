@@ -254,8 +254,8 @@ Snapshot (phone → watch), abridged:
            "actions":[{"cmd":"Abort","label":"Abort","abort":true}]},
           {"id":"cycle","kind":"cycle","title":"Cycle","items":[]},
           {"id":"compass","kind":"compass","title":"Recovery","items":[]}],
- "targets":[{"id":"rocket","label":"Rocket","lat":32.99,"lon":-106.97,"alt_m":1401.0,"age_ms":3000,"stale":false,"source":"Rocket GPS","fallback":false},
-            {"id":"ground_station","label":"Ground station","lat":32.98,"lon":-106.98,"alt_m":null,"age_ms":0,"stale":false,"source":"Saved GroundStation (manual)","fallback":true}],
+ "targets":[{"id":"rocket","label":"Rocket","lat":32.99,"lon":-106.97,"alt_m":1401.0,"age_ms":3000,"stale":false,"source":"Rocket GPS","fallback":false,"predicted":false},
+            {"id":"ground_station","label":"Ground station","lat":32.98,"lon":-106.98,"alt_m":null,"age_ms":0,"stale":false,"source":"Saved GroundStation (manual)","fallback":true,"predicted":false}],
  "settings":{ "...": "WatchSettings, below" },
  "catalog":{"items":[{"id":"altitude","label":"Altitude","group":"Trajectory"}],"pages":[...all pages...],"targets":[{"id":"rocket","label":"Rocket"}]},
  "actions":{"Abort":{"enabled":true}},
@@ -285,6 +285,8 @@ Snapshot (phone → watch), abridged:
 * Ages (`age_ms`) are at send time; the watch adds time since it received the
   snapshot. A target is stale when `stale` is true or its current age exceeds
   `settings.compass.stale_after_s`.
+* `predicted` (always sent; a watch treats it as false when absent) marks a
+  model estimate rather than a fix. See "Predicted rocket position" below.
 * `demo_offset:{north_m,east_m}` appears only in demo mode: the watch places
   that target at its own position plus the offset so the compass can be
   practised anywhere.
@@ -368,6 +370,42 @@ Both watches use the same pages and the same logic, checked against the
   N m — look around" instead of trusting the arrow.
 * `watch/test-vectors.json` is checked by the Rust, Swift and Kotlin tests.
 
+### Predicted rocket position
+
+When the station loses the rocket's signal in flight, its loss-of-signal
+prediction (GroundStation26 `GET /api/los_prediction`, state `predicting`)
+estimates where the rocket is now. The watch gets that estimate as an extra
+target:
+
+```json
+{"id":"rocket_predicted","label":"Predicted: no signal","lat":31.7591,"lon":-102.039,"alt_m":2190.0,
+ "age_ms":12300,"stale":false,"source":"Prediction","fallback":false,"predicted":true}
+```
+
+* `age_ms` is the time since the last real rocket fix (the station's
+  `since_fix_s`), not the age of the estimate. `stale` is false: a
+  prediction is never stale by age, because its age is the reason it exists.
+* The station puts it in `/api/watch/status` while predicting (direct link).
+  The phone builds its targets from `/api/antenna/status`, so it also polls
+  `GET /api/los_prediction` next to the antenna poll (same interval, and only
+  while the compass shows the rocket) and relays it: right after `rocket`,
+  only when `rocket` is a compass target, only while `state` is `predicting`
+  with a valid `predicted_now`, label from the station (default
+  "Predicted: no signal"). A prediction the phone received more than 30 s
+  ago is dropped rather than shown frozen; a station without the route
+  (404 three times in a row) is asked only every 30 s.
+* `rocket_predicted` is never in `settings.compass.targets`: the compass
+  lists it right after `rocket` whenever `rocket` is selected (and not
+  otherwise). Tap cycles to it like any target. The rocket's own items
+  (`rocket_fix_age`) keep using the real `rocket` target.
+* Drawn distinctly in the LOS-prediction pink `#f472b6`: the label
+  "Predicted: no signal" in pink, a hollow arrow, the age line
+  "12s since last fix" (real targets read "fix 12s"), and on the map a
+  hollow dashed pink ring with a dashed pink line from the watch when
+  selected. The last real fix stays drawn as the normal rocket marker.
+* `predicted_target` vectors cover parsing, the relayed target and the
+  compass order, staleness and age line.
+
 ## Map background
 
 The compass draws the station's map under its arrow, so it reads like a map.
@@ -387,7 +425,8 @@ for an eligible user (signed in, paired watch with the app installed) with
 "Map background" on while the dashboard is connected to a station.
 
 * Centres: the snapshot's targets in priority order: rocket (last fix),
-  ground station, RRLS. Demo targets are never centres.
+  ground station, RRLS. Demo targets and the predicted rocket position are
+  never centres (the rocket's last fix already is).
 * Plan (`map_tiles::coverage`, `coverage` vectors): zooms 11–15 with radii
   10, 5, 2.5, 1.2 and 0.6 km (a watch face shows about 0.5–10 km across
   them), each clamped to the station's `max_native_zoom` from
@@ -429,8 +468,10 @@ for an eligible user (signed in, paired watch with the app installed) with
   returns to the fitted zoom. Missing levels are cut from the nearest cached
   ancestor (`ancestor` vectors), so zooms between and beyond the sent
   levels still show imagery. Markers: rocket orange, ground station green,
-  RRLS blue (dimmed when stale), the watch as a blue dot, a line from the
-  watch to the selected target and a red north tick on the rim. The imagery
+  RRLS blue (dimmed when stale), the predicted rocket position as a hollow
+  dashed pink ring, the watch as a blue dot, a line from the watch to the
+  selected target (dashed pink to a prediction) and a red north tick on the
+  rim. The imagery
   is dimmed so the compass text stays readable.
 * No tiles for the view (map off, nothing cached, far from every centre):
   the plain compass, exactly as before.

@@ -49,6 +49,7 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(s.targets.count, 2)
         XCTAssertNil(s.targets[1].altM)
         XCTAssertTrue(s.targets[1].fallback)
+        XCTAssertFalse(s.targets[1].predicted, "absent means not predicted")
         XCTAssertEqual(s.settings?.updatedMs, 1_730_000_000_000)
         XCTAssertEqual(s.settings?.compass.north, .trueNorth)
         XCTAssertEqual(s.settings?.cycle.intervalS, 5)
@@ -62,7 +63,7 @@ final class ModelTests: XCTestCase {
         let json = """
         {"v":1,"seq":1,"mode":"replay","items":{"a":{"text":"5"},"b":42},
          "pages":[{"id":"map","kind":"map","title":"Map","items":[]},{"kind":"items"},{"id":"x","kind":"items","title":"X","items":["a"]}],
-         "targets":[{"id":"rocket","lat":1.0,"lon":2.0,"demo_offset":{"north_m":10,"east_m":-5}},{"id":"broken","lat":"n/a"}]}
+         "targets":[{"id":"rocket","lat":1.0,"lon":2.0,"predicted":"yes","demo_offset":{"north_m":10,"east_m":-5}},{"id":"broken","lat":"n/a"}]}
         """
         let s = try XCTUnwrap(Snapshot.parse(json))
         XCTAssertEqual(s.mode, .live, "unknown mode falls back")
@@ -73,6 +74,7 @@ final class ModelTests: XCTestCase {
         XCTAssertEqual(s.targets.map(\.id), ["rocket"])
         XCTAssertEqual(s.targets[0].label, "rocket")
         XCTAssertEqual(s.targets[0].demoOffset?.eastM, -5)
+        XCTAssertFalse(s.targets[0].predicted, "a malformed flag decodes softly")
         XCTAssertNil(s.settings)
         XCTAssertEqual(s.linkTimeoutS, 15)
         XCTAssertNil(Snapshot.parse("not json"))

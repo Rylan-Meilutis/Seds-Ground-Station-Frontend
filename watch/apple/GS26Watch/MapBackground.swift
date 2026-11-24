@@ -8,6 +8,8 @@ struct MapMarker: Equatable {
     var position: LatLon
     var selected: Bool
     var stale: Bool
+    /// The station's predicted position (no signal): a dashed pink ring.
+    var predicted = false
 }
 
 /// What the map shows: centre, zoom, rotation (degrees clockwise; the
@@ -117,10 +119,23 @@ struct MapBackground: View {
             var line = Path()
             line.move(to: user)
             line.addLine(to: screen(selected.position))
-            context.stroke(line, with: .color(.white.opacity(0.8)), lineWidth: 2)
+            if selected.predicted {
+                context.stroke(line, with: .color(Color.predicted.opacity(0.9)),
+                               style: StrokeStyle(lineWidth: 2, dash: [5, 4]))
+            } else {
+                context.stroke(line, with: .color(.white.opacity(0.8)), lineWidth: 2)
+            }
         }
         for m in markers {
             let at = screen(m.position)
+            if m.predicted {
+                // Hollow dashed ring: an estimate, not a fix.
+                let radius: CGFloat = m.selected ? 8 : 6
+                let ring = Path(ellipseIn: CGRect(x: at.x - radius, y: at.y - radius, width: radius * 2, height: radius * 2))
+                context.stroke(ring, with: .color(.black.opacity(0.6)), lineWidth: 4)
+                context.stroke(ring, with: .color(Color.predicted), style: StrokeStyle(lineWidth: 2.5, dash: [4, 3]))
+                continue
+            }
             let radius: CGFloat = m.selected ? 6 : 4.5
             let dot = Path(ellipseIn: CGRect(x: at.x - radius, y: at.y - radius, width: radius * 2, height: radius * 2))
             context.fill(dot, with: .color(color(m.id).opacity(m.stale ? 0.5 : 1)))
