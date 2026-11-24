@@ -89,6 +89,11 @@ pub(crate) const COVERED: &[&str] = &[
     "replay-bundle/exports/flight-report-preview",
     "replay-bundle/exports/flight-report-preview-window",
     "replay-bundle/exports/requests",
+    // An SD-resolved recording's bundle (its manifest is the one inside
+    // sd.gsreplay) and the station's previews of it (local_station/tests.rs).
+    "replay-bundle/sd.manifest",
+    "replay-bundle/exports/sd-report-preview",
+    "replay-bundle/exports/sd-report-preview-window",
     "requests/gse-self-test-confirmation",
     "rrls/status",
     "rrls/status-relaying",
