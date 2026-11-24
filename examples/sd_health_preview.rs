@@ -7,6 +7,35 @@ mod layout;
 mod network_health;
 #[path = "../src/telemetry_dashboard/types.rs"]
 mod types;
+#[path = "../src/telemetry_dashboard/over_range.rs"]
+mod over_range;
+/// The shared modules name these through the dashboard's module path.
+mod telemetry_dashboard {
+    pub(crate) use super::over_range;
+}
+fn current_wallclock_ms() -> i64 {
+    monotonic_now_ms() as i64
+}
+/// Preview stand-ins: no station settings, and no network requests.
+mod station_settings {
+    use dioxus::prelude::*;
+    pub static STATION_MCP_VREF_V: GlobalSignal<Option<f32>> = Signal::global(|| None);
+    pub fn mcp_vref_from_calibration(_raw: &serde_json::Value) -> Option<f32> {
+        None
+    }
+}
+mod station_settings_request {
+    #[derive(Clone, Copy)]
+    pub struct Factory;
+    impl Factory {
+        pub async fn get<T>(&self, _path: &str) -> Result<T, String> {
+            Err("preview: no station".into())
+        }
+    }
+    pub fn use_factory() -> Factory {
+        Factory
+    }
+}
 fn monotonic_now_ms() -> f64 {
     #[cfg(target_arch = "wasm32")]
     {
