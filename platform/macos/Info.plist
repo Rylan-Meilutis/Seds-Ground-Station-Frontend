@@ -16,13 +16,14 @@
         <string>This app requires location access to help you locate your rocket.</string>
 
         <key>NSLocationWhenInUseUsageDescription</key>
-        <string>Your location helps you locate the rocket and, if the station uses its proximity lock, lets this device tell the station whether you are near the rocket. Your location stays on this device.</string>
+        <string>Your location helps you locate the rocket. If the station uses its proximity lock, this device tells the station only whether you are near the rocket; your location stays on this device. In a recovery search, only if you choose to share your track, your track is sent to the station until you stop sharing or the search ends.</string>
 
         <key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
         <string>If the station uses its proximity lock, this phone keeps telling the station only whether you are near the rocket while the app is in the background, so arming and filling wait while people are at the pad. Your location stays on this phone. You can opt out in Settings > Proximity.</string>
 
-        <!-- iOS: the proximity lock keeps reporting in the background
-             (macOS ignores this key). -->
+        <!-- iOS: the proximity lock keeps reporting, and a recovery search
+             track the user chose to share keeps recording, in the
+             background (macOS ignores this key). -->
         <key>UIBackgroundModes</key>
         <array>
             <string>location</string>

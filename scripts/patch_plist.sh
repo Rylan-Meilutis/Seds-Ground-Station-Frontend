@@ -322,7 +322,7 @@ pb "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string $GSREPLAY_UTI"
 set_string "NSLocalNetworkUsageDescription" \
   "This app connects to devices on your local network to get data from the ground station."
 set_string "NSLocationWhenInUseUsageDescription" \
-  "Your location helps you locate the rocket and, if the station uses its proximity lock, lets this phone tell the station whether you are near the rocket. Your location stays on this phone."
+  "Your location helps you locate the rocket. If the station uses its proximity lock, this phone tells the station only whether you are near the rocket; your location stays on this phone. In a recovery search, only if you choose to share your track, your track is sent to the station until you stop sharing or the search ends, also while the app is in the background."
 set_string "NSLocationAlwaysAndWhenInUseUsageDescription" \
   "If the station uses its proximity lock, this phone keeps telling the station only whether you are near the rocket while the app is in the background, so arming and filling wait while people are at the pad. Your location stays on this phone. You can opt out in Settings > Proximity."
 set_string "NSLocationAlwaysUsageDescription" \
@@ -338,7 +338,9 @@ set_bool "ITSAppUsesNonExemptEncryption" "false"
 
 # Proximity lock (docs/proximity-lock.md): keep reporting in range / out of
 # range while the app is in the background (CoreLocation background updates
-# and region monitoring). Idempotent: "location" is added once.
+# and region monitoring). Recovery search: keep recording a track the user
+# chose to share while the search runs (SearchTrackShim.m, blue indicator).
+# Idempotent: "location" is added once.
 ensure_array "UIBackgroundModes"
 bg_idx=0
 bg_has=false

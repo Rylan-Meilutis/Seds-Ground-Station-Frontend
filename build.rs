@@ -92,6 +92,9 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     // Proximity lock: background location and region monitoring (iOS only).
     let proximity_src = manifest_dir.join("assets/ProximityShim.m");
     println!("cargo:rerun-if-changed={}", proximity_src.display());
+    // Recovery search: the track recorded in the background while sharing (iOS only).
+    let search_src = manifest_dir.join("assets/SearchTrackShim.m");
+    println!("cargo:rerun-if-changed={}", search_src.display());
     let mut sources = vec![
         (src, out_dir.join("LocationShim.o")),
         (media_src, out_dir.join("MediaWebViewShim.o")),
@@ -99,6 +102,7 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     if ios {
         sources.push((watch_src, out_dir.join("WatchBridge.o")));
         sources.push((proximity_src, out_dir.join("ProximityShim.o")));
+        sources.push((search_src, out_dir.join("SearchTrackShim.o")));
     }
     for (source, obj) in &sources {
         let mut cmd = Command::new("xcrun");
