@@ -314,6 +314,15 @@ function flightModel(p,extras={}){
 const svgNS='http://www.w3.org/2000/svg';
 function node(tag,text){const e=document.createElement(tag);if(text!==undefined)e.textContent=text;return e;}
 function svg(tag,attrs){const e=document.createElementNS(svgNS,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,String(v));return e;}
+// A prediction (replay.predicted: a flight plan played as a recording) is
+// always labelled as such; the label never comes from recorded data alone.
+function header(p){
+ const predicted=p.predicted===true;
+ const label=typeof p.label==='string'&&p.label.trim()?p.label.trim().slice(0,160):'';
+ const badge=predicted?(label.startsWith('Predicted')?label:(label?'Predicted: '+label:'Predicted')):null;
+ const title=predicted?'Predicted flight · simulated, not recorded':(p.mode==='test_fire'?'Test-fire replay · motor on stand':'Flight replay · saved data');
+ return {predicted,badge,title};
+}
 function button(text,label,handler){const b=node('button',text);b.type='button';if(label)b.setAttribute('aria-label',label);b.title=label||text;b.onclick=handler;b.className='gs-fr-button';return b;}
 // Layout rules for the player; phones get a compact HUD and camera bar.
 const PLAYER_CSS=`.gs-flight-replay .gs-fr-button,.gs-flight-replay .gs-fr-controls>button,.gs-flight-replay .gs-fr-controls>select{min-height:36px;min-width:36px;padding:4px 10px;border-radius:8px;border:1px solid #475569;background:#1e293b;color:#e2e8f0;font:inherit;cursor:pointer}
@@ -526,6 +535,6 @@ function mount(root,input,options={}){
   append,dispose:()=>{disposed=true;clearInterval(timer);visual?.dispose();}};
 }
 function validateSeries(p){const series=new Map();for(const r of p.samples){let s=series.get(r.data_type);if(!s){s=new Map();series.set(r.data_type,s);}let l=s.get(r.sender_id);if(!l){l=[];s.set(r.sender_id,l);}l.push(r);}Object.defineProperty(p,'__series',{value:series,configurable:true});}
-globalThis.GSOfflineReplay={MAX_BYTES,LEGACY_NAMES,validate,value,state,tankFillFraction,replayValveState,mount,
+globalThis.GSOfflineReplay={MAX_BYTES,LEGACY_NAMES,validate,value,state,tankFillFraction,replayValveState,header,mount,
  PHASE_COLORS,PHASE_LABELS,FLIGHT_STATE_NAMES,flightPhaseOf,flightTimeline,phaseAt,formatTClock,createClock,SPEEDS,discoverChannels,gpsTrack,flightModel,predictedInfo,normalizeStations,channelRows,channelValue,formatChannel,eventKindOf};
 })();

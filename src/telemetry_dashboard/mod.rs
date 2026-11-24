@@ -87,6 +87,8 @@ pub(crate) mod igt;
 mod igt_view;
 mod launch_site;
 mod apogee_planner;
+mod flight_plans;
+mod flight_plans_view;
 mod burn_report_view;
 mod flight_review_view;
 mod fire_archive_view;

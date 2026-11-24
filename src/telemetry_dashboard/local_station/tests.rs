@@ -236,3 +236,68 @@ fn bundles_are_verified_and_newer_versions_refused() {
     assert!(bundle::open("x.gsreplay", b"PK\x03\x04 not really").is_err());
     assert!(!bundle::is_bundle(b"{\"format\":\"seds-replay\"}"));
 }
+
+/// A stored (uncompressed) ZIP of `files` with a manifest listing their hashes.
+fn stored_bundle(mut manifest: serde_json::Value, files: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let hex = |b: &[u8]| Sha256::digest(b).iter().map(|x| format!("{x:02x}")).collect::<String>();
+    manifest["entries"] = files.iter().map(|(p, d)| serde_json::json!({"path": p, "sha256": hex(d)})).collect();
+    let mut all: Vec<(String, Vec<u8>)> = vec![("manifest.json".into(), serde_json::to_vec(&manifest).unwrap())];
+    all.extend(files.iter().map(|(p, d)| (p.to_string(), d.clone())));
+    let (mut out, mut central) = (Vec::new(), Vec::new());
+    for (name, data) in &all {
+        let offset = out.len() as u32;
+        out.extend(0x0403_4b50u32.to_le_bytes());
+        out.extend([20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        out.extend((data.len() as u32).to_le_bytes());
+        out.extend((data.len() as u32).to_le_bytes());
+        out.extend((name.len() as u16).to_le_bytes());
+        out.extend(0u16.to_le_bytes());
+        out.extend(name.as_bytes());
+        out.extend(data);
+        central.extend(0x0201_4b50u32.to_le_bytes());
+        central.extend([20, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        central.extend((data.len() as u32).to_le_bytes());
+        central.extend((data.len() as u32).to_le_bytes());
+        central.extend((name.len() as u16).to_le_bytes());
+        central.extend([0u8; 12]);
+        central.extend(offset.to_le_bytes());
+        central.extend(name.as_bytes());
+    }
+    let at = out.len() as u32;
+    out.extend(&central);
+    out.extend(0x0605_4b50u32.to_le_bytes());
+    out.extend([0u8; 4]);
+    out.extend((all.len() as u16).to_le_bytes());
+    out.extend((all.len() as u16).to_le_bytes());
+    out.extend((central.len() as u32).to_le_bytes());
+    out.extend(at.to_le_bytes());
+    out.extend([0u8; 2]);
+    out
+}
+
+#[test]
+fn a_flight_plan_bundle_is_labelled_predicted_and_carries_its_plan() {
+    let plan: serde_json::Value = serde_json::from_str(include_str!("../../../tests/fixtures/flight-predict-mock/plan.json")).unwrap();
+    let replay = serde_json::json!({"format": "seds-replay", "version": 1, "mode": "flight", "predicted": true, "label": "Predicted: 8.5 kg nominal",
+        "samples": [{"timestamp_ms": 1_767_225_600_000i64, "data_type": "GPS_DATA", "sender_id": "FC", "values": [31.758, -102.046, 890.0]},
+                    {"timestamp_ms": 1_767_225_600_000i64, "data_type": "FLIGHT_STATE", "sender_id": "FC", "values": [7]}]});
+    let manifest = serde_json::json!({"format": "gsreplay", "version": 1, "predicted": true, "label": "Predicted: 8.5 kg nominal", "source": {"flight_plan": plan["id"]}});
+    let bytes = stored_bundle(manifest, &[("replay.json", serde_json::to_vec(&replay).unwrap()), ("derived/flight_plan.json", serde_json::to_vec(&plan).unwrap())]);
+    let session = bundle::open("plan.gsreplay", &bytes).unwrap();
+    assert_eq!(session.predicted.as_deref(), Some("Predicted: 8.5 kg nominal"));
+    assert!(session.provenance.starts_with("Predicted"));
+    assert_eq!(session.plans.len(), 1);
+    assert!(session.plans[0].map_overlay().is_some());
+    assert_eq!(session.title, "Flight plan fp-1767225600000-1a2b3c4d");
+
+    // A recording bundle with recent plans is not predicted; its plans are offered for comparison.
+    let mut recording = replay.clone();
+    recording["predicted"] = false.into();
+    let manifest = serde_json::json!({"format": "gsreplay", "version": 1, "source": {"recording": "flight.db"}});
+    let plans = serde_json::json!({"plans": [plan.clone(), plan]});
+    let bytes = stored_bundle(manifest, &[("replay.json", serde_json::to_vec(&recording).unwrap()), ("derived/flight_plans.json", serde_json::to_vec(&plans).unwrap())]);
+    let session = bundle::open("flight.gsreplay", &bytes).unwrap();
+    assert_eq!(session.predicted, None);
+    assert_eq!(session.plans.len(), 1, "duplicate plan ids are dropped");
+}

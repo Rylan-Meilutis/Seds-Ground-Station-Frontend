@@ -223,6 +223,60 @@ async fn download_csv_to_directory(
     Ok(format!("Saved export to {}", target.display()))
 }
 
+/// A station GET read into memory (a replay bundle to open in the offline
+/// workspace), with the caller's captured owner. At most `max_bytes`.
+pub(super) async fn saved_bytes(path: &str, owner: std::rc::Rc<ExportOwner>, max_bytes: usize) -> Result<Vec<u8>, String> {
+    owner.check()?;
+    let url = export_url(&owner, path)?;
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let client = auth::build_native_http_client(owner.skip_tls(), std::time::Duration::from_secs(10), std::time::Duration::from_secs(120))?;
+        let mut request = client.get(url);
+        if let Some(token) = owner.token() {
+            request = request.bearer_auth(token.to_owned());
+        }
+        let mut response = owner.wait(request.send()).await?.map_err(|e| e.to_string())?;
+        owner.check()?;
+        if !response.status().is_success() {
+            let status = response.status().as_u16();
+            let body = owner.wait(response.text()).await?.unwrap_or_default();
+            return Err(format!("HTTP {status}: {}", body.chars().take(200).collect::<String>()));
+        }
+        let mut bytes = Vec::new();
+        while let Some(chunk) = owner.wait(response.chunk()).await?.map_err(|e| e.to_string())? {
+            owner.check()?;
+            bytes.extend_from_slice(&chunk);
+            if bytes.len() > max_bytes {
+                return Err(format!("The download exceeds {} MiB.", max_bytes >> 20));
+            }
+        }
+        Ok(bytes)
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let controller = web_sys::AbortController::new().map_err(|_| "Download cancellation is unavailable")?;
+        let _cancel = super::HttpAbortOnDrop(controller.clone());
+        let signal = controller.signal();
+        let mut request = gloo_net::http::Request::get(&url).abort_signal(Some(&signal));
+        if let Some(token) = owner.token() {
+            request = request.header("Authorization", &format!("Bearer {token}"));
+        }
+        let response = owner.wait(request.send()).await?.map_err(|e| e.to_string())?;
+        owner.check()?;
+        if !response.ok() {
+            let status = response.status();
+            let body = owner.wait(response.text()).await?.unwrap_or_default();
+            return Err(format!("HTTP {status}: {}", body.chars().take(200).collect::<String>()));
+        }
+        let bytes = owner.wait(response.binary()).await?.map_err(|e| e.to_string())?;
+        owner.check()?;
+        if bytes.len() > max_bytes {
+            return Err(format!("The download exceeds {} MiB.", max_bytes >> 20));
+        }
+        Ok(bytes)
+    }
+}
+
 fn export_url(owner: &ExportOwner, path: &str) -> Result<String, String> {
     owner.check()?;
     if !path.starts_with('/')

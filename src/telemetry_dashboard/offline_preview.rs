@@ -40,6 +40,8 @@ const CHECKS: &[&str] = &[
     "Communications and abort procedure checked",
 ];
 const TICK_MS: u32 = 250;
+/// The loss-of-signal prediction runs on the station.
+const OFFLINE_LOS_REASON: &str = "Signal-loss simulation needs a connected station: the prediction runs on the station. Open this recording from the 3D replay tab of a connected dashboard.";
 
 fn known_page(id: &str) -> &str {
     if id == "settings" || PAGES.iter().any(|(key, _)| *key == id) { id } else { "state" }
@@ -76,6 +78,22 @@ fn format_item(value: f32, formatter: &Value) -> String {
         format!("{value:.prec$}", prec = formatter["precision"].as_u64().unwrap_or(2) as usize)
     };
     format!("{prefix}{body}{suffix}")
+}
+
+thread_local! {
+    /// A bundle handed over by the live dashboard ("Play in replay" on a
+    /// flight plan), taken once by the `/preview` route.
+    static PENDING_BUNDLE: std::cell::RefCell<Option<(String, Vec<u8>)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Queue a replay bundle for the next `/preview` mount.
+pub(crate) fn queue_bundle(name: String, bytes: Vec<u8>) {
+    PENDING_BUNDLE.with(|slot| *slot.borrow_mut() = Some((name, bytes)));
+}
+
+/// The queued bundle, once.
+pub(crate) fn take_pending_bundle() -> Option<(String, Vec<u8>)> {
+    PENDING_BUNDLE.with(|slot| slot.borrow_mut().take())
 }
 
 /// A replay bundle (ZIP) or a portable JSON replay file.
@@ -222,18 +240,55 @@ fn world_px(lat: f64, lon: f64, z: f64) -> (f64, f64) {
     ((lon + 180.0) / 360.0 * size, (1.0 - (rad.tan() + 1.0 / rad.cos()).ln() / std::f64::consts::PI) / 2.0 * size)
 }
 
+/// The shared flight-phase palette (flight-predict contract).
+fn phase_color(phase: &str) -> &'static str {
+    match phase {
+        "pad" => "#94a3b8",
+        "boost" => "#f97316",
+        "coast" => "#facc15",
+        "drogue" => "#38bdf8",
+        "main" => "#22c55e",
+        "landed" => "#a78bfa",
+        _ => "#64748b",
+    }
+}
+
+/// Recorded altitude above the pad and a plan's predicted altitude, both
+/// against seconds from launch (the first Launch/Ascent state, else the
+/// start). `None` when the session has no barometer altitude.
+fn altitude_comparison(session: &Session, plan: &super::flight_plans::PlanDoc) -> Option<Vec<super::flight_plans_view::Series>> {
+    let channel = Channel { group: String::new(), data_type: "BAROMETER_DATA".into(), sender: None, index: 0, label: String::new(), unit: String::new(), precision: 1 };
+    let recorded = session.series(&channel, i64::MIN, i64::MAX, 600);
+    let predicted = plan.altitude_curve();
+    if recorded.is_empty() || predicted.is_empty() {
+        return None;
+    }
+    let launch = session.states.iter().find(|(_, s)| s == "Launch" || s == "Ascent").map(|(t, _)| *t).unwrap_or_else(|| session.start_ms());
+    Some(vec![
+        super::flight_plans_view::Series { label: "Recorded".into(), color: "#67d5c8".into(), dashed: false, points: recorded.iter().map(|(t, v)| [(*t - launch) as f64 / 1000.0, f64::from(*v)]).collect() },
+        super::flight_plans_view::Series { label: super::flight_plans::predicted_label(&plan.label), color: "#a78bfa".into(), dashed: true, points: predicted },
+    ])
+}
+
 /// The recorded GPS track in Web Mercator, over a bundle's map tiles when it
 /// carries them and over a tile-sized grid otherwise. Nothing is fetched.
-fn track_map(session: &Session, at: i64) -> Element {
+fn track_map(session: &Session, at: i64, plan: Option<&super::flight_plans::PlanDoc>) -> Element {
     use base64::Engine as _;
     let track = session.track(at);
     let all = session.track(i64::MAX);
     if all.is_empty() {
         return rsx! { p { class: "gs26-preview-note", role: "status", "No GPS position in this data, so there is no track to draw." } };
     }
+    let overlay = plan.and_then(|p| p.map_overlay());
+    // A predicted session's own plan adds only its areas and markers: its
+    // track is the replay track itself.
+    let own_plan = session.predicted.is_some();
     let (mut la0, mut la1, mut lo0, mut lo1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
-    for (la, lo, _) in &all {
-        (la0, la1, lo0, lo1) = (la0.min(*la), la1.max(*la), lo0.min(*lo), lo1.max(*lo));
+    let extra = overlay.into_iter().flat_map(|o| {
+        o.areas.iter().flat_map(|a| a.polygon.iter().map(|p| (p[0], p[1]))).chain(o.markers.iter().map(|m| (m.lat_deg, m.lon_deg)))
+    });
+    for (la, lo) in all.iter().map(|p| (p.0, p.1)).chain(extra) {
+        (la0, la1, lo0, lo1) = (la0.min(la), la1.max(la), lo0.min(lo), lo1.max(lo));
     }
     // The deepest zoom whose tiles all exist in the bundle, else one that fits the track.
     let covered = |z: u32| {
@@ -271,16 +326,42 @@ fn track_map(session: &Session, at: i64) -> Element {
     let grid_m = 40_075_016.0 * coslat / 2f64.powf(z);
     let position = track.last().map(|p| format!("{:.5}°, {:.5}° · {:.0} m", p.0, p.1, p.2)).unwrap_or_else(|| "On the pad".into());
     let note = if tiled.is_some() { "Map tiles from the replay bundle.".to_string() } else { format!("No map tiles offline; grid squares are {grid_m:.0} m.") };
+    let xy = |lat: f64, lon: f64| world_px(lat, lon, z);
+    let plan_tracks: Vec<(String, String)> = match overlay {
+        Some(o) if !own_plan => o.tracks.iter().filter(|t| t.points.len() >= 2).map(|t| {
+            let d = t.points.iter().filter_map(|p| Some((p.first().copied().flatten()?, p.get(1).copied().flatten()?))).enumerate().map(|(i, (la, lo))| {
+                let (x, y) = xy(la, lo);
+                format!("{}{x:.1} {y:.1}", if i == 0 { "M" } else { "L" })
+            }).collect::<String>();
+            (d, phase_color(&t.phase).to_string())
+        }).collect(),
+        _ => Vec::new(),
+    };
+    let plan_areas: Vec<String> = overlay.map(|o| o.areas.iter().map(|a| {
+        a.polygon.iter().enumerate().map(|(i, p)| { let (x, y) = xy(p[0], p[1]); format!("{}{x:.1} {y:.1}", if i == 0 { "M" } else { "L" }) }).collect::<String>() + "Z"
+    }).collect()).unwrap_or_default();
+    let plan_markers: Vec<(f64, f64, String)> = overlay.map(|o| o.markers.iter().map(|m| { let (x, y) = xy(m.lat_deg, m.lon_deg); (x, y, m.label.clone()) }).collect()).unwrap_or_default();
+    let plan_label = overlay.map(|o| super::flight_plans::predicted_label(&o.label));
+    let predicted_track = session.predicted.is_some();
     rsx! {
         svg { class: "gs26-preview-map", view_box: "{vx} {vy} {vw} {vh}", role: "img", "aria-label": "Recorded GPS track",
             defs { pattern { id: "preview-map-grid", x: "0", y: "0", width: "256", height: "256", pattern_units: "userSpaceOnUse", path { d: "M256 0H0V256", fill: "none", stroke: "#24364b", vector_effect: "non-scaling-stroke" } } }
             rect { x: "{vx}", y: "{vy}", width: "{vw}", height: "{vh}", fill: "#101d2d" }
             rect { x: "{vx}", y: "{vy}", width: "{vw}", height: "{vh}", fill: "url(#preview-map-grid)" }
             for (ix, iy, href) in images { image { x: "{ix}", y: "{iy}", width: "256", height: "256", href: "{href}" } }
+            for d in plan_areas.iter() { path { d: "{d}", fill: "#a78bfa", fill_opacity: "0.12", stroke: "#a78bfa", stroke_width: "2", stroke_dasharray: "6 4", vector_effect: "non-scaling-stroke" } }
+            for (d, color) in plan_tracks.iter() { path { "data-plan-track": "", d: "{d}", fill: "none", stroke: "{color}", stroke_opacity: "0.55", stroke_width: "3", stroke_dasharray: "7 5", vector_effect: "non-scaling-stroke" } }
             path { d: "{full}", fill: "none", stroke: "#94a3b8", stroke_width: "2", stroke_dasharray: "5 4", vector_effect: "non-scaling-stroke" }
-            path { d: "{flown}", fill: "none", stroke: "#67d5c8", stroke_width: "3", vector_effect: "non-scaling-stroke" }
+            path { d: "{flown}", fill: "none", stroke: if predicted_track { "#a78bfa" } else { "#67d5c8" }, stroke_width: "3", stroke_dasharray: if predicted_track { "7 4" } else { "none" }, vector_effect: "non-scaling-stroke" }
+            for (x, y, label) in plan_markers.iter() { circle { cx: "{x}", cy: "{y}", r: "{r * 0.8}", fill: "#a78bfa", stroke: "#111827", stroke_width: "2", vector_effect: "non-scaling-stroke", title { "{label}" } } }
             circle { cx: "{sx}", cy: "{sy}", r: "{r}", fill: "#8bc8ff" }
-            if let Some((x, y)) = here { circle { cx: "{x}", cy: "{y}", r: "{r}", fill: "#e8c77f" } }
+            if let Some((x, y)) = here { circle { cx: "{x}", cy: "{y}", r: "{r}", fill: if predicted_track { "#a78bfa" } else { "#e8c77f" } } }
+        }
+        if predicted_track {
+            p { class: "gs26-preview-note", "data-predicted-map": "", strong { "Predicted track" } " (dashed purple): the station's flight simulation, not a recording." }
+        }
+        if let Some(label) = plan_label.filter(|_| !own_plan) {
+            p { class: "gs26-preview-note", "data-plan-compare-map": "", strong { "{label}" } " drawn dashed in phase colours with its landing area; the recorded track is solid." }
         }
         p { class: "gs26-preview-note", "Rocket: {position} · landing {drift:.0} m from the pad (blue). {note}" }
     }
@@ -325,6 +406,7 @@ pub fn OfflinePreview(
     let mut data_group = use_signal(String::new);
     let mut diagram = use_signal(|| if session.peek().mode == Mode::Flight && !session.peek().is_demo() { "av_bay".to_string() } else { "fill".to_string() });
     let mut file_status = use_signal(String::new);
+    let mut compare = use_signal(String::new);
     let mut player_loaded = use_signal(|| false);
     let player_id = use_hook(|| format!("offline-3d-{}", super::current_wallclock_ms()));
     use_future(move || async move {
@@ -362,6 +444,7 @@ pub fn OfflinePreview(
                     at.set(next.start_ms());
                     diagram.set(if next.mode == Mode::Flight { "av_bay".into() } else { "fill".into() });
                     session.set(Rc::new(next));
+                    compare.set(String::new());
                     toast.set(None);
                     clock.set(Clock::Paused);
                     data_group.set(String::new());
@@ -387,9 +470,32 @@ pub fn OfflinePreview(
         "--gs26-app-height:100dvh;--gs26-app-background:{};--gs26-app-text:{};--gs26-panel-background:{};--gs26-panel-alt-background:{};--gs26-border:{};--gs26-text-secondary:{};--gs26-text-muted:{};--gs-control-bg:{};--gs-control-border:{};--gs-control-text:{};",
         theme.app_background, theme.text_primary, theme.panel_background, theme.panel_background_alt, theme.border, theme.text_secondary, theme.text_muted, theme.button_background, theme.button_border, theme.button_text
     );
-    let banner_title = match &s.source {
-        local_station::Source::Demo => "Demo mode — no station connected".to_string(),
-        local_station::Source::Replay { file_name } => format!("Offline replay — {file_name}"),
+    let banner_title = match (&s.source, &s.predicted) {
+        (local_station::Source::Demo, _) => "Demo mode — no station connected".to_string(),
+        (local_station::Source::Replay { .. }, Some(label)) => format!("Predicted replay — {label}"),
+        (local_station::Source::Replay { file_name }, None) => format!("Offline replay — {file_name}"),
+    };
+    // A plan to draw beside the data: a predicted session's own plan, else
+    // the one chosen from the plans a recording bundle carries.
+    let compare_plan: Option<super::flight_plans::PlanDoc> = if s.predicted.is_some() {
+        s.plans.first().cloned()
+    } else {
+        s.plans.iter().find(|p| p.id == compare()).cloned()
+    };
+    let chart_tag = if s.predicted.is_some() { " · Predicted" } else { "" };
+    let plan_picker: Element = if s.predicted.is_none() && !s.plans.is_empty() {
+        let choices: Vec<(String, String)> = s.plans.iter().filter(|p| p.map_overlay().is_some()).map(|p| (p.id.clone(), super::flight_plans::predicted_label(&p.label))).collect();
+        rsx! {
+            label { class: "gs26-preview-plan-picker", "data-plan-picker": "",
+                "Compare with a flight plan "
+                select { value: compare(), onchange: move |e| compare.set(e.value()),
+                    option { value: "", "None" }
+                    for (id, label) in choices { option { value: "{id}", "{label}" } }
+                }
+            }
+        }
+    } else {
+        rsx! {}
     };
     let banner_detail = if demo_mode {
         "Example data from a demo scenario. Commands are acknowledged here and never sent.".to_string()
@@ -449,7 +555,7 @@ pub fn OfflinePreview(
                     Some(Lane { label: series["label"].as_str().unwrap_or(ty).to_string(), current, points })
                 }).collect();
                 let aria = w["chart_title"].as_str().unwrap_or("Chart").to_string();
-                rsx! { div { class: "gs26-preview-wide", h3 { class: "gs-section-label", "{aria}" } {lane_chart(aria.clone(), lanes, window.0, window.1, cursor)} } }
+                rsx! { div { class: "gs26-preview-wide", h3 { class: "gs-section-label", "{aria}{chart_tag}" } {lane_chart(format!("{aria}{chart_tag}"), lanes, window.0, window.1, cursor)} } }
             }
             "board_status" => {
                 let chips: Vec<(String, String, &'static str, String)> = boards.iter().map(|b| {
@@ -466,7 +572,7 @@ pub fn OfflinePreview(
                     for cmd in cmds { button { r#type: "button", class: if cmd == "Abort" { "gs26-preview-abort" } else { "" }, onclick: { let cmd = cmd.clone(); move |_| send(cmd.clone()) }, "{action_label(&cmd)}" } }
                 } }
             }
-            "map" => rsx! { div { class: "gs26-preview-wide", {track_map(&s, now)} } },
+            "map" => rsx! { div { class: "gs26-preview-wide", {track_map(&s, now, compare_plan.as_ref())} } },
             other => rsx! { p { class: "gs26-preview-note gs26-preview-wide", "A connected station shows its “{other}” widget here." } },
         }
     };
@@ -485,6 +591,9 @@ pub fn OfflinePreview(
                 div { class: "gs26-preview-banner",
                     strong { "{banner_title}" }
                     span { "{banner_detail}" }
+                    if s.predicted.is_some() {
+                        span { class: "gs-badge gs-badge--warn", "data-predicted-banner": "", "Predicted · simulated, not recorded" }
+                    }
                 }
                 div { class: "gs26-preview-header-actions",
                     label { class: "gs26-preview-file-button",
@@ -515,6 +624,9 @@ pub fn OfflinePreview(
                     if clock() == Clock::Playing { "Pause" } else { "Play" }
                 }
                 span { class: "gs26-preview-clock", "{mission_clock(&s, now)}" }
+                if let Some(label) = s.predicted.as_ref() {
+                    span { class: "gs-badge gs-badge--warn", "data-testid": "preview-predicted", "{label}" }
+                }
                 span { class: "gs-badge gs-badge--info", "data-testid": "preview-state", "{super::types::display_flight_state(&state)}" }
                 input { r#type: "range", "aria-label": "Position", min: "{from}", max: "{to}", step: "250", value: "{now}",
                     oninput: move |e| { if let Ok(v) = e.value().parse::<i64>() { at.set(v); } } }
@@ -625,8 +737,9 @@ pub fn OfflinePreview(
                                         }
                                     }
                                     if lanes.is_empty() { p { class: "gs26-preview-note", "No channels." } } else {
-                                        {lane_chart(format!("{selected} history"), lanes, window.0, window.1, cursor)}
+                                        {lane_chart(format!("{selected} history{chart_tag}"), lanes, window.0, window.1, cursor)}
                                     }
+                                    if s.predicted.is_some() { p { class: "gs26-preview-note", "data-predicted-chart": "", strong { "Predicted data" } ": synthesized from a flight plan, not recorded." } }
                                     p { class: "gs26-preview-note", if demo_mode { "Last two minutes. Tabs, channel names and units come from the layout's data tabs." } else { "Whole recording; the dashed line is the replay position." } }
                                 }
                             }
@@ -680,11 +793,30 @@ pub fn OfflinePreview(
                             }
                         }
                     } else if current == "map" {
-                        section { class: "gs26-preview-panel", h2 { "Recovery map" } {track_map(&s, now)} }
+                        section { class: "gs26-preview-panel", h2 { "Recovery map" }
+                            {plan_picker.clone()}
+                            {track_map(&s, now, compare_plan.as_ref())}
+                            if !demo_mode {
+                                div { class: "gs26-preview-los",
+                                    button { r#type: "button", disabled: true, "data-simulate-los": "", title: "{OFFLINE_LOS_REASON}", "Simulate signal loss here" }
+                                    small { class: "gs26-preview-note", "{OFFLINE_LOS_REASON}" }
+                                }
+                            }
+                        }
                     } else if current == "vehicle" {
                         section { class: "gs26-preview-panel", h2 { if s.mode == Mode::TestFire { "Burn summary" } else { "Flight summary" } }
                             dl { class: "gs26-preview-summary", for (k, v) in s.summary().into_iter().chain(s.derived.iter().cloned()) { div { dt { "{k}" } dd { "{v}" } } } }
                             for note in s.notes.iter() { p { class: "gs26-preview-note", "{note}" } }
+                        }
+                        if s.predicted.is_none() && !s.plans.is_empty() {
+                            section { class: "gs26-preview-panel", h2 { "Predicted vs recorded" }
+                                {plan_picker.clone()}
+                                if let Some(series) = compare_plan.as_ref().and_then(|p| altitude_comparison(&s, p)) {
+                                    super::flight_plans_view::CurvePlot { title: "Altitude above pad, from launch".to_string(), unit: "m".to_string(), series, theme: theme.clone() }
+                                } else if compare_plan.is_some() {
+                                    p { class: "gs26-preview-note", "This recording has no barometer altitude to compare." }
+                                }
+                            }
                         }
                         section { class: "gs26-preview-panel", h2 { "3D replay" }
                             p { class: "gs26-preview-note", "The same offline player as an exported replay: samples, valve names and units come from the file; the vehicle is the generic rocket unless the file carries vehicle geometry." }

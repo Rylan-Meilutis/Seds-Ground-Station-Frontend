@@ -150,6 +150,22 @@ fn figures(prefix: &str, value: &Value, out: &mut Vec<(String, String)>) {
     }
 }
 
+/// The plan of a plan bundle and the recent plans a recording bundle carries.
+fn plans(files: &BTreeMap<String, Vec<u8>>) -> Vec<super::super::flight_plans::PlanDoc> {
+    let mut out: Vec<super::super::flight_plans::PlanDoc> = Vec::new();
+    let own = json(files, "derived/flight_plan.json").into_iter();
+    let recent = json(files, "derived/flight_plans.json").and_then(|v| v["plans"].as_array().cloned()).unwrap_or_default();
+    for value in own.chain(recent).take(8) {
+        if let Ok(plan) = serde_json::from_value::<super::super::flight_plans::PlanDoc>(value)
+            && !plan.id.is_empty()
+            && !out.iter().any(|p| p.id == plan.id)
+        {
+            out.push(plan);
+        }
+    }
+    out
+}
+
 pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
     let files = unzip(bytes)?;
     let manifest = verify(&files)?;
@@ -230,6 +246,14 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
         manifest["entries"].as_array().map_or(0, Vec::len),
         manifest["created_ms"].as_i64().map(|ms| format!("at {ms} ms (Unix)")).unwrap_or_default()
     ));
+    if manifest["predicted"].as_bool() == Some(true) {
+        let label = manifest["label"].as_str().or_else(|| document["label"].as_str()).map(str::to_string);
+        session.mark_predicted(label.as_deref());
+        if let Some(plan) = manifest["source"]["flight_plan"].as_str() {
+            session.title = format!("Flight plan {plan}");
+        }
+    }
+    session.plans = plans(&files);
     session.manifest = Some(manifest);
     Ok(session)
 }

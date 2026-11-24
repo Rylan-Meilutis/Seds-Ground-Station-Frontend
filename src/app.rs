@@ -790,10 +790,18 @@ pub fn Dashboard() -> Element {
 #[component]
 fn Preview() -> Element {
     let nav = use_navigator();
+    // A flight plan's bundle from the dashboard opens on the replay page and
+    // Exit returns to the dashboard.
+    let pending = use_hook(telemetry_dashboard::offline_preview::take_pending_bundle);
+    let from_dashboard = pending.is_some();
     rsx! {
         telemetry_dashboard::offline_preview::OfflinePreview {
             theme: shell_theme(),
-            on_exit: move |_| { let _ = nav.replace(connect_route()); },
+            page: from_dashboard.then(|| "vehicle".to_string()),
+            bundle: pending,
+            on_exit: move |_| {
+                let _ = if from_dashboard { nav.replace(Route::Dashboard {}) } else { nav.replace(connect_route()) };
+            },
         }
     }
 }

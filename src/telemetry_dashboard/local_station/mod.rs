@@ -151,6 +151,12 @@ pub(crate) struct Session {
     pub csv: Option<std::rc::Rc<Vec<u8>>>,
     /// A bundle's `manifest.json`.
     pub manifest: Option<Value>,
+    /// Set when the file is a prediction (`replay.predicted` or
+    /// `manifest.predicted`): the label the workspace shows ("Predicted: …").
+    pub predicted: Option<String>,
+    /// Flight plans the bundle carries (`derived/flight_plan.json`,
+    /// `derived/flight_plans.json`), for drawing a prediction beside the data.
+    pub plans: Vec<super::flight_plans::PlanDoc>,
     index: BTreeMap<(String, String), Vec<usize>>,
 }
 
@@ -198,7 +204,7 @@ impl Session {
         LIVE_SESSIONS.with(|n| n.set(n.get() + 1));
         Self {
             source, title, mode, provenance, layout, boards, samples, states, alerts, calibration, recordings, replay_document, vehicle_geometry, notes, epoch_ms,
-            diagrams: Vec::new(), derived: Vec::new(), tiles: BTreeMap::new(), csv: None, manifest: None, index,
+            diagrams: Vec::new(), derived: Vec::new(), tiles: BTreeMap::new(), csv: None, manifest: None, predicted: None, plans: Vec::new(), index,
         }
     }
 
@@ -214,6 +220,11 @@ impl Session {
     }
     pub fn is_demo(&self) -> bool {
         self.source == Source::Demo
+    }
+    /// Marks the session as predicted data with the file's label.
+    pub fn mark_predicted(&mut self, label: Option<&str>) {
+        self.predicted = Some(super::flight_plans::predicted_label(label.unwrap_or("")));
+        self.provenance = "Predicted (flight plan, not a recording)".into();
     }
 
     fn rows(&self, data_type: &str, sender: Option<&str>) -> impl Iterator<Item = &Vec<usize>> {

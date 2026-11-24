@@ -126,7 +126,7 @@ pub(crate) fn open(file_name: &str, text: &str) -> Result<Session, String> {
             document[field] = empty;
         }
     }
-    Ok(Session::new(SessionParts {
+    let mut session = Session::new(SessionParts {
         source: Source::Replay { file_name: file_name.to_string() },
         title: file["recording"].as_str().filter(|r| !r.is_empty()).unwrap_or(file_name).to_string(),
         mode,
@@ -142,5 +142,9 @@ pub(crate) fn open(file_name: &str, text: &str) -> Result<Session, String> {
         vehicle_geometry,
         notes,
         epoch_ms: 0,
-    }))
+    });
+    if file["predicted"].as_bool() == Some(true) {
+        session.mark_predicted(file["label"].as_str());
+    }
+    Ok(session)
 }
