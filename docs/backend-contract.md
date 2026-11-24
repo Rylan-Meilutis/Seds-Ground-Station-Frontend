@@ -513,7 +513,7 @@ GroundStation26 detail: `docs/backend/board-resync.md`,
 | --- | --- | --- | --- | --- | --- |
 | GET | `/api/calibration_config` | → `{capture_target_samples, fit_modes[], sensors:[{id, label, data_type, channel, fit_color?, raw_label?, expected_label?, fit_modes?, formatter?}]}` ([detail](backend-api.md#get-apicalibration_config), [example](api-examples/calibration-config.json)) | Calibration page | can_view_calibration | cached / H |
 | GET | `/api/calibration` | → `CalibrationFile` ([detail](backend-api.md#get-apicalibration), [example](api-examples/calibration-file.json)) | Calibration page, Loadcells settings (MCP VREF), network health | can_view_calibration | M |
-| POST | `/api/calibration` | `CalibrationSaveRequest` → `CalibrationFile` ([detail](backend-api.md#post-apicalibration)) | Calibration page | can_edit_calibration | M |
+| POST | `/api/calibration` | `{channel, calibration, revision, fitted_mcp_vref_v?}` → `CalibrationFile` ([detail](backend-api.md#post-apicalibration)); 409 stale revision or reference, 428 no revision, 422 no reference for a load cell | Calibration page | can_edit_calibration | stale: keep the draft, show the station's reason, offer Reload (confirmed); other: M |
 | GET | `/api/calibration/kg50_input` | → `Kg50BoardStatus` ([detail](backend-api.md#get-apicalibrationkg50_input)) | Data tab, Loadcells settings | view_data | H |
 | POST | `/api/calibration/kg50_input` | `{input:"amp2"\|"p6_differential"}` → any | Loadcells settings | can_edit_calibration | M |
 | POST | `/api/calibration/mcp_vref` | `{mcp_vref_v}` → any | Loadcells settings | can_edit_calibration | M |
@@ -524,8 +524,26 @@ GroundStation26 detail: `docs/backend/board-resync.md`,
 | POST | `/api/calibration/long_zero/stop` | body → status | Calibration page | can_edit_calibration | M |
 | POST | `/api/calibration/long_zero/apply` | body → `CalibrationFile` | Calibration page | can_edit_calibration | M |
 
+Calibration revisions: `CalibrationFile.revision` (u64, missing means 0) moves on
+every station write of the calibration file (an editor save, captures, long
+zero, thermal point, 50 kg input, MCP reference, chamber PT, automatic zero,
+a paired-station document). A save names the `revision` of the document it
+was edited from and `fitted_mcp_vref_v`, that document's `mcp_vref_v`: the
+reference its points and fit were captured and fitted at. The station
+refuses a save from another revision or reference instead of overwriting or
+restamping it. The editor then fetches `GET /api/calibration`; when the
+station's revision, reference or 50 kg input differs from the draft's it
+shows "Not saved. <station reason> Your unsaved changes are kept on this
+client until you reload." with **Reload station calibration…**, which opens
+the existing discard-and-reload confirmation. A 409 that is not stale (a
+railed point, closed admission) is shown as "Save failed: …" and the draft
+stays saveable. Edits made while a save was in flight move to the revision the
+station wrote only when it is exactly the next one. Test:
+`tests/calibration-save-conflict.mjs`, `calibration_sequence_tests.rs`.
+
 See [temperature-compensation.md](temperature-compensation.md#acquisition-and-wire-contract)
-and GroundStation26 `docs/backend/paired-calibration.md`.
+and GroundStation26 `docs/backend/paired-calibration.md` and
+`docs/frontend/api.md` (Calibration revisions and reference provenance).
 
 ### 5.8 Recordings, replay, exports, reports and flight review
 

@@ -779,9 +779,19 @@ Response type:
       }
     }
   },
-  "weights_kg": [0.0, 5.0, 10.0]
+  "weights_kg": [0.0, 5.0, 10.0],
+  "mcp_vref_v": 2.4,
+  "mcp_vref_note": "",
+  "mcp_vref_changed_ms": 0,
+  "revision": 41
 }
 ```
+
+`revision` is the station's revision of this document; every write of the
+calibration file adds one. A document without it (an older station or a cached
+copy) is revision 0. `mcp_vref_v` is the DAQ MCP3564R reference (V) the
+load-cell volts in the document are in, and `mcp_vref_changed_ms` the station
+time it last changed (0: not since the field existed).
 
 Legacy channels remain present for compatibility:
 
@@ -814,7 +824,37 @@ is re-sent every two seconds until the DAQ reports it.
 
 ### `POST /api/calibration`
 
-Request and response use the same shape as `GET /api/calibration`.
+Request:
+
+```json
+{
+  "channel": "ch1",
+  "calibration": { "...": "the edited document, same shape as GET /api/calibration" },
+  "revision": 41,
+  "fitted_mcp_vref_v": 2.4
+}
+```
+
+Only `channel` is saved; everything else comes from the station's current file.
+`revision` is the revision of the document the edit started from and
+`fitted_mcp_vref_v` that document's `mcp_vref_v`, the reference the points and
+fit were captured and fitted at (the UI omits it only when the loaded document
+had none). The response is the saved document, with the next revision.
+
+Refusals (plain-text body for the operator):
+
+- `409`: the station's revision is not `revision` ("Calibration changed on the
+  station since it was loaded (loaded revision 41, station revision 42).
+  Nothing was saved: reload the calibration and re-apply your changes."), the
+  station's reference is not `fitted_mcp_vref_v`, or (for `kg50`) the 50 kg
+  input changed. Also used for a refused edit (a point at the ADC rail) and
+  closed admission; the UI treats a 409 as stale only when a fresh
+  `GET /api/calibration` shows another revision, reference or input.
+- `428`: no `revision` (a client from before revisions).
+- `422`: no `fitted_mcp_vref_v` for `ch1` or `kg50`.
+
+The station stamps the saved channel and thermal entry with
+`fitted_mcp_vref_v`; it never substitutes or converts to the current setting.
 
 ### `POST /api/calibration/capture_zero`
 
@@ -823,9 +863,17 @@ Request:
 ```json
 {
   "sensor_id": "ch0",
-  "raw": 123.4
+  "raw": 123.4,
+  "capture_started_ms": 1767225600000,
+  "revision": 41,
+  "mcp_vref_v": 2.4
 }
 ```
+
+`revision` and `mcp_vref_v` (the reference of the document the reading was
+taken against; required for KG1000/KG50) follow the `POST /api/calibration`
+rules. A capture whose samples began before the reference last changed is
+refused (409). The UI does not call this route.
 
 Response:
 
@@ -839,15 +887,22 @@ Request:
 {
   "sensor_id": "ch0",
   "raw": 345.6,
-  "known_kg": 5.0
+  "known_kg": 5.0,
+  "revision": 42,
+  "mcp_vref_v": 2.4
 }
 ```
+
+Same rules as `capture_zero`.
 
 Response:
 
 - same shape as `GET /api/calibration`
 
 ### `POST /api/calibration/refit`
+
+A stub on current stations: it writes nothing (the revision does not move) and
+returns the current document; the UI refits locally and saves.
 
 Request:
 
