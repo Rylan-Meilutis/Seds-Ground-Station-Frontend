@@ -49,6 +49,51 @@
         <key>NSMotionUsageDescription</key>
         <string>This app uses device orientation to point the map in the direction you are facing.</string>
 
+		<!-- Replay bundles opened from Finder, Files, AirDrop and share
+		     sheets (docs/replay-bundle.md, "Opening files from other apps").
+		     scripts/patch_plist.sh writes the same declarations into the
+		     iOS bundle. -->
+		<key>UTExportedTypeDeclarations</key>
+		<array>
+			<dict>
+				<key>UTTypeIdentifier</key>
+				<string>com.ubseds.gsreplay</string>
+				<key>UTTypeDescription</key>
+				<string>Ground Station replay</string>
+				<key>UTTypeConformsTo</key>
+				<array>
+					<string>public.zip-archive</string>
+					<string>public.data</string>
+				</array>
+				<key>UTTypeTagSpecification</key>
+				<dict>
+					<key>public.filename-extension</key>
+					<array>
+						<string>gsreplay</string>
+					</array>
+					<key>public.mime-type</key>
+					<array>
+						<string>application/vnd.seds.gsreplay+zip</string>
+					</array>
+				</dict>
+			</dict>
+		</array>
+		<key>CFBundleDocumentTypes</key>
+		<array>
+			<dict>
+				<key>CFBundleTypeName</key>
+				<string>Ground Station replay</string>
+				<key>CFBundleTypeRole</key>
+				<string>Viewer</string>
+				<key>LSHandlerRank</key>
+				<string>Owner</string>
+				<key>LSItemContentTypes</key>
+				<array>
+					<string>com.ubseds.gsreplay</string>
+				</array>
+			</dict>
+		</array>
+
 		<key>CFBundleExecutable</key>
 		<string>groundstation_frontend</string>
 

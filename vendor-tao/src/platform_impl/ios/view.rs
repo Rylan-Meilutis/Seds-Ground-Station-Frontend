@@ -604,6 +604,15 @@ pub fn create_delegate_class() {
 
   fn handle_deep_link(url: id) {
     unsafe {
+      // GroundStation: a document opened in place (Files, iCloud Drive) is
+      // readable only through the delivered URL's security scope, which a
+      // path rebuilt from the `Opened` event cannot regain. Start it here and
+      // keep it for the process (the app reads the file once, at once). A
+      // copied Inbox file or an ordinary link returns NO, harmlessly.
+      let is_file: bool = msg_send![url, isFileURL];
+      if is_file {
+        let _: bool = msg_send![url, startAccessingSecurityScopedResource];
+      }
       let absolute_url: id = msg_send![url, absoluteString];
       let bytes = {
         let bytes: *const c_char = msg_send![absolute_url, UTF8String];

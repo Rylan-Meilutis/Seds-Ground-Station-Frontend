@@ -66,3 +66,19 @@ Qualification requires an actual iOS 27 device launch through `app_rendered`,
 background/resume, rotation, and foreground relaunch. Device/simulator Mach-O
 checks and plist idempotence tests remain required before signing; they do not
 replace physical validation.
+
+## iOS opened-document security scope
+
+`handle_deep_link` (src/platform_impl/ios/view.rs) calls
+`startAccessingSecurityScopedResource` on a file URL before turning it into
+`Event::Opened`. The app declares `LSSupportsOpeningDocumentsInPlace`, so a
+`.gsreplay` opened from Files or iCloud Drive arrives as a URL to the
+original document, readable only through that URL object's security scope; a
+path rebuilt from the event's `url::Url` cannot regain it. The access is kept
+for the process, since the app reads the file once, at once. Copied (Inbox)
+files and ordinary links return NO, harmlessly. See docs/replay-bundle.md,
+"Opening files from other apps".
+
+Device validation: open a bundle stored in iCloud Drive and one in "On My
+iPhone" from Files, with the app closed and running; both must reach the
+offline replay view.

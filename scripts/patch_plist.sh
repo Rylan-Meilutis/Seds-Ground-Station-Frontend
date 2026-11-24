@@ -290,6 +290,34 @@ set_string "$SCENE_CONFIG:0:UISceneConfigurationName" "Default Configuration"
 set_string "$SCENE_CONFIG:0:UISceneClassName" "UIWindowScene"
 set_string "$SCENE_CONFIG:0:UISceneDelegateClassName" "TaoSceneDelegate"
 
+# Replay bundles opened from Files, AirDrop and share sheets
+# (docs/replay-bundle.md, "Opening files from other apps"). The app exports
+# the .gsreplay type and views it; vendored Tao starts security-scoped access
+# for the delivered file URL (LSSupportsOpeningDocumentsInPlace, below).
+# Rebuilt on every run so the declarations stay exactly these.
+GSREPLAY_UTI="com.ubseds.gsreplay"
+if plist_has "UTExportedTypeDeclarations"; then pb "Delete :UTExportedTypeDeclarations"; fi
+pb "Add :UTExportedTypeDeclarations array"
+pb "Add :UTExportedTypeDeclarations:0 dict"
+set_string "UTExportedTypeDeclarations:0:UTTypeIdentifier" "$GSREPLAY_UTI"
+set_string "UTExportedTypeDeclarations:0:UTTypeDescription" "Ground Station replay"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeConformsTo array"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeConformsTo:0 string public.zip-archive"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeConformsTo:1 string public.data"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeTagSpecification dict"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeTagSpecification:public.filename-extension array"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeTagSpecification:public.filename-extension:0 string gsreplay"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeTagSpecification:public.mime-type array"
+pb "Add :UTExportedTypeDeclarations:0:UTTypeTagSpecification:public.mime-type:0 string application/vnd.seds.gsreplay+zip"
+if plist_has "CFBundleDocumentTypes"; then pb "Delete :CFBundleDocumentTypes"; fi
+pb "Add :CFBundleDocumentTypes array"
+pb "Add :CFBundleDocumentTypes:0 dict"
+set_string "CFBundleDocumentTypes:0:CFBundleTypeName" "Ground Station replay"
+set_string "CFBundleDocumentTypes:0:CFBundleTypeRole" "Viewer"
+set_string "CFBundleDocumentTypes:0:LSHandlerRank" "Owner"
+pb "Add :CFBundleDocumentTypes:0:LSItemContentTypes array"
+pb "Add :CFBundleDocumentTypes:0:LSItemContentTypes:0 string $GSREPLAY_UTI"
+
 # Privacy strings
 set_string "NSLocalNetworkUsageDescription" \
   "This app connects to devices on your local network to get data from the ground station."
