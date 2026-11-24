@@ -121,6 +121,8 @@ A plan bundle (`GET /api/flight_plans/{id}/bundle`) sets `manifest.predicted: tr
 and `manifest.label`; its `replay.json` has `"predicted": true`. The flight replay
 shows a Predicted badge for either. The offline workspace passes these entries to
 the player as the document's `replay_extras` (`local_station/bundle.rs`).
+| `derived/review_inputs.json` | no | what the motor/flight review reads from the recording, for its whole span (see "Review of a custom window"); left out with `?review=false` | review and review exports of any window offline |
+| `models/hybrid_motor/hybrid_motor.json`, `sweet_v6_cea.json`, `sweet_v6_grain.json` | no | the station's hybrid motor model files (GroundStation26 `backend/src/apogee_planner/model/`), only when the recording has load cells and a tank PT | the burn report's predicted curve in a custom window |
 | `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background |
 | `data/receipt_telemetry.csv` | no | SD-resolved recordings only: the rows as received (`main.telemetry`), in the CSV a recording that was never resolved exports (no route); omitted above 96 MiB (listed in `missing` with 507) | time-range CSV offline, import |
 | `derived/sd_sources/after_{n}.json` | no | `GET /api/recordings/{id}/sd/sources?after_id={n}`, the SD source list's later pages (128 sources each) | SD import list |
@@ -229,6 +231,10 @@ the station's answer to the same request, byte for byte.
 | Report studio preview, CSV, DAQ SD CSV/TSV | `GET /api/recordings/report?request=` with `format` `preview`, `csv`, `daq_csv`, `daq_tsv` | Computed from `data/telemetry.csv`, `derived/calibration_history.json` and `config/report_context.json` by a Rust port of the station's report worker (`exports/report.rs`, from GroundStation26 `recording_report.py`). The preview is the same JSON. For an SD-resolved recording the rows are the resolved ones on their canonical UTC time, with each row's provenance: the CSV's received time and `sample_provenance`, the units an SD import names, and SD rows copied whole (the original thirteen cells) into the DAQ SD layout, as the station writes them. The merge itself is the station's: it needs the operator's SD assignment, and the bundle carries its result. |
 | Checklists and recovery history | `GET /api/checklists/export`, `/api/checklists/export.csv`, `/api/recovery/export.json`, `/api/recovery/export.csv` | The bundled `records/*` entries, byte for byte (404 "Not available offline" when the bundle has none). The demo answers them with small demo records in the station's shapes. |
 | Motor and flight review exports | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | The bundled ZIP, for a request without a window or with the default window (as given in `exports/index.json`, or as the export form fills it in whole seconds). |
+| Time-range CSV | `GET /api/recordings/csv?start_ms=&end_ms=` | Derived from `data/telemetry.csv`: the rows received in `[start_ms, end_ms)`, each record's cells unchanged behind a `recording` column. Over-range values are `OVR`/`-OVR` in both (the station's range export applies the same markers as the recording CSV). |
+| Report studio preview, CSV, DAQ SD CSV/TSV | `GET /api/recordings/report?request=` with `format` `preview`, `csv`, `daq_csv`, `daq_tsv` | Computed from `data/telemetry.csv`, `derived/calibration_history.json` and `config/report_context.json` by a Rust port of the station's report worker (`exports/report.rs`, from GroundStation26 `recording_report.py`). The preview is the same JSON. |
+| Motor and flight review exports | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | Without a window: the bundled ZIP. With `from_ms` and/or `to_ms`: computed from `derived/review_inputs.json` (below), the station's ZIP for the same request with `raster=false`. |
+| Review of a window | `GET /api/flight_review/recording/{id}?from_ms=&to_ms=` | Computed the same way (the same JSON). Without a window the bundle's `derived/flight_review.json` answers. The dashboard asks only without a window today. |
 
 Not offline:
 
@@ -243,6 +249,18 @@ Not offline:
   are kept).
 - The time-range CSV of an SD-resolved recording from a bundle made before
   `data/receipt_telemetry.csv` existed: 501.
+- The raster charts (PNG) and PDF report inside the review exports: they
+  need matplotlib on the station. Offline ZIPs (bundled and computed) are the
+  station's `raster=false` answer: SVG charts, data and the HTML report, and
+  `provenance.json` notes "PNG/PDF not requested.". The export form does not
+  send `raster`; a connected station renders them as before, the local
+  station never does.
+- A custom review window whose burn has a predicted curve, in a bundle without
+  the hybrid motor model (made before the model entries, or from a recording
+  without load cells and a tank PT): 501.
+- Time-range CSV and reports of an SD-resolved recording (its CSV has
+  `canonical_utc_ms` and `provenance_json` columns): 501. Their CSV is on the
+  resolved timeline, while the station's range export reads the receipt rows.
 - Other recordings: the range CSV and a report of all recordings
   (`recording` empty) cover only the bundle's recording, labelled with its
   id. The station covers every primary recording in the range.
@@ -255,14 +273,60 @@ would be misread. Station sender and type names never do.
 Bundles made before these entries existed still answer the recording CSV,
 the time-range CSV and the report formats (with default valve labels and
 units, and no recorded calibration epochs); their review exports need the
-station.
+station, and without `derived/review_inputs.json` a custom review window
+answers 501.
+
+### Review of a custom window
+
+`derived/review_inputs.json` (GroundStation26 `flight_review::offline`) holds
+what the station's review reads from the recording, for its whole span:
+
+```json
+{"format": "seds-gs-review-inputs", "version": 1,
+ "id": "…", "source_kind": "capture", "label": "Launch", "mode": "test_fire", "provenance": "hardware", "simulated": false,
+ "plan": {…}, "planner_prediction": {…},
+ "station_software": "groundstation_backend 0.1.0",
+ "types": ["LOADCELL_WEIGHT_KG", …], "senders": ["DAQ", …],
+ "rows": [[t_ms, type_index, sender_index, [values…]], [t_ms, …, […], "payload"], …],
+ "messages": [[t_ms, "text"], …], "station_states": [[t_ms, code], …],
+ "extra_daq": [["kg1000", t_ms, value], …]}
+```
+
+- `rows`: the review's telemetry rows (`flight_review::data::read_pool`
+  without a range) in the station's order, on network time (the source
+  timestamp when the row has one). Values are numbers, `null`, or
+  `"OVR"`/`"-OVR"` for over range. Only `GS_STATION_MODE` and
+  `GS_FLIGHT_MAXIMA` rows keep their payload (the review reads no other).
+- `messages`, `station_states`: the recording's message log and station
+  flight states.
+- `extra_daq`: the DAQ launch file attached to a plain event capture
+  (`burn_report::daq_rows`), merged into the burn report as the station does.
+- `label`, `mode`, `provenance`, `simulated`, `plan`: the event capture's
+  manifest (`null`/`false` for other recordings). `planner_prediction` is the
+  apogee planner's motor for `plan` (`motor::planner_prediction`), used when a
+  window holds no burn.
+
+For a request with a window the UI clips the rows as the station clips its
+read (`Data::clip`), runs the station's review (burn report, hybrid model
+prediction, flight summary) and writes the station's export
+(`local_station/exports/review/`). The review code is GroundStation26's:
+`zip.rs`, `plot.rs`, `thrust.rs`, `merge.rs` and `hybrid.rs` are copies
+checked by `scripts/check_review_port.py` (and `tests/test_review_port.py`
+when a GroundStation26 checkout is next to this one); `burn.rs`, `data.rs`,
+`motor.rs`, `flight.rs`, `export.rs` and `review/mod.rs` are ports. The time
+the station would stamp (`created_ms`, `generated_ms`) is the device's clock.
+The hybrid model's floating point runs on the platform's math library: the
+golden tests run natively (as the station does); a browser's results may
+differ in the last digits of the predicted curve.
 
 ## Sizes
 
 | Recording | Rows | Recording database | Bundle |
 | --- | --- | --- | --- |
-| Contract fixture (nominal 10k ft flight, 0.5 Hz) | 601 | — | 105 KB (13 KB of it the flight review export, about 35 KB the five replay-view layouts) |
-| Synthetic ten-minute capture at flight rates (100 Hz IMU, 50 Hz loadcell/PT/baro, 5 Hz GPS) | 154,200 | 20.3 MB | 4.3 MB |
+| Contract fixture (nominal 10k ft flight, 0.5 Hz) | 601 | — | 106 KB (13 KB of it the flight review export, 4.6 KB the review inputs, about 35 KB the five replay-view layouts) |
+| Contract fixture test-fire capture (40 Hz telemetry, 200 Hz DAQ launch file) | 2,962 + 6,000 DAQ | — | 430 KB (39 KB review inputs, 183 KB hybrid motor model) |
+| Contract fixture flight capture (20 Hz) | 11,471 | — | 485 KB (65 KB review inputs) |
+| Synthetic ten-minute capture at flight rates (100 Hz IMU, 50 Hz loadcell/PT/baro, 5 Hz GPS) | 154,200 | 20.3 MB | 6.3 MB (about 2 MB of it `derived/review_inputs.json`; 4.3 MB with `?review=false`) |
 
 | SD-resolved contract fixture (synthetic: 39 receipt rows, 40 resolved rows, one 2 KB SD file) | 40 | — | 96 KB (receipt CSV 2.9 KB, resolved CSV 38 KB, SD file 2 KB) |
 
@@ -301,12 +365,24 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
   - `recording_bundle_records` checks that each bundled record is the
     station's answer byte for byte, and `recording_import` that an
     SD-resolved bundle imports with both timelines.
+    formula-like and non-ASCII senders and Python float formatting.
+  - writes the station's reviews and review exports (`raster=false`) of
+    custom windows to `replay-bundle/review/` and lists them in
+    `review/requests.json`: windows of the bundled flight, of a flight
+    capture (`review/flight_capture.gsreplay`: FC phases, messages, station
+    states) and of a test-fire capture (`review/test_fire.gsreplay`: DAQ
+    launch file, applied plan, hybrid model): the burn, a window that cuts
+    the ignition, a window before the burn, and error answers. The station's
+    clock is pinned so the answers are reproducible.
 - UI `local_station/tests.rs`:
   - opens the bundle with no station;
   - checks the layout, geometry, diagrams, boards, track and summaries;
   - checks that the CSV export equals the station's CSV byte for byte;
   - answers every request in `exports/requests.json` offline and checks it
     equals the station's file (byte for byte; previews as JSON) or error;
+  - answers every request in `review/requests.json` from its bundle at the
+    station's pinned time and checks the ZIP is the same bytes (reviews: the
+    same JSON) or the same error;
   - checks that hash, version and format errors are refused.
 - UI `local_station/tests.rs`: a plan bundle opens labelled Predicted with its
   plan; `derived/flight_plans.json` plans are offered for comparison.

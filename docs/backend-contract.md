@@ -568,6 +568,8 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/flight_review/live` | → `LiveReview` | Flight review | view_data | M |
 | GET | `/api/flight_review/recording/{id}` | → `RecordingReview` | Flight review; flight replay events (`flight.events`, `flight.apogee`) | view_data | M |
 | GET | `/api/flight_review/recording/{id}/{kind}` | `kind` = `motor_export` or `flight_export`; query `from_ms`, `to_ms`; ZIP | Flight review | view_data | M |
+| GET | `/api/flight_review/recording/{id}` | query `from_ms`, `to_ms` (optional window) → `RecordingReview` | Flight review | view_data | M |
+| GET | `/api/flight_review/recording/{id}/{kind}` | `kind` = `motor_export` or `flight_export`; query `from_ms`, `to_ms`, `raster` (default `true`; `false` leaves the PNG charts and PDF report out); ZIP | Flight review | view_data | M |
 | GET | `/api/flight_review/recording/{id}/motor_export` | concrete form of the row above | Flight review | view_data | M |
 | GET | `/api/flight_review/recording/{id}/flight_export` | concrete form of the row above | Flight review | view_data | M |
 | GET | `/api/burn_reports` | → `List` | Burn reports | view_data | M |
@@ -1199,6 +1201,13 @@ in the banner, the transport bar, the map (dashed purple track) and the
 charts, and the 3D player's header says it is simulated. A recording
 bundle's `derived/flight_plans.json` offers plans to compare on the map and
 the altitude chart ([replay-bundle.md](replay-bundle.md#predicted-bundles-flight-plans)).
+
+The motor/flight review of a custom window and its exports
+(`GET /api/flight_review/recording/{id}?from_ms&to_ms`, `.../motor_export`,
+`.../flight_export` with a window) are computed on the device from the
+bundle's `derived/review_inputs.json` and hybrid motor model, as the station
+answers them with `raster=false`
+([replay-bundle.md](replay-bundle.md#review-of-a-custom-window)).
 
 ## 11. Demo mode: a local reference station
 
