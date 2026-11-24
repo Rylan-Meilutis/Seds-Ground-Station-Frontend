@@ -67,10 +67,13 @@ class WasmBindgenBootstrapTests(unittest.TestCase):
                      patch.object(build, "_installed_dx_version", return_value=None), \
                      patch.object(build, "_workspace_dioxus_versions", return_value=[]), \
                      patch.object(build, "_dx_version_line_filter", return_value=None), \
-                     patch.object(build, "_tail_log_text", return_value="wasm-bindgen version mismatch"), \
                      patch.object(build, "_looks_like_wasm_bindgen_failure", return_value=True), \
                      patch.object(build, "_extract_wasm_bindgen_version_hint", return_value=None), \
-                     patch.object(build, "run", side_effect=[subprocess.CalledProcessError(1, ["dx"]), EndOfBuild]) as run:
+                     patch.object(build, "run", side_effect=[
+                         # build_frontend classifies the captured dx output, not an old log tail.
+                         subprocess.CalledProcessError(1, ["dx"], output="wasm-bindgen version mismatch"),
+                         EndOfBuild,
+                     ]) as run:
                     with self.assertRaises(EndOfBuild):
                         build.build_frontend(root, "ios", rust_target=target)
                     self.assertEqual(bootstrap.call_count, 2)

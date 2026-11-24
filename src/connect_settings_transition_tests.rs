@@ -9,6 +9,41 @@ thread_local! { static DISCOVERY_TASKS: RefCell<Vec<Task>> = const { RefCell::ne
 pub(super) fn observe_discovery_task(task: Task) {
     DISCOVERY_TASKS.with(|tasks| { let mut tasks = tasks.borrow_mut(); assert!(tasks.len() < 8); tasks.push(task); });
 }
+fn only_loopback_visible() -> bool {
+    if_addrs::get_if_addrs().unwrap().iter().all(|interface| interface.name == "lo")
+}
+
+fn unprivileged_netns_available() -> bool {
+    Command::new("unshare").args(["--user", "--map-root-user", "--net", "true"])
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().is_ok_and(|status| status.success())
+}
+
+/// Starts this test binary on one exact test in a network with only `lo`.
+/// A host that already shows only `lo` runs the child directly. Otherwise the
+/// child gets an unprivileged user+network namespace with `lo` brought up, so
+/// genuine LAN discovery can never reach a real network. Without either, the
+/// test is skipped (the child's own interface check is never relaxed).
+fn spawn_loopback_only_child(test: &str, configure: impl FnOnce(&mut Command)) -> Option<std::process::Child> {
+    let exe = std::env::current_exe().unwrap();
+    let args = ["--exact", test, "--nocapture", "--test-threads=1"];
+    let mut command = if only_loopback_visible() {
+        let mut command = Command::new(exe);
+        command.args(args);
+        command
+    } else if unprivileged_netns_available() {
+        let mut command = Command::new("unshare");
+        command.args(["--user", "--map-root-user", "--net", "--", "sh", "-c",
+            "ip link set lo up 2>/dev/null || true; exec \"$0\" \"$@\""]).arg(exe).args(args);
+        command
+    } else {
+        println!("SKIPPED {test}: host shows non-loopback interfaces and no unprivileged network namespace (unshare --user --net) is available; this test needs a loopback-only network");
+        return None;
+    };
+    configure(&mut command);
+    Some(command.spawn().unwrap())
+}
+
 fn router_root() -> Element {
     use_hook(|| {
         dioxus::history::provide_history_context(Rc::new(dioxus::history::MemoryHistory::with_initial_path("/connect")));
@@ -102,11 +137,13 @@ async fn actual_connect_settings_click_cancels_scoped_task_while_real_discovery_
         let owned = std::env::temp_dir().join(format!("gs-connect-settings-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&owned).unwrap();
         let exact = format!("{}::actual_connect_settings_click_cancels_scoped_task_while_real_discovery_worker_held", module_path!().split_once("::").unwrap().1);
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &exact, "--nocapture", "--test-threads=1"])
-            .env(CHILD, "1").env("GS_CONNECT_SETTINGS_OWNED", &owned)
-            .env("XDG_DATA_HOME", owned.join("data")).env("XDG_CONFIG_HOME", owned.join("config")).env("XDG_CACHE_HOME", owned.join("cache"))
-            .spawn().unwrap();
+        let Some(mut child) = spawn_loopback_only_child(&exact, |command| {
+            command.env(CHILD, "1").env("GS_CONNECT_SETTINGS_OWNED", &owned)
+                .env("XDG_DATA_HOME", owned.join("data")).env("XDG_CONFIG_HOME", owned.join("config")).env("XDG_CACHE_HOME", owned.join("cache"));
+        }) else {
+            std::fs::remove_dir_all(&owned).unwrap();
+            return;
+        };
         let start = Instant::now();
         let exit = loop {
             if let Some(status) = child.try_wait().unwrap() { break Some(status); }
@@ -123,9 +160,9 @@ async fn actual_connect_settings_click_cancels_scoped_task_while_real_discovery_
         return;
     }
     assert!(std::env::var_os("RUST_MIN_STACK").is_none());
-    // The enclosing reviewed runner must also attest a private network namespace
-    // with only lo. This local check rejects visible non-loopback interfaces.
-    assert!(if_addrs::get_if_addrs().unwrap().iter().all(|interface| interface.name == "lo"));
+    // The parent launches this child in a private network with only lo; this
+    // local check still rejects any visible non-loopback interface.
+    assert!(only_loopback_visible());
     let owned = PathBuf::from(std::env::var_os("GS_CONNECT_SETTINGS_OWNED").unwrap());
     assert_eq!(PathBuf::from(std::env::var_os("XDG_DATA_HOME").unwrap()), owned.join("data"));
     assert!(!owned.join("data/gs26/storage.json").exists());
@@ -196,11 +233,13 @@ async fn actual_app_content_entry_connect_settings_back_settings_has_no_panic() 
         let owned = std::env::temp_dir().join(format!("gs-app-entry-settings-{}-{nonce}", std::process::id()));
         std::fs::create_dir_all(&owned).unwrap();
         let exact = format!("{}::actual_app_content_entry_connect_settings_back_settings_has_no_panic", module_path!().split_once("::").unwrap().1);
-        let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", &exact, "--nocapture", "--test-threads=1"])
-            .env(CHILD, "1")
-            .env("XDG_DATA_HOME", owned.join("data")).env("XDG_CONFIG_HOME", owned.join("config")).env("XDG_CACHE_HOME", owned.join("cache"))
-            .spawn().unwrap();
+        let Some(mut child) = spawn_loopback_only_child(&exact, |command| {
+            command.env(CHILD, "1")
+                .env("XDG_DATA_HOME", owned.join("data")).env("XDG_CONFIG_HOME", owned.join("config")).env("XDG_CACHE_HOME", owned.join("cache"));
+        }) else {
+            std::fs::remove_dir_all(&owned).unwrap();
+            return;
+        };
         let start = Instant::now();
         let exit = loop {
             if let Some(status) = child.try_wait().unwrap() { break Some(status); }
@@ -212,7 +251,7 @@ async fn actual_app_content_entry_connect_settings_back_settings_has_no_panic() 
         return;
     }
     // Connect runs genuine LAN discovery, so stay off real networks as above.
-    assert!(if_addrs::get_if_addrs().unwrap().iter().all(|interface| interface.name == "lo"));
+    assert!(only_loopback_visible());
     let mut dom = VirtualDom::new(app_entry_root);
     let (original_base, original_status) = dom.in_scope(ScopeId::ROOT, || {
         assert!(UrlConfig::_stored_base_url().is_none());
