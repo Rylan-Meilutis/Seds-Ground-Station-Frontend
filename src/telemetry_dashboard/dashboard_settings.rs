@@ -1200,8 +1200,7 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
 }
 
 fn format_launch_clock_delta(ms: i64) -> String {
-    // Nearest hundredth; the shared formatter truncates.
-    crate::telemetry_dashboard::tclock::tclock_body(ms.max(0).unsigned_abs().saturating_add(5), 2)
+    crate::telemetry_dashboard::tclock::launch_clock_body(ms)
 }
 
 fn launch_clock_tminus_remaining_ms(clock: &LaunchClockMsg, now_ms: i64) -> Option<i64> {

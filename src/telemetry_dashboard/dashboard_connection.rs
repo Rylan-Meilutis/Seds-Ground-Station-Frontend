@@ -589,6 +589,8 @@ pub fn hard_reload_dashboard_data() {
 /// Clears everything the previous station showed and reconnects: used when
 /// a local station (demo, replay file) starts, jumps or ends.
 pub(crate) fn reset_dashboard_for_new_station() {
+    // A new station (or a local station after a seek) starts its own countdown.
+    reset_tminus_display_latch();
     clear_telemetry_runtime_buffers();
     clear_visible_telemetry_history_without_bridge();
     set_reseed_status_running();

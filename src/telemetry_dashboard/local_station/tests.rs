@@ -703,3 +703,39 @@ fn firmware_mode_and_review_are_answered_from_the_session() {
     assert_eq!(replay.request_at("GET", "/api/firmware/targets", None, EPOCH).text(), "Flashing needs a station.");
     assert_eq!(replay.misses(), ["/api/firmware/targets", "/api/live_streams"], "only the live-only routes asked here were not served");
 }
+
+fn launch_clocks(frames: &[WsInMsg]) -> Vec<crate::telemetry_dashboard::LaunchClockMsg> {
+    frames.iter().filter_map(|f| match f { WsInMsg::LaunchClock(clock) => Some(clock.clone()), _ => None }).collect()
+}
+
+#[test]
+fn the_launch_clock_follows_the_playback_clock_at_any_speed_seek_and_pause() {
+    use crate::telemetry_dashboard::LaunchClockKind;
+    let station = LocalStation::new(demo::session(0), EPOCH);
+    // Before the countdown: idle, and the bar shows what the header shows idle.
+    assert_eq!(station.request_at("GET", "/api/launch_clock", None, EPOCH).text(), r#"{"anchor_timestamp_ms":null,"duration_ms":null,"kind":"idle"}"#);
+    assert_eq!(station.tclock_text(station.playback(EPOCH).position), "T- 00:10.00");
+    // A seek into the countdown: a held sample of the time left, on the bar too.
+    let wall = EPOCH + 1_000;
+    station.seek(135_250, wall);
+    let first = frames(&station, wall);
+    let clocks = launch_clocks(&first);
+    assert_eq!(clocks.len(), 1, "a reconnect after a seek carries the clock");
+    assert_eq!((clocks[0].kind, clocks[0].anchor_timestamp_ms, clocks[0].duration_ms), (LaunchClockKind::TMinus, None, Some(4_750)));
+    assert_eq!(station.tclock_text(station.playback(wall).position), "T- 00:04.75");
+    // 10x: one wall second is ten playback seconds, for the header and the bar alike.
+    station.set_speed(10.0, false, wall);
+    let later = frames(&station, wall + 1_000);
+    let clocks = launch_clocks(&later);
+    assert_eq!((clocks[0].kind, clocks[0].anchor_timestamp_ms, clocks[0].duration_ms), (LaunchClockKind::TPlus, None, Some(5_250)));
+    assert_eq!(station.tclock_text(station.playback(wall + 1_000).position), "T+ 00:05.25");
+    // Every tick while the clock runs carries a sample.
+    let tick = launch_clocks(&frames(&station, wall + 1_100));
+    assert_eq!(tick[0].duration_ms, Some(6_250));
+    // Paused: the clock holds, and nothing more is pushed for it.
+    station.set_speed(10.0, true, wall + 1_100);
+    assert!(launch_clocks(&frames(&station, wall + 60_000)).is_empty(), "a paused clock sends nothing new");
+    let held: crate::telemetry_dashboard::LaunchClockMsg = decode(&station, "/api/launch_clock");
+    assert_eq!(held.duration_ms, Some(6_250));
+    assert_eq!(station.tclock_text(station.playback(wall + 60_000).position), "T+ 00:06.25");
+}

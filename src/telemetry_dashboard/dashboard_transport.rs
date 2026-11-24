@@ -1339,6 +1339,7 @@ async fn connect_local_station(
         recording_status, fill_targets, network_time, launch_clock, network_topology, warning_event_counter, error_event_counter,
         board_status, rocket_gps, rocket_gps_altitude_m, user_gps, user_gps_altitude_m, layout_config, layout_loading,
         layout_error, layout_error_dismissed, layout_request_base, calibration_has_sensors, calibration_request_base, action_policy);
+    station.connected();
     log!("[WS] local station connected (epoch={epoch})");
     while alive.load(Ordering::Relaxed) && *WS_EPOCH.peek() == epoch && station_link::local().is_some_and(|s| std::rc::Rc::ptr_eq(&s, &station)) {
         while let Ok(queued) = commands.try_recv() {

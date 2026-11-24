@@ -8,7 +8,8 @@
 .gs26-local-bar-transport{display:flex;align-items:center;gap:8px;flex:2 1 320px;min-width:0}
 .gs26-local-bar-transport input[type=range]{flex:1 1 120px;min-width:80px;accent-color:#67d5c8}
 .gs26-local-bar-transport>:is(button,select,span){flex:none}
-.gs26-local-bar-clock{font-variant-numeric:tabular-nums;font-weight:600;min-width:8ch}
+.gs26-local-bar-clock{font-variant-numeric:tabular-nums;font-weight:600;min-width:11ch}
+.gs26-local-bar-position{font-variant-numeric:tabular-nums;font-size:12px;color:#cbd5e1}
 .gs26-local-bar-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
 .gs26-local-bar :is(button,select),.gs26-local-file-button{min-height:36px;min-width:36px;padding:6px 12px;border:1px solid var(--gs-control-border,#334155);background:var(--gs-control-bg,#111827);color:var(--gs-control-text,#e5e7eb);border-radius:10px;font:inherit;cursor:pointer}
 .gs26-local-file-button{display:inline-flex;align-items:center;position:relative}
@@ -22,6 +23,7 @@
  .gs26-local-bar-title{flex:1 1 0;min-width:0}
  .gs26-local-bar-title strong{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  .gs26-local-bar-title span{display:none}
+ .gs26-local-bar-position{display:none}
  .gs26-local-bar-transport{order:3;flex-basis:100%;gap:6px}
  .gs26-local-bar-transport input[type=range]{min-width:60px}
  .gs26-local-bar-actions{flex:none;flex-wrap:nowrap}

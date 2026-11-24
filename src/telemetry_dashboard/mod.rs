@@ -328,7 +328,7 @@ mod persist;
 
 include!("dashboard_messages.rs");
 
-const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = 20;
+const LAUNCH_TMINUS_ZERO_SNAP_MS: i64 = tclock::COUNTDOWN_ZERO_SNAP_MS;
 const LAUNCH_TMINUS_RESET_ZERO_LATCH_MS: i64 = 250;
 const NETWORK_TIME_BADGE_REFRESH_MS: u32 = 1_000;
 const ACTIVE_LAUNCH_CLOCK_REFRESH_MS: u32 = 100;

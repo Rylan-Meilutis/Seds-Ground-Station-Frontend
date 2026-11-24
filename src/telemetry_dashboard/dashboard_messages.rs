@@ -261,7 +261,7 @@ struct LaunchClockMsg {
     duration_ms: Option<i64>,
 }
 
-const DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS: i64 = 10_000;
+const DEFAULT_LAUNCH_COUNTDOWN_DURATION_MS: i64 = tclock::DEFAULT_COUNTDOWN_MS;
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecordingStatusMsg {

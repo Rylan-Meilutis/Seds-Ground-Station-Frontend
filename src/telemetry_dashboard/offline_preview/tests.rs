@@ -16,6 +16,9 @@ fn bundles_and_replay_files_open_through_the_same_entry() {
 #[test]
 fn clock_text_counts_down_to_the_demo_ignition() {
     let station = LocalStation::new(demo::session(0), 0);
-    assert_eq!(clock_text(&station, 130_000), "T−00:10.0");
-    assert_eq!(clock_text(&station, 141_500), "T+00:01.5");
+    assert_eq!(station.tclock_text(100_000), "T- 00:10.00", "before the countdown: the countdown length, as the header shows idle");
+    assert_eq!(station.tclock_text(130_000), "T- 00:10.00");
+    assert_eq!(station.tclock_text(135_250), "T- 00:04.75");
+    assert_eq!(station.tclock_text(141_500), "T+ 00:01.50");
+    assert_eq!(position_text(141_500, 0), "02:21.5");
 }

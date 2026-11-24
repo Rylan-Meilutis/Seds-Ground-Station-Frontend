@@ -54,6 +54,16 @@ The dashboard's station is chosen once, when its connection starts
     "This replay does not include the station's settings…". Any other
     route: "Not available offline: this route needs a Ground Station.";
     `saved_json` passes the local station's sentence through unwrapped.
+- One T clock: the playback bar and the dashboard header both show the
+  local station's launch clock (`LocalStation::tclock_at`), formatted by
+  `tclock::launch_clock_text`. The station sends it as held samples
+  (`anchor_timestamp_ms: null`, `duration_ms` = time left or elapsed), one
+  per 100 ms tick while it runs, which the header shows without advancing
+  them on the wall clock; so it follows playback at any speed, after a seek
+  and stops when paused. Before the countdown both show the countdown length
+  (`T- 00:10.00`); the bar shows the position into the session beside it.
+  `tests/tclock-agreement-browser.mjs` checks the two agree at 1x, 10x,
+  after a seek and paused.
 - Rows are stamped with the wall-clock time they are pushed, so the live
   charts, ages and staleness checks behave as with a station. A seek, file
   change or restart remounts the dashboard and reseeds its history from the

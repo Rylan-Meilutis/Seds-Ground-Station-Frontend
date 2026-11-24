@@ -330,6 +330,7 @@ Semantics:
 - Once `t_minus` starts, the backend must not reset or re-anchor it from repeated launch commands, stale flight-state packets, or reconnect/reseed flow.
 - Once `t_plus` starts, the backend must not reset it to idle, restart `t_minus`, or re-anchor `t_plus`.
 - Frontends should display `T- 00:00.00` after countdown completion until a backend `t_plus` update arrives.
+- A held sample has `anchor_timestamp_ms: null` and `duration_ms` set: for `t_minus` the time left, for `t_plus` the time elapsed. Frontends show it as sent and do not advance it on their own clock; the sender sends a new sample whenever it changes. The local station (demo mode, replays) sends its playback clock this way, one sample per tick, so the clock follows playback speed, seeks and pauses.
 
 ### `GET /api/gps`
 

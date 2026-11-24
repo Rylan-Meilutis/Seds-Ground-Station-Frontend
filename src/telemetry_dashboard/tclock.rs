@@ -42,6 +42,25 @@ pub fn format_tclock_ms(ms_from_t0: i64, fraction_digits: u32) -> String {
     format_tclock(ms_from_t0 < 0, ms_from_t0.unsigned_abs(), fraction_digits)
 }
 
+/// The countdown length a launch clock shows before it starts.
+pub const DEFAULT_COUNTDOWN_MS: i64 = 10_000;
+
+/// A countdown this close to T-0 shows zero.
+pub const COUNTDOWN_ZERO_SNAP_MS: i64 = 20;
+
+/// The launch clock's digits as the dashboard header shows them: to the
+/// nearest hundredth (the body itself truncates).
+pub fn launch_clock_body(ms: i64) -> String {
+    tclock_body(ms.max(0).unsigned_abs().saturating_add(5), 2)
+}
+
+/// The launch clock as one line (`T- 00:10.00`, `T+ 01:18.40`): the header's
+/// label and digits. `ms` is the time left before T-0, or elapsed from it.
+pub fn launch_clock_text(t_plus: bool, ms: i64) -> String {
+    let ms = if !t_plus && ms <= COUNTDOWN_ZERO_SNAP_MS { 0 } else { ms };
+    format!("T{} {}", if t_plus { '+' } else { '-' }, launch_clock_body(ms))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -64,6 +83,10 @@ mod tests {
         assert_eq!(format_tclock_ms(99 * 3_600_000 + 61_000, 0), "T+ 4:03:01:01");
         assert_eq!(format_tclock_ms(-(400 * 86_400_000), 0), "T- 400:00:00:00");
         assert_eq!(tclock_body(1_234, 3), "00:01.234");
+        assert_eq!(launch_clock_text(false, DEFAULT_COUNTDOWN_MS), "T- 00:10.00");
+        assert_eq!(launch_clock_text(false, 9_996), "T- 00:10.00");
+        assert_eq!(launch_clock_text(false, 15), "T- 00:00.00");
+        assert_eq!(launch_clock_text(true, 78_404), "T+ 01:18.40");
         assert_eq!(tclock_body(1_234, 9), "00:01.234");
     }
 

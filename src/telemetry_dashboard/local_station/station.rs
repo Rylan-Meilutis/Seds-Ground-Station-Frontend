@@ -18,6 +18,21 @@ use std::collections::VecDeque;
 /// Telemetry history `GET /api/recent` returns, as the station's display history.
 const RECENT_MS: i64 = 10 * 60_000;
 const RECENT_MAX_ROWS: usize = 12_000;
+/// The demo station counts down this long from Launch to ignition (T-0).
+const DEMO_COUNTDOWN_MS: i64 = 10_000;
+
+/// The station's T clock at one playback position. The `LaunchClock` frames,
+/// `GET /api/launch_clock` and the playback bar all read it, so the header
+/// and the bar show the same time at every speed, after a seek and paused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TClock {
+    /// No countdown has started.
+    Idle,
+    /// Counting down: milliseconds left to T-0.
+    Minus(i64),
+    /// From T-0: milliseconds elapsed.
+    Plus(i64),
+}
 
 /// Playback position on the session's own time axis (sample `t_ms`).
 #[derive(Clone, Copy, Debug)]
@@ -65,6 +80,9 @@ pub(crate) struct LocalStation {
     last_phase: Cell<Option<&'static str>>,
     last_status_wall: Cell<i64>,
     outbox: RefCell<VecDeque<String>>,
+    /// The `LaunchClock` last pushed: a frame goes out whenever it changes
+    /// (every tick while the clock runs, never paused).
+    sent_clock: RefCell<Option<Value>>,
     next_notification: Cell<u64>,
     /// GET routes this station did not serve ("Not available offline"), for
     /// the offline browser tests (`window.__gs26LocalMisses` in the browser).
@@ -259,6 +277,7 @@ impl LocalStation {
             last_phase: Cell::new(None),
             last_status_wall: Cell::new(i64::MIN),
             outbox: RefCell::new(VecDeque::new()),
+            sent_clock: RefCell::new(None),
             next_notification: Cell::new(1),
             misses: RefCell::new(Default::default()),
         }
@@ -309,8 +328,15 @@ impl LocalStation {
         clock.anchor_wall = wall;
         self.clock.set(clock);
         self.pushed_to.set(pos);
+        self.connected();
+    }
+
+    /// A dashboard (re)connected: its next frames carry the state, T clock
+    /// again instead of only what changed.
+    pub(crate) fn connected(&self) {
         self.last_state.borrow_mut().clear();
         self.last_status_wall.set(i64::MIN);
+        self.sent_clock.borrow_mut().take();
     }
 
     /// Rows with unbounded positions in `(from, to]`, oldest first.
@@ -425,18 +451,50 @@ impl LocalStation {
         }
     }
 
+    /// Session-axis time of the recorded (or scenario) Launch state.
+    fn launch_at(&self) -> Option<i64> {
+        self.session.states.iter().find(|(_, s)| s == "Launch").map(|(t, _)| *t)
+    }
+
+    /// From Launch to T-0: the demo counts down; a recording's Launch is T-0.
+    fn countdown_ms(&self) -> i64 {
+        if self.session.is_demo() { DEMO_COUNTDOWN_MS } else { 0 }
+    }
+
+    /// The T clock at unbounded position `pos`.
+    pub(crate) fn tclock_at(&self, pos: i64) -> TClock {
+        let at = self.wrap(pos);
+        let Some(launch) = self.launch_at() else { return TClock::Idle };
+        let zero = launch + self.countdown_ms();
+        if at >= zero {
+            TClock::Plus(at - zero)
+        } else if at >= launch {
+            TClock::Minus(zero - at)
+        } else {
+            TClock::Idle
+        }
+    }
+
+    /// The T clock at a playback position as the dashboard header shows it.
+    pub(crate) fn tclock_text(&self, pos: i64) -> String {
+        use super::super::tclock::{launch_clock_text, DEFAULT_COUNTDOWN_MS};
+        match self.tclock_at(pos) {
+            TClock::Idle => launch_clock_text(false, DEFAULT_COUNTDOWN_MS),
+            TClock::Minus(left) => launch_clock_text(false, left),
+            TClock::Plus(elapsed) => launch_clock_text(true, elapsed),
+        }
+    }
+
+    /// `LaunchClock` / `GET /api/launch_clock` at `wall`: held samples (no
+    /// anchor), which the dashboard shows as sent without advancing them on
+    /// its own clock. A sample goes out on every tick while the clock runs,
+    /// so the header follows the playback clock at any speed and stops when
+    /// playback pauses.
     fn launch_clock(&self, wall: i64) -> Value {
-        let at = self.wrap(self.position(wall));
-        let launch = self.session.states.iter().find(|(_, s)| s == "Launch").map(|(t, _)| *t);
-        let clock = self.clock.get();
-        match launch {
-            // The demo counts down 10 s from Launch to ignition.
-            Some(t) if self.session.is_demo() && at >= t && at < t + 10_000 => json!({"kind": "t_minus", "anchor_timestamp_ms": clock.wall_of(self.position(wall) - at + t + 10_000), "duration_ms": 10_000}),
-            Some(t) if at >= t => {
-                let zero = t + if self.session.is_demo() { 10_000 } else { 0 };
-                json!({"kind": "t_plus", "anchor_timestamp_ms": clock.wall_of(self.position(wall) - at + zero), "duration_ms": null})
-            }
-            _ => json!({"kind": "idle", "anchor_timestamp_ms": null, "duration_ms": null}),
+        match self.tclock_at(self.position(wall)) {
+            TClock::Minus(left) => json!({"kind": "t_minus", "anchor_timestamp_ms": null, "duration_ms": left}),
+            TClock::Plus(elapsed) => json!({"kind": "t_plus", "anchor_timestamp_ms": null, "duration_ms": elapsed}),
+            TClock::Idle => json!({"kind": "idle", "anchor_timestamp_ms": null, "duration_ms": null}),
         }
     }
 
@@ -867,9 +925,13 @@ impl LocalStation {
             let (flight_state, mission, phase) = self.state_frames(wall);
             frames.push(json!({"ty": "FlightState", "data": flight_state}).to_string());
             frames.push(json!({"ty": "MissionPhase", "data": mission}).to_string());
-            frames.push(json!({"ty": "LaunchClock", "data": self.launch_clock(wall)}).to_string());
             self.last_phase.set(Some(phase));
             *self.last_state.borrow_mut() = state;
+        }
+        let launch_clock = self.launch_clock(wall);
+        if self.sent_clock.borrow().as_ref() != Some(&launch_clock) {
+            frames.push(json!({"ty": "LaunchClock", "data": launch_clock}).to_string());
+            *self.sent_clock.borrow_mut() = Some(launch_clock);
         }
         if wall.saturating_sub(self.last_status_wall.get()) >= 1_000 {
             self.last_status_wall.set(wall);

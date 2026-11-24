@@ -59,17 +59,11 @@ async fn sleep_ms(ms: u32) {
     tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
 }
 
-/// Position as the bar shows it: T−/T+ around the demo's ignition, else
-/// time into the recording.
-fn clock_text(station: &LocalStation, position: i64) -> String {
-    let s = &station.session;
-    let launch = s.states.iter().find(|(_, st)| st == "Launch").map(|(t, _)| *t + if s.is_demo() { 10_000 } else { 0 });
-    let (sign, d) = match launch {
-        Some(zero) => (if position < zero { "T−" } else { "T+" }, (position - zero).abs()),
-        None => ("", position - s.start_ms()),
-    };
+/// Time into the session as the bar shows it beside the T clock (`mm:ss.s`).
+fn position_text(position: i64, start: i64) -> String {
+    let d = (position - start).max(0);
     let secs = d / 1000;
-    format!("{sign}{:02}:{:02}.{}", secs / 60, secs % 60, (d % 1000) / 100)
+    format!("{:02}:{:02}.{}", secs / 60, secs % 60, (d % 1000) / 100)
 }
 
 fn new_station(session: local_station::Session) -> Rc<LocalStation> {
@@ -137,7 +131,8 @@ pub fn OfflinePreview(
     let mut playback = use_signal(|| station.peek().playback(super::current_wallclock_ms()));
     use_future(move || async move {
         loop {
-            sleep_ms(250).await;
+            // The header's T clock moves on every local-station tick (100 ms); the bar keeps pace.
+            sleep_ms(100).await;
             let next = station.peek().playback(super::current_wallclock_ms());
             if *playback.peek() != next {
                 playback.set(next);
@@ -228,7 +223,9 @@ pub fn OfflinePreview(
                         },
                         if p.paused { "▶" } else { "❚❚" }
                     }
-                    span { class: "gs26-local-bar-clock", "data-testid": "local-clock", "{clock_text(&current, p.position)}" }
+                    // The station's own T clock (the header shows the same), then the position.
+                    span { class: "gs26-local-bar-clock", "data-testid": "local-clock", "{current.tclock_text(p.position)}" }
+                    span { class: "gs26-local-bar-position", "data-testid": "local-position", "{position_text(p.position, p.start)}" }
                     span { class: "gs-badge gs-badge--info", "data-testid": "preview-state", "{super::types::display_flight_state(&p.state)}" }
                     input { r#type: "range", "aria-label": "Position", min: "0", max: "{span}", step: "250", value: "{p.position - p.start}",
                         onchange: move |e| {
