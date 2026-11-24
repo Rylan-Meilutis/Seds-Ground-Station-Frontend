@@ -965,8 +965,9 @@ Findings from a source search for board ids, data-type names, command names,
 thresholds, geometry, diagram contents, branding, coordinates and hosts (test
 modules excluded). Severity: **Blocks** = another vehicle gets wrong or missing
 behaviour; **Partial** = a feature degrades for another vehicle; **Cosmetic** =
-wording or sample data only. **Small-safe** marks fixes that use data the
-backend already sends, with a fallback to the current value.
+wording or sample data only; **Resolved** = fixed, the row says how.
+**Small-safe** marks fixes that use data the backend already sends, with a
+fallback to the current value.
 
 ### 7.1 Board ids and names
 
@@ -979,8 +980,8 @@ backend already sends, with a fallback to the current value.
 | B5 | `src/telemetry_dashboard/igniter_sense_panel.rs:74-76` | Igniter sense read from sender `AB` | No | Partial | Read `sender_id` from the layout channel or add `igniter_sense.sender_id` to `/api/igt` |
 | B6 | `src/telemetry_dashboard/plumbing_drive.rs:229-231` | Board query `{"board":"AB"}` after a plumbing query | No (`/api/actuator/plumbing/status` has no board field) | Partial | Add `board` to `/api/actuator/plumbing/status` and use it |
 | B7 | `src/telemetry_dashboard/network_health.rs:48`, `:589`, `:600` | `DAQ` is the only node with storage actions/diagnostics | Partial: topology nodes carry diagnostics | Partial | Advertise storage actions per node in `/api/network_topology` (e.g. `nodes[].actions[]`) |
-| B8 | `src/telemetry_dashboard/telemetry_runtime.rs:1890-1902`, `calibration_tab.rs:367` | Calibration readings taken only from sender `DAQ` | **Yes**: `/api/calibration_config` `sensors[].channel` | Blocks calibration on a board not named DAQ | **Small-safe**: use the sensor's configured sender/channel instead of the literal |
-| B9 | `src/telemetry_dashboard/sd_board_download.rs:248` | Initial board selection `DAQ` | **Yes**: `/api/sd_download` `boards[]` | Cosmetic (wrong default until changed) | **Small-safe**: default to `boards[0]` once the status loads |
+| B8 | `src/telemetry_dashboard/telemetry_runtime.rs:1890-1902` (`fresh_daq_calibration_value`/`_reading`), `calibration_tab.rs:367` | Calibration readings taken only from sender `DAQ` | **No**: `/api/calibration_config` `sensors[].channel` is the calibration-file channel key (`ch1`, `kg50`, `iadc`), not a sender id, and the layout names no sender for `KG1000`/`KG50` | Blocks calibration on a board not named DAQ | Open (re-checked against GroundStation26 `loadcell.rs` `CalibrationSensorSpec`): add `sensors[].sender_id` to `/api/calibration_config` and read it, keeping `DAQ` as fallback |
+| B9 | `src/telemetry_dashboard/sd_board_download.rs:260` | Initial board selection `DAQ` | **Yes**: `/api/sd_download` `boards[]` | Resolved | **Fixed**: once the status lists `boards`, a selection the station does not offer moves to `boards[0]` (`board_selection`); `DAQ` is shown only until the list arrives |
 | B10 | `src/telemetry_dashboard/saved_replay.rs:25` | Rocket senders `FC RF PB FC_SD` for the "rocket"/"stand" replay tabs | No | Partial (replay tabs mis-sorted) | New `replay/context` field `rocket_senders[]` or reuse `/api/boards` with a `location` field |
 | B11 | `src/telemetry_dashboard/vehicle_tab.rs:664`, `:745` | GPS sender fallback `FC` | Partial: replay `source_sender_id` | Partial | Fall back to the vehicle-visualization GPS binding (see D3) |
 
@@ -993,9 +994,9 @@ backend already sends, with a fallback to the current value.
 | D3 | `src/telemetry_dashboard/dashboard_component.rs:4651-4663`, `vehicle_replay.rs:134`, `vehicle_tab.rs:311-316`, `watch_companion/publisher.rs:151` | GPS data types `GPS`, `GPS_DATA`, `ROCKET_GPS` (lat=0, lon=1, alt=2) | No | Blocks map tracking for a vehicle using other names | New `gps:{data_type, sender_id?, lat_index, lon_index, alt_index}` in `/api/map_config` or `/api/vehicle_visualization` |
 | D4 | `src/telemetry_dashboard/data_groups.rs:20-45` | Data-type families (Fill, Power, Flight) by name | No | Cosmetic (grouping only) | Optional `family` per channel in `/api/layout` `data_tab` |
 | D5 | `src/telemetry_dashboard/saved_replay.rs:261-277` | Replay tab filters by name fragments (`LOADCELL`, `KG1000`, `PRESSURE`, `VALVE`, ...) | No | Partial | Return `tab` per series in `/api/recordings/{id}/replay/context` |
-| D6 | `src/telemetry_dashboard/custom_dashboard.rs:33-216` (`defaults()`) | Personal dashboard default cards: `LOADCELL_50_WEIGHT_KG`, `LOADCELL_WEIGHT_KG`, `COMBUSTION_CHAMBER_PRESSURE`, `OX_TANK_PRESSURE`, battery cards with max 16.8 V, valve cards | **Yes**: `/api/layout` `data_tab` channels, labels, units | Partial (another vehicle sees empty cards) | **Small-safe**: build defaults from the layout's data-tab channels when present; keep the list as fallback |
+| D6 | `src/telemetry_dashboard/custom_dashboard.rs:33-216` (`defaults()`), `layout_defaults` | Personal dashboard default cards: `LOADCELL_50_WEIGHT_KG`, `LOADCELL_WEIGHT_KG`, `COMBUSTION_CHAMBER_PRESSURE`, `OX_TANK_PRESSURE`, battery cards, valve cards | **Yes**: `/api/layout` `data_tab` channels, labels, units | Resolved | **Fixed**: defaults keep only cards whose data type the layout's `data_tab` names, with `VALVE_STATE` labels from its channel names and units from formatter suffixes; a layout sharing none of the built-in types gets one card per data-tab tab. An untouched built-in dashboard adopts them when the layout arrives, and Restore defaults uses them. With no data tab the built-in list remains |
 | D7 | `src/telemetry_dashboard/watch_companion/registry.rs:120-240` | Watch items bound to `ASCENT_STATE`, `GPS_*`, `OX_TANK_PRESSURE`, `COMBUSTION_CHAMBER_PRESSURE`, `LOADCELL_WEIGHT_KG`, `LOADCELL_FILL_PERCENT`, `BATTERY_VOLTAGE`@`PB` | Partial: GS `/api/watch/status` mirrors the registry | Blocks watch items for another vehicle | New `watch_items[]` (id, label, channels, unit) in `/api/watch/actions` or a `/api/watch/items` route |
-| D8 | `src/telemetry_dashboard/vehicle_tab.rs:968-977` | `VALVE_STATE` index → label for portable replay files (Pilot, Normally-open, Dump, Igniter, Nitrogen, Nitrous, Plumbing) | **Yes**: labels are overridden from the layout's `VALVE_STATE` items when present | Partial | **Small-safe**: emit only layout-supplied mappings when the layout has a `VALVE_STATE` block; keep the table as fallback |
+| D8 | `src/telemetry_dashboard/vehicle_tab.rs:975` (`saved_valve_mappings`) | `VALVE_STATE` index → label for portable replay files (Pilot, Normally-open, Dump, Igniter, Nitrogen, Nitrous, Plumbing) | **Yes**: the layout's `VALVE_STATE` blocks (`valves`/`items`, `valve_labels`) | Resolved | **Fixed**: when the layout has a `VALVE_STATE` block, `valve_mappings` carry exactly the valves it names (any index below 128), the table only filling missing labels; with no block the table is the mapping |
 | D9 | `src/telemetry_dashboard/types.rs:8-13` | Legacy rename `FUEL_TANK_PRESSURE` → `OX_TANK_PRESSURE` on ingress | n/a (mirrors backend) | Cosmetic | Keep; vehicle-neutral in effect (no-op for other names) |
 | D10 | `src/telemetry_dashboard/flight_review_view.rs:607-608` | Thrust chart series labelled `KG1000`/`KG50` | Partial: series come from `/api/flight_review/...` fields `kg1000_kg`, `kg50_kg` | Cosmetic | Add `series[].label` to the review response |
 | D11 | `src/telemetry_dashboard/firmware_sim_panel.rs:99`, `:213` | Simulator faults `kg50_bypass`/`kg1000_bypass`; bottle labels | No | Cosmetic (simulator only) | Let `/api/firmware-sim` list available faults and inputs |
@@ -1004,11 +1005,11 @@ backend already sends, with a fallback to the current value.
 
 | # | Location | Hard-coded | Backend already supplies? | Severity | Recommended fix |
 | --- | --- | --- | --- | --- | --- |
-| C1 | `src/telemetry_dashboard/actions_tab.rs:19-31` | Always adds `ValveSelfTest`, `NitrogenTest`, `StartFill`, `PauseFill`, `CancelFill`, `Turbocharge` buttons if the layout lacks them | **Yes**: `/api/layout` `actions_tab` and `/api/action_policy` | Blocks (foreign buttons on another vehicle) | **Small-safe**: add them only when `/api/action_policy.controls` lists the command |
+| C1 | `src/telemetry_dashboard/actions_tab.rs:19-34` (`ensure_sequence_actions`) | Adds `ValveSelfTest`, `NitrogenTest`, `StartFill`, `PauseFill`, `CancelFill`, `Turbocharge` buttons if the layout lacks them | **Yes**: `/api/layout` `actions_tab` and `/api/action_policy` | Resolved | **Fixed**: a missing sequence button is added only when `/api/action_policy` `controls[]` lists its command |
 | C2 | `src/telemetry_dashboard/actions_tab.rs:36-43`, `src/auth.rs:361-364` | `Nitrogen`/`Nitrous` toggles send `NitrogenClose`/`NitrousClose`; permission alias | No | Partial | Optional `close_cmd` per action in `/api/layout` `actions_tab` |
 | C3 | `src/auth.rs:114-118`, `:353` | Local-only commands on RRLS: `ResetTClock`, `RadioModemCheck` | Partial: `/api/rrls/control` `takeover_commands` | Partial | Add `local_commands[]` to `/api/rrls/control` |
 | C4 | `src/telemetry_dashboard/dashboard_messages.rs:645` | Board abort disables `Launch`, `GroundStationLaunch`, `AdvanceFlightState`, `RewindFlightState` | Partial: `/api/action_policy` already disables them server-side | Partial | Rely on the policy only, or add `blocked_commands[]` to `BoardAbortSnapshot` |
-| C5 | `src/telemetry_dashboard/board_abort_readiness.rs:123` | Interlock list and labels (`TogglePlumbingDelayInterlock` "Retraction minimum 45 seconds", ...) | Partial: each is an `action_policy.controls[]` entry with `label` | Partial | **Small-safe**: show `controls[].label` when present; keep text as fallback |
+| C5 | `src/telemetry_dashboard/board_abort_readiness.rs:123` | Interlock list and labels (`TogglePlumbingDelayInterlock` "Retraction minimum 45 seconds", ...) | **No**: GroundStation26 `ActionControl` (`sequences.rs`) has no `label`, and no layout labels these four commands | Partial | Open (re-checked): add `label` to `action_policy.controls[]` (or list the interlocks in `/api/layout` `actions_tab`), then show it with the current text as fallback |
 | C6 | `src/telemetry_dashboard/watch_companion/actions.rs:19-25` | Launch/pyro command deny list | Yes: GS filters the watch catalog; `watch_safe` flag | Cosmetic (defence in depth) | Keep; document as safety rule |
 | C7 | `src/telemetry_dashboard/sequence_indicator.rs:36-63`, `sequence_progress_model.rs:30-50` | Sequence kinds and phase names (`NitrogenTest`, `Turbocharge`, `raising`, `settling`, ...) | Partial: `/api/gse/status` | Partial | Return `sequences[].{kind, label, phases[]}` in `/api/gse/status` |
 | C8 | `src/telemetry_dashboard/stream_rundown.rs:21-27`, `mission_phase.rs:78-110` | Detailed phase list (`PreFill`, `NitrogenFill`, `NitrousFill`, ...) for rundown profiles | Partial: `/api/layout` `flight_phase_version` | Partial | Add `phases[]` to `/api/live_streams` broadcast config |
@@ -1020,9 +1021,9 @@ backend already sends, with a fallback to the current value.
 | # | Location | Hard-coded | Backend already supplies? | Severity | Recommended fix |
 | --- | --- | --- | --- | --- | --- |
 | T1 | `src/telemetry_dashboard/gse_config_compatibility.rs:22-25` | Turbocharge deadband must be 8-16 psi (client validation) | No | Partial | Add `turbocharge_pressure_deadband_psi_range:[min,max]` to `/api/gse/config` |
-| T2 | `src/telemetry_dashboard/apogee_planner.rs:75-84` | Planner defaults `tank_volume_l: 12.0`, `meop_psi: 750`, `min_fill_kg: 3.0`, `min_ullage_frac: 0.15` used when fields are missing (current ox tank is 15.854 L) | Yes: `/api/apogee_planner` settings | Partial (wrong values only if backend omits them) | **Small-safe**: show "not set" instead of a default when the backend omits a field |
-| T3 | `src/telemetry_dashboard/custom_dashboard.rs:89-106` | Battery card max 16.8 V | **Yes**: `/api/layout` `battery.sources` | Cosmetic | **Small-safe**: take card max from the battery source config |
-| T4 | `src/telemetry_dashboard/gse_panel.rs:335-343` | GSE scene model `/assets/models/gse-site.glb` | **Yes**: `/api/vehicle_visualization` `ground_model_url` | Partial (wrong model for another site) | **Small-safe**: use `ground_model_url`, fall back to the constant |
+| T2 | `src/telemetry_dashboard/apogee_planner.rs:56-90` | Planner defaults `tank_volume_l: 12.0`, `meop_psi: 750`, `min_fill_kg: 3.0`, `min_ullage_frac: 0.15` used when fields were missing (current ox tank is 15.854 L) | Yes: `/api/apogee_planner` settings | Resolved | **Fixed**: an omitted value is `None`, the field reads "not set", and saving leaves it out so the station keeps its own |
+| T3 | `src/telemetry_dashboard/custom_dashboard.rs` (`layout_defaults`) | Battery card max 16.8 V | **Yes**: `/api/layout` `battery.sources` | Resolved | **Fixed**: a `BATTERY_VOLTAGE` card's max is the `full_voltage` of the source with the same `sender_id` (and `input_data_type`); 16.8 V only without a matching source |
+| T4 | `src/telemetry_dashboard/gse_panel.rs:336-343` (`gse_model_path`) | GSE scene model `/assets/models/gse-site.glb` | **Yes**: `/api/vehicle_visualization` `ground_model_url` | Resolved | **Fixed**: uses `ground_model_url` (resolved like the vehicle model), the stock model only when it is empty or the route fails |
 | T5 | `src/telemetry_dashboard/auto_vent_notice.rs:44-55` | "Valve Board opens Vent and Dump and closes Pilot" | No | Cosmetic | Text from the backend notice or `/api/safety/about` |
 | T6 | `src/telemetry_dashboard/station_settings.rs:104-116` | Settings section "Loadcells" (DAQ input, MCP3564R VREF) always present | Partial: features answer 404 when absent | Cosmetic | Hide the section when `/api/calibration/kg50_input` and VREF are unavailable |
 | T7 | `src/telemetry_dashboard/paired_settings.rs:140-175` | Paired-setting summaries for `Nitrous`/`Nitrogen` targets and `fill_source` names | No | Cosmetic | Add `label`/`summary` per document in `/api/mission-settings` |
@@ -1034,7 +1035,7 @@ backend already sends, with a fallback to the current value.
 | --- | --- | --- | --- | --- | --- |
 | N1 | `src/app.rs:8`, `src/main.rs:228`, `Dioxus.toml:3`, `:13` | App name `UBSEDS GS` (window title, connect/login headings via `auth::station_app_name`) | Partial: `/api/layout` `branding.app_name` (after sign-in) | Cosmetic | Keep as build-time name; use `branding.app_name` once the layout is cached |
 | N2 | `src/auth.rs` (`station_name()`) | Returned `"GroundStation"` / `"RRLS"` | **Yes**: `/api/auth/session` `station_name` | Cosmetic | **Done**: uses `station_name` from the session when non-empty, the role default otherwise |
-| N3 | `src/telemetry_dashboard/dashboard_component.rs:3409` | Navigation title fallback `"GroundStation"` | **Yes**: `/api/auth/session` `station_name` | Cosmetic | **Small-safe**: fall back to `station_name` before the literal |
+| N3 | `src/telemetry_dashboard/dashboard_component.rs` (`navigation_title`) | Navigation title fallback `"GroundStation"` | **Yes**: `/api/auth/session` `station_name` | Resolved | **Fixed**: `branding.app_name`, else `station_name`, else the role default |
 | N4 | `src/telemetry_dashboard/dashboard_connection.rs:373`, `:388`, `:392`; `command_owner.rs:187`; `dashboard_transport.rs:222`, `:357`; similar in `recording_download.rs`, `station_settings_request.rs`, `firmware_update_tab.rs`, `sd_board_download.rs`, `station_mode_transport.rs`, `plumbing_drive.rs`, `gse_config_compatibility.rs`, `auth.rs:988` | Default base `http://localhost:3000` when no address is saved | n/a | Cosmetic | Keep; centralise in one constant |
 | N5 | `src/telemetry_dashboard/mod.rs:1284-1315` | Native tile proxy hosts `gs26.localhost`, `gs26.local`, `gs26://local` | n/a (local proxy, not a station host) | Cosmetic | Keep |
 | N6 | `src/telemetry_dashboard/local_station/demo.rs` | Demo scenario data (boards, data types, valve names, battery levels) | n/a | Cosmetic | **Done**: the offline workspace no longer names any of these; the demo supplies them as a layout and samples in the station's own shapes ([section 11](#11-demo-mode-a-local-reference-station)), so it can be replaced by another vehicle's data without touching the pages |
@@ -1044,9 +1045,10 @@ No hard-coded station IP addresses or launch-site coordinates were found in
 production code; coordinates and hosts in `src/` appear only in tests,
 placeholders (`layout_settings_tab.rs:1211`) and log-redaction examples.
 
-Small-safe candidates, in suggested order: B8, C1, D6, T4, N3, B9, C5,
-D8, T2, T3 (N2 and N6 are done). They change live-dashboard behaviour in files
-other work is active in, so each should land as its own reviewed change.
+Small-safe fixes done: C1, D6, T4, N3, B9, D8, T2, T3 (with N2 and N6
+earlier). B8 and C5 were listed as small-safe but the backend does not supply
+the data (no calibration sender id, no interlock labels); each needs the
+optional backend field named in its row first.
 
 ---
 
