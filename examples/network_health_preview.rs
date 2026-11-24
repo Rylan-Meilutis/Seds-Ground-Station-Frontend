@@ -9,6 +9,11 @@ mod network_health;
 mod types;
 #[path = "../src/telemetry_dashboard/over_range.rs"]
 mod over_range;
+/// The shared modules' tests name these through the dashboard module path.
+#[cfg(test)]
+mod telemetry_dashboard {
+    pub(crate) use super::{over_range, types};
+}
 fn current_wallclock_ms() -> i64 {
     monotonic_now_ms() as i64
 }
