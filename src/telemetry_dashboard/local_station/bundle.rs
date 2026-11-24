@@ -192,6 +192,7 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
         ("flight_plan", "derived/flight_plan.json"),
         ("flight_plans", "derived/flight_plans.json"),
         ("stations", "derived/stations.json"),
+        ("terrain", "terrain/heightmap.json"),
     ] {
         if let Some(value) = json(&files, path) {
             extras.insert(key.into(), value);
@@ -201,6 +202,13 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
     if let Some(plans) = extras.get("flight_plans").and_then(|p| p["plans"].as_array()) {
         let overlays: Vec<Value> = plans.iter().filter_map(|p| p.get("overlay").filter(|o| o.is_object()).cloned()).take(5).collect();
         extras.insert("overlays".into(), Value::Array(overlays));
+    }
+    // The recovery search coverage drawn on the replay ground too.
+    if let Some(search) = json(&files, "derived/recovery_search.json").map(|s| s["overlay"].clone()).filter(Value::is_object) {
+        let list = extras.entry("overlays").or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(list) = list.as_array_mut() {
+            list.push(search);
+        }
     }
     if !document["replay_extras"].is_object() {
         document["replay_extras"] = Value::Object(extras);

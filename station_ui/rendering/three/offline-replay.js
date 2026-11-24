@@ -444,7 +444,7 @@ function mount(root,input,options={}){
   const onStatus=status=>{visualUnavailable=status==='lost';host.dataset.renderer=visualUnavailable?'unavailable':visual?.software?'canvas3d':'webgl';updateVisualNote();};
   if(useFlight){
    const geometry=p.vehicle_geometry||extras.vehicle_geometry;
-   visual=visuals.mountFlightScene(visuals.T,visuals.SoftwareRenderer,host,{geometry,timeline:model.timeline,onStatus,onTerrain:()=>updateVisualNote(),onCamera:()=>markCamera(),railLength_m:extras.flight_plan?.inputs?.launch?.rail_length_m,loadTerrain:options.loadTerrain,fetchJson:options.fetchJson});
+   visual=visuals.mountFlightScene(visuals.T,visuals.SoftwareRenderer,host,{geometry,timeline:model.timeline,onStatus,onTerrain:()=>updateVisualNote(),onCamera:()=>markCamera(),railLength_m:extras.flight_plan?.inputs?.launch?.rail_length_m,loadTerrain:options.loadTerrain,fetchJson:options.fetchJson,terrainBundle:extras.terrain?.available===true?{heightmap:extras.terrain,offline:!options.fetchJson}:undefined});
    flightScene=true;visual.setStations(model.stations);visual.setOverlays(model.overlays);visual.setTrack(trackForScene(),null,{timeline:model.timeline});
   }else{
    visual=visuals.mountReplayCanvas(visuals.T,visuals.SoftwareRenderer,host,p.mode==='test_fire'?'test_fire':'flight',onStatus,p.vehicle_geometry);flightScene=false;

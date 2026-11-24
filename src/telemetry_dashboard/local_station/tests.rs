@@ -378,3 +378,16 @@ fn a_bundle_with_recovery_search_tracks_serves_the_coverage_overlay() {
     assert!(!status.active);
     assert!(status.overlay["areas"].as_array().unwrap().iter().any(|a| a["kind"] == "uncovered"));
 }
+
+#[test]
+fn a_bundles_terrain_and_search_reach_the_flight_replay() {
+    let mut files = bundle::unzip(BUNDLE).unwrap();
+    let terrain = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/backend-contract/terrain/heightmap.json")).unwrap();
+    let search = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/backend-contract/recovery-search/stopped.json")).unwrap();
+    files.insert("terrain/heightmap.json".into(), terrain);
+    files.insert("derived/recovery_search.json".into(), search);
+    let s = bundle::open("flight.gsreplay", &stored_zip(&files)).unwrap();
+    let extras = &s.replay_document.as_ref().unwrap()["replay_extras"];
+    assert_eq!(extras["terrain"]["format"], "gs26.heightmap");
+    assert!(extras["overlays"].as_array().unwrap().iter().any(|o| o["kind"] == "search_coverage"));
+}

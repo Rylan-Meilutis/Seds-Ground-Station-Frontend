@@ -94,6 +94,9 @@ schemas are those in [backend-contract.md](backend-contract.md) and
 Terrain follows the tiles: `?tiles=1` also adds the heightmap when the station
 has a DEM for the area (`terrain=0` leaves it out, `terrain=1` adds it without
 tiles). Without it the 3D view draws flat ground at the pad's altitude.
+The flight replay player gets the heightmap through `replay_extras.terrain`, and
+the recovery search coverage (`derived/recovery_search.json`) as one of its
+`replay_extras.overlays`, so an offline replay shows the ground and the search.
 
 A plan bundle (`GET /api/flight_plans/{id}/bundle`) sets `manifest.predicted: true`
 and `manifest.label`; its `replay.json` has `"predicted": true`. The flight replay
