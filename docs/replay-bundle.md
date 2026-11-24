@@ -88,6 +88,10 @@ schemas are those in [backend-contract.md](backend-contract.md) and
 | `derived/flight_plan.json` | plan bundles only | `GET /api/flight_plans/{id}` | the plan itself: its landing area and markers on the map |
 | `derived/stations.json` | no | `GET /api/antenna/status` at export (not written by GroundStation26 yet) | flight replay: ground-station camera and masts |
 | `derived/recovery_search.json` | no | `GET /api/recovery_search/export?from_ms=<first row>&to_ms=<last row + 6 h>`, only when the recovery search has fixes in that window | the search coverage overlay (searched swaths, uncovered landing area, searcher tracks) on the replay map; also served as `GET /api/recovery_search` |
+| `config/report_context.json` | no | the context the station adds to every `GET /api/recordings/report` request: `valve_mappings` and `channel_metadata` from the station layout, `recording_diagnostic_streams` | report studio offline |
+| `derived/calibration_history.json` | no | the recording's `calibration_history` rows (`timestamp_ms`, `sender_id`, `sensor_id`, `config_json` as stored text), ordered by time; absent when the recording has no such table | report studio offline (recorded calibration epochs) |
+| `exports/motor_export.zip`, `exports/flight_export.zip` | no | `GET /api/flight_review/recording/{id}/motor_export` / `flight_export` without a range, generated at `created_ms` and without the raster (PNG/PDF) charts; only the exports that apply to the recording | motor/flight review export offline |
+| `exports/index.json` | no | `{kind: {path, filename, from_ms, to_ms, generated_ms, raster}}` for each bundled review export; `{}` when none applies | which review exports exist, their file names and windows |
 | `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background, 3D terrain imagery |
 | `terrain/heightmap.json` | no | `GET /api/terrain/heightmap?lat=…&lon=…&extent_m=…&size=129`, centred on the track's first fix and covering the track plus 1 km (2–30 km), at most 1 MiB, only when the station has DEM tiles there | 3D terrain ([backend-contract.md §12](backend-contract.md#12-terrain-and-the-3d-map)) |
 
@@ -147,11 +151,54 @@ prediction.
   station's format. GroundStation26 and the UI both check this against the
   fixture `replay-bundle/flight.csv`.
 
+## Exports offline
+
+The UI answers the station's export routes for the bundle's recording from
+the bundle (`local_station/exports.rs`, `exports::answer`). Each answer is
+the station's answer to the same request, byte for byte.
+
+| Export | Route | Offline |
+| --- | --- | --- |
+| Recording CSV | `GET /api/recordings/{id}/csv` | `data/telemetry.csv`, unchanged. |
+| Time-range CSV | `GET /api/recordings/csv?start_ms=&end_ms=` | Derived from `data/telemetry.csv`: the rows received in `[start_ms, end_ms)`, each record's cells unchanged behind a `recording` column. Over-range values are `OVR`/`-OVR` in both (the station's range export applies the same markers as the recording CSV). |
+| Report studio preview, CSV, DAQ SD CSV/TSV | `GET /api/recordings/report?request=` with `format` `preview`, `csv`, `daq_csv`, `daq_tsv` | Computed from `data/telemetry.csv`, `derived/calibration_history.json` and `config/report_context.json` by a Rust port of the station's report worker (`exports/report.rs`, from GroundStation26 `recording_report.py`). The preview is the same JSON. |
+| Motor and flight review exports | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | The bundled ZIP, for a request without a window or with the default window (as given in `exports/index.json`, or as the export form fills it in whole seconds). |
+
+Not offline:
+
+- Report studio Excel and PDF (`format` `xlsx`, `pdf`): answered with 501
+  "Excel and PDF reports need the station". They need openpyxl and
+  matplotlib on the station.
+- Motor/flight review exports of a custom window: 501. Porting the review
+  (about 3,000 lines with the charts) is not worth it; the bundle carries the
+  default-window files instead.
+- The raster charts (PNG) and PDF report inside the review exports: the
+  bundled ZIPs are made without them (SVG charts, data and the HTML report
+  are kept).
+- Time-range CSV and reports of an SD-resolved recording (its CSV has
+  `canonical_utc_ms` and `provenance_json` columns): 501. Their CSV is on the
+  resolved timeline, while the station's range export reads the receipt rows.
+- Other recordings: the range CSV and a report of all recordings
+  (`recording` empty) cover only the bundle's recording, labelled with its
+  id. The station covers every primary recording in the range.
+- Checklist and recovery exports: station records, not recording data, so
+  bundles do not carry them.
+
+A text cell the station guarded against spreadsheet formulas (a leading `'`
+before `=`, `+`, `-` or `@`) is read back without the guard, so a sender or
+type name that itself starts with `'` followed by one of those characters
+would be misread. Station sender and type names never do.
+
+Bundles made before these entries existed still answer the recording CSV,
+the time-range CSV and the report formats (with default valve labels and
+units, and no recorded calibration epochs); their review exports need the
+station.
+
 ## Sizes
 
 | Recording | Rows | Recording database | Bundle |
 | --- | --- | --- | --- |
-| Contract fixture (nominal 10k ft flight, 0.5 Hz) | 601 | — | 56 KB |
+| Contract fixture (nominal 10k ft flight, 0.5 Hz) | 601 | — | 70 KB (13 KB of it the flight review export) |
 | Synthetic ten-minute capture at flight rates (100 Hz IMU, 50 Hz loadcell/PT/baro, 5 Hz GPS) | 154,200 | 20.3 MB | 4.3 MB |
 
 The second row comes from GroundStation26
@@ -166,11 +213,21 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
     byte-identical;
   - checks that the route answers with the bundle media type;
   - writes `replay-bundle/flight.gsreplay`, its manifest and the recording's
-    own `GET /api/recordings/{id}/csv`.
+    own `GET /api/recordings/{id}/csv`;
+  - writes the station's answers to export requests to
+    `replay-bundle/exports/` and lists them in `exports/requests.json`:
+    range CSVs, report previews, CSVs and DAQ SD CSV/TSV (all channels, a
+    window, a channel subset), error answers, and the review exports as
+    bundled. A second recording (`cases`) covers what the flight lacks:
+    recorded calibration epochs, an inferred regression, an over-range
+    value, DAQ SD sensor names, valve labels, a recorded diagnostic stream,
+    formula-like and non-ASCII senders and Python float formatting.
 - UI `local_station/tests.rs`:
   - opens the bundle with no station;
   - checks the layout, geometry, diagrams, boards, track and summaries;
   - checks that the CSV export equals the station's CSV byte for byte;
+  - answers every request in `exports/requests.json` offline and checks it
+    equals the station's file (byte for byte; previews as JSON) or error;
   - checks that hash, version and format errors are refused.
 - UI `local_station/tests.rs`: a plan bundle opens labelled Predicted with its
   plan; `derived/flight_plans.json` plans are offered for comparison.
