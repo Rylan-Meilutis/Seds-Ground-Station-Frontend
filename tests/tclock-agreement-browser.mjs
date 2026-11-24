@@ -60,6 +60,16 @@ try {
  // A seek while paused: the new position on both, exactly.
  await seek(136000);
  s=await sample();assert.equal(s.bar,'T- 00:04.00');assert.equal(s.headerMs,s.barMs,`paused seek: ${JSON.stringify(s)}`);
+ // The flight maxima cards fill in from the rows once the clock counts up
+ // (a reconnect at a paused position carries them too).
+ await seek(200000);
+ const nav=page.locator('nav[aria-label="Mission navigation"]');
+ await nav.locator('a[aria-label="Dashboard"]').click();
+ const card=page.locator('.gs26-maxima-card[data-quantity="0"] .gs26-maxima-value');
+ await card.first().waitFor({timeout:20000});
+ assert.match(await card.first().innerText(),/^\d+ m · T\+\d+\.\d s · /,'max altitude with its T+ time and source');
+ for(const q of ['1','2'])await page.locator(`.gs26-maxima-card[data-quantity="${q}"] .gs26-maxima-value`).first().waitFor({timeout:20000});
+ if(shots)await page.screenshot({path:`${shots}/flight-maxima-demo.png`});
  assert.deepEqual(errors,[]);
  console.log('tclock agreement browser test PASS');
 } finally { await browser.close(); }

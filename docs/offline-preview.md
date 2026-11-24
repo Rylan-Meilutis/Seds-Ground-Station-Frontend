@@ -40,9 +40,16 @@ The dashboard's station is chosen once, when its connection starts
     commands), launch clock, recordings and the recording store, replay
     snapshot and windows, checklists (demo);
   - frames as its playback clock passes them: `TelemetryBatch`,
-    `FlightState`, `LaunchClock`, `Warning`, `BoardStatus`,
+    `FlightState`, `LaunchClock`, `FlightMaxima`, `Warning`, `BoardStatus`,
     `NetworkTopology`, `NetworkTime`, and a `Notification` answering each
     command;
+  - the T clock from the playback clock (below) and the current flight's
+    maxima computed from the rows as the station computes them
+    (`local_station/maxima.rs`, GroundStation26 `flight_maxima.rs`: tracked
+    from T-0 while the clock counts up, one extreme per source with its T+
+    time, preferred source first; `GET /api/flight_maxima` too). The FC's own
+    text reports of its maxima are messages, which a local session does not
+    carry, so the FC-reported line stays empty;
   - the recorded station mode (`/api/station_mode`, `/api/station-modes`
     with changes not supported), the recorded flight review as
     `/api/flight_review/live`, the 3D view configuration of a replay file,

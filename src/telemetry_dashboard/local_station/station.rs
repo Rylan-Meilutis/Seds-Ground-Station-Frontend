@@ -10,6 +10,7 @@
 //! answer from here: in demo mode "acknowledged; nothing was sent", in a
 //! replay "read-only; not sent".
 use super::super::station_link::Reply;
+use super::maxima::FlightMaxima;
 use super::{Session, Source};
 use serde_json::{Value, json};
 use std::cell::{Cell, RefCell};
@@ -32,6 +33,15 @@ pub(crate) enum TClock {
     Minus(i64),
     /// From T-0: milliseconds elapsed.
     Plus(i64),
+}
+
+/// The current flight's maxima, folded in as playback passes its rows.
+struct MaximaTrack {
+    /// Unbounded position of the flight's T-0 (`None`: no flight yet).
+    zero: Option<i64>,
+    /// Rows up to this unbounded position are folded in.
+    upto: i64,
+    maxima: FlightMaxima,
 }
 
 /// Playback position on the session's own time axis (sample `t_ms`).
@@ -80,9 +90,11 @@ pub(crate) struct LocalStation {
     last_phase: Cell<Option<&'static str>>,
     last_status_wall: Cell<i64>,
     outbox: RefCell<VecDeque<String>>,
-    /// The `LaunchClock` last pushed: a frame goes out whenever it changes
-    /// (every tick while the clock runs, never paused).
+    /// The `LaunchClock` and `FlightMaxima` last pushed: a frame goes out
+    /// whenever they change (every tick while the clock runs, never paused).
     sent_clock: RefCell<Option<Value>>,
+    sent_maxima: RefCell<Option<FlightMaxima>>,
+    maxima: RefCell<Option<MaximaTrack>>,
     next_notification: Cell<u64>,
     /// GET routes this station did not serve ("Not available offline"), for
     /// the offline browser tests (`window.__gs26LocalMisses` in the browser).
@@ -278,6 +290,8 @@ impl LocalStation {
             last_status_wall: Cell::new(i64::MIN),
             outbox: RefCell::new(VecDeque::new()),
             sent_clock: RefCell::new(None),
+            sent_maxima: RefCell::new(None),
+            maxima: RefCell::new(None),
             next_notification: Cell::new(1),
             misses: RefCell::new(Default::default()),
         }
@@ -328,15 +342,17 @@ impl LocalStation {
         clock.anchor_wall = wall;
         self.clock.set(clock);
         self.pushed_to.set(pos);
+        self.maxima.borrow_mut().take();
         self.connected();
     }
 
     /// A dashboard (re)connected: its next frames carry the state, T clock
-    /// again instead of only what changed.
+    /// and maxima again instead of only what changed.
     pub(crate) fn connected(&self) {
         self.last_state.borrow_mut().clear();
         self.last_status_wall.set(i64::MIN);
         self.sent_clock.borrow_mut().take();
+        self.sent_maxima.borrow_mut().take();
     }
 
     /// Rows with unbounded positions in `(from, to]`, oldest first.
@@ -498,6 +514,45 @@ impl LocalStation {
         }
     }
 
+    /// Unbounded position of the newest T-0 at or before `pos`, and the end
+    /// (exclusive) of that flight's T+ count (the demo's loop end).
+    fn flight_zero(&self, pos: i64) -> Option<(i64, i64)> {
+        let zero = self.launch_at()? + self.countdown_ms();
+        if self.looped() {
+            let len = self.loop_len();
+            let k = (pos - zero).div_euclid(len);
+            let z = k * len + zero;
+            (z > self.origin()).then_some((z, (k + 1) * len))
+        } else {
+            (zero <= pos).then_some((zero, i64::MAX))
+        }
+    }
+
+    /// The current flight's maxima at unbounded position `to`, as the station
+    /// computes them from the rows it has received.
+    fn maxima_at(&self, to: i64) -> FlightMaxima {
+        let clock = self.clock.get();
+        let flight = self.flight_zero(to);
+        let mut slot = self.maxima.borrow_mut();
+        let track = match slot.take() {
+            Some(track) if track.zero == flight.map(|f| f.0) => slot.insert(track),
+            _ => slot.insert(match flight {
+                Some((zero, _)) => MaximaTrack { zero: Some(zero), upto: zero - 1, maxima: FlightMaxima::flight(clock.wall_of(zero)) },
+                None => MaximaTrack { zero: None, upto: to, maxima: FlightMaxima::default() },
+            }),
+        };
+        if let Some((zero, end)) = flight {
+            let upto = to.min(end - 1);
+            if upto > track.upto {
+                let maxima = &mut track.maxima;
+                self.rows_between(track.upto, upto, |pos, s| maxima.observe_row(&s.data_type, &s.values, pos - zero, clock.wall_of(pos)));
+                track.upto = upto;
+            }
+        }
+        track.maxima.tracking = flight.is_some() && matches!(self.tclock_at(to), TClock::Plus(_));
+        track.maxima.clone()
+    }
+
     fn recent(&self, wall: i64) -> Value {
         let clock = self.clock.get();
         let to = self.position(wall);
@@ -638,6 +693,7 @@ impl LocalStation {
                 "controls": self.commands().into_iter().map(|cmd| json!({"cmd": cmd, "enabled": true, "blink": "none", "actuated": null})).collect::<Vec<_>>()
             }),
             "/api/launch_clock" => self.launch_clock(wall),
+            "/api/flight_maxima" => serde_json::to_value(self.maxima_at(self.position(wall))).ok()?,
             "/api/recording_status" => json!({"mode": "idle", "db_path": null}),
             "/api/network_time" | "/api/system/time" => json!({"timestamp_ms": wall, "utc_ms": wall}),
             "/api/recordings" => self.recordings(),
@@ -932,6 +988,11 @@ impl LocalStation {
         if self.sent_clock.borrow().as_ref() != Some(&launch_clock) {
             frames.push(json!({"ty": "LaunchClock", "data": launch_clock}).to_string());
             *self.sent_clock.borrow_mut() = Some(launch_clock);
+        }
+        let maxima = self.maxima_at(to);
+        if self.sent_maxima.borrow().as_ref() != Some(&maxima) {
+            frames.push(json!({"ty": "FlightMaxima", "data": maxima}).to_string());
+            *self.sent_maxima.borrow_mut() = Some(maxima);
         }
         if wall.saturating_sub(self.last_status_wall.get()) >= 1_000 {
             self.last_status_wall.set(wall);

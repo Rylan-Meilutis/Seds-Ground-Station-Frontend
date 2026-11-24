@@ -12,6 +12,7 @@
 pub(crate) mod bundle;
 pub(crate) mod demo;
 pub(crate) mod exports;
+pub(crate) mod maxima;
 pub(crate) mod media;
 pub(crate) mod replay_file;
 pub(crate) mod station;

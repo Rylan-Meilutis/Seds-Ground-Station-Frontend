@@ -739,3 +739,41 @@ fn the_launch_clock_follows_the_playback_clock_at_any_speed_seek_and_pause() {
     assert_eq!(held.duration_ms, Some(6_250));
     assert_eq!(station.tclock_text(station.playback(wall + 60_000).position), "T+ 00:06.25");
 }
+
+#[test]
+fn flight_maxima_are_computed_from_the_rows_as_the_station_does() {
+    use crate::telemetry_dashboard::mission_phase::{FlightMaximaView, MaxQuantity};
+    let station = LocalStation::new(demo::session(0), EPOCH);
+    let maxima_in = |frames: &[WsInMsg]| frames.iter().rev().find_map(|f| match f { WsInMsg::FlightMaxima(m) => Some(m.clone()), _ => None });
+    // On the pad: no flight yet, nothing tracked (the station's initial snapshot).
+    let pad = maxima_in(&frames(&station, EPOCH)).expect("the first frames carry the maxima");
+    assert_eq!(pad, FlightMaximaView::default());
+    // Mid-ascent after a seek: tracked from T-0 with T+ times.
+    let wall = EPOCH + 10_000;
+    station.seek(160_000, wall);
+    let ascent = maxima_in(&frames(&station, wall)).expect("a reconnect carries the maxima");
+    assert!(ascent.tracking);
+    let (_, altitude) = ascent.quantity(MaxQuantity::Altitude);
+    assert!(!altitude.is_empty(), "altitude maxima from the rows");
+    assert!(altitude.iter().all(|e| e.t_plus_ms.is_some_and(|t| (0..=20_000).contains(&t))), "{altitude:?}");
+    let sources: Vec<&str> = altitude.iter().map(|e| e.source.as_str()).collect();
+    let mut sorted = sources.clone();
+    sorted.sort_by_key(|s| ["FC Kalman altitude", "Barometer altitude", "GPS altitude"].iter().position(|p| p == s));
+    assert_eq!(sources, sorted, "preferred source first");
+    assert!(!ascent.quantity(MaxQuantity::Acceleration).1.is_empty() || !ascent.quantity(MaxQuantity::Speed).1.is_empty());
+    // Later in the flight the maxima only grow, and the JSON is the station's.
+    let later = maxima_in(&frames(&station, wall + 60_000)).expect("maxima change as the flight climbs");
+    let baro = |m: &FlightMaximaView| m.altitude.iter().find(|e| e.source == "Barometer altitude").map(|e| e.value);
+    assert!(baro(&later) > baro(&ascent), "{:?} -> {:?}", baro(&ascent), baro(&later));
+    let route: Value = decode(&station, "/api/flight_maxima");
+    for key in ["flight_anchor_ms", "tracking", "altitude", "speed", "acceleration", "fc_altitude", "fc_speed", "fc_acceleration"] {
+        assert!(route.get(key).is_some(), "{key} in {route}");
+    }
+    assert!(route["altitude"][0]["precedence"].is_u64() && route["altitude"][0]["timestamp_ms"].is_i64());
+    // Paused, nothing changes and nothing is pushed.
+    station.set_speed(1.0, true, wall + 60_000);
+    assert!(maxima_in(&frames(&station, wall + 90_000)).is_none());
+    // A seek back before launch: the station holds no flight there.
+    station.seek(100_000, wall + 90_000);
+    assert_eq!(maxima_in(&frames(&station, wall + 90_000)), Some(FlightMaximaView::default()));
+}
