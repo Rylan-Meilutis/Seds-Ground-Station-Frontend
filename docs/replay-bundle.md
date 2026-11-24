@@ -125,6 +125,8 @@ shows a Predicted badge for either. The offline workspace passes these entries t
 the player as the document's `replay_extras` (`local_station/bundle.rs`).
 | `derived/review_inputs.json` | no | what the motor/flight review reads from the recording, for its whole span (see "Review of a custom window"); left out with `?review=false` | review and review exports of any window offline |
 | `models/hybrid_motor/hybrid_motor.json`, `sweet_v6_cea.json`, `sweet_v6_grain.json` | no | the station's hybrid motor model files (GroundStation26 `backend/src/apogee_planner/model/`), only when the recording has load cells and a tank PT | the burn report's predicted curve in a custom window |
+| `exports/report.xlsx`, `exports/report.pdf` | no (`?reports=true`) | `GET /api/recordings/report` with `{"recording": id, "format": "xlsx"/"pdf", "channels": null}` (all channels, whole recording), document time pinned to `created_ms` | the station's own Excel/PDF report offline |
+| `exports/reports.json` | no (`?reports=true`) | `{format: {path, filename, bytes, generated_ms}}`, or `{format: {skipped, status?}}` for a report the station could not make or that exceeded the budget | which standard reports the bundle holds |
 | `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background |
 | `data/receipt_telemetry.csv` | no | SD-resolved recordings only: the rows as received (`main.telemetry`), in the CSV a recording that was never resolved exports (no route); omitted above 96 MiB (listed in `missing` with 507) | time-range CSV offline, import |
 | `derived/sd_sources/after_{n}.json` | no | `GET /api/recordings/{id}/sd/sources?after_id={n}`, the SD source list's later pages (128 sources each) | SD import list |
@@ -150,6 +152,14 @@ in lists them under `missing` (403).
 The original SD files of an SD-resolved recording are opt-in:
 `?sd_files=1&sd_files_max_mb=N` (default 16 MiB, at most 64), in listing
 order; a file that does not fit is skipped and `sd.files.complete` is false.
+The standard Excel and PDF reports are opt-in too: `?reports=true` (also
+`1`), with `reports_max_mb=N` for their joint budget (default 16 MiB, at most
+64). The Recordings panel's "Include the Excel and PDF reports in replay
+bundles" checkbox sets it. The station runs its report worker for them, so
+they need openpyxl and matplotlib on the station; without them, or for a PDF
+beyond the worker's 20,000-sample appendix limit, `exports/reports.json` says
+why the report was left out. The UI builds the same reports without them
+(below), so the option only adds the station's own files.
 
 Models the UI ships itself (for example the GSE site model and the generic
 rocket) are not copied into bundles.
@@ -318,12 +328,11 @@ the station's answer to the same request, byte for byte.
 | Report studio preview, CSV, DAQ SD CSV/TSV | `GET /api/recordings/report?request=` with `format` `preview`, `csv`, `daq_csv`, `daq_tsv` | Computed from `data/telemetry.csv`, `derived/calibration_history.json` and `config/report_context.json` by a Rust port of the station's report worker (`exports/report.rs`, from GroundStation26 `recording_report.py`). The preview is the same JSON. |
 | Motor and flight review exports | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | Without a window: the bundled ZIP. With `from_ms` and/or `to_ms`: computed from `derived/review_inputs.json` (below), the station's ZIP for the same request with `raster=false`. |
 | Review of a window | `GET /api/flight_review/recording/{id}?from_ms=&to_ms=` | Computed the same way (the same JSON). Without a window the bundle's `derived/flight_review.json` answers. The dashboard asks only without a window today. |
+| Report studio Excel and PDF | `GET /api/recordings/report?request=` with `format` `xlsx`, `pdf` | The bundle's `exports/report.xlsx` / `.pdf`, byte for byte, when the request selects everything (no window or a window covering every row, and all channels in the preview's order or `channels: null`). Otherwise built in the UI from the same inputs as the CSV formats (`exports/xlsx.rs`, `exports/pdf.rs`): the same content as the station's, not the same bytes (see below). |
+| Motor and flight review exports | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | The bundled ZIP, for a request without a window or with the default window (as given in `exports/index.json`, or as the export form fills it in whole seconds). |
 
 Not offline:
 
-- Report studio Excel and PDF (`format` `xlsx`, `pdf`): answered with 501
-  "Excel and PDF reports need the station". They need openpyxl and
-  matplotlib on the station.
 - Motor/flight review exports of a custom window: 501. Porting the review
   (about 3,000 lines with the charts) is not worth it; the bundle carries the
   default-window files instead.
@@ -347,6 +356,28 @@ Not offline:
 - Other recordings: the range CSV and a report of all recordings
   (`recording` empty) cover only the bundle's recording, labelled with its
   id. The station covers every primary recording in the range.
+
+Excel and PDF reports built offline match the station's content, not its
+bytes:
+
+- Excel: the same sheets ("Regression metadata", then "Channel N" per
+  channel), cells, cell types (numbers as openpyxl writes them, `%.16g`;
+  inline strings; booleans), frozen header rows, and a scatter chart per
+  channel with the same title, axis titles, anchor and series ranges. The
+  parts are openpyxl's; the UI leaves out openpyxl's default theme and names
+  itself in `docProps/app.xml`. The document time is the request's
+  `generated_ms`, else the bundle's `created_ms`.
+- PDF: the same pages (per channel a plot, the regression/provenance JSON
+  wrapped at 110 columns, 48 lines a page, and the samples in tables of 35
+  rows), the same text on each page (titles, axis labels, tick labels and
+  offset text from a port of matplotlib's `MaxNLocator`/`ScalarFormatter`,
+  table cells), the same plotted points (every sample, gaps at missing
+  values) and the PDF base fonts (Helvetica, Courier). Positions follow
+  matplotlib's layout to within a few points; widths come from the
+  Helvetica metrics. The station draws its PDF with the base fonts, ASCII
+  minus signs and no line simplification (`recording_report.py`) so its text
+  is extractable and every sample is kept.
+- Text outside Windows-1252 (the base fonts' encoding) is `?` in both PDFs.
 
 A text cell the station guarded against spreadsheet formulas (a leading `'`
 before `=`, `+`, `-` or `@`) is read back without the guard, so a sender or
@@ -465,6 +496,12 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
     launch file, applied plan, hybrid model): the burn, a window that cuts
     the ignition, a window before the burn, and error answers. The station's
     clock is pinned so the answers are reproducible.
+    formula-like and non-ASCII senders and Python float formatting;
+  - with the report Python packages (`GS_REPORT_PYTHON`), writes the
+    station's Excel and PDF reports (`exports/report-documents.json`, the
+    standard and a custom selection of each recording, document time pinned
+    to the fixture time) and checks that a `?reports=true` bundle carries
+    the standard ones; without them those files are left unchecked.
 - UI `local_station/tests.rs`:
   - opens the bundle with no station;
   - checks the layout, geometry, diagrams, boards, track and summaries;
@@ -474,6 +511,12 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
   - answers every request in `review/requests.json` from its bundle at the
     station's pinned time and checks the ZIP is the same bytes (reviews: the
     same JSON) or the same error;
+  - builds the Excel and PDF reports listed in
+    `exports/report-documents.json` (standard and custom selections of the
+    flight and the `cases` recording) and compares them with the station's:
+    XLSX sheets, cells, cell types, frozen rows and charts; PDF page count,
+    each page's text and the plotted points (`exports/document_tests.rs`);
+    a bundle with `exports/report.*` hands out the station's file;
   - checks that hash, version and format errors are refused.
 - UI `local_station/tests.rs`: a plan bundle opens labelled Predicted with its
   plan; `derived/flight_plans.json` plans are offered for comparison.

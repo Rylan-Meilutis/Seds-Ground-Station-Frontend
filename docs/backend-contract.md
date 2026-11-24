@@ -540,7 +540,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/store` | → `StoreView` | recording store | view_data | M |
 | POST | `/api/recordings/snapshot` | body → any | recording store | send_commands | M |
 | POST | `/api/recordings/settings` | `Settings` → `Settings` | recording store | admin per backend | M |
-| GET | `/api/recordings/report` | query `request` (URL-encoded JSON) → report | Report studio | view_data | M |
+| GET | `/api/recordings/report` | query `request` (URL-encoded JSON; optional `generated_ms` pins the Excel/PDF document time) → report | Report studio | view_data | M |
 | GET | `/api/recordings/{id}/replay` | → replay snapshot (`upper_id`, series) | diagnostics, vehicle replay | view_data | M |
 | GET | `/api/recordings/{id}/replay/window` | query `upper_id`, `after_id`, `start_ms`, `end_ms`, `types` (≤32 types, ≤30 s) → rows | saved replay, vehicle replay, diagnostics | view_data | M |
 | GET | `/api/recordings/{id}/replay/flight` | → `{start_ms?, end_ms?, ...}` | recorded broadcast | view_data | M |
@@ -555,6 +555,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export | view_data | M |
 | GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `records` (bool, default true: checklists and recovery history), `sd_files` (bool), `sd_files_max_mb` (≤64; original SD files of an SD-resolved recording) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
 | GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `video` (bool), `video_max_mb` (≤64), `voice` (bool), `voice_max_mb` (≤16); flags take `1`/`true` → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md), [recorded media](replay-bundle.md#recorded-media)) | Recordings panel → Download replay bundle (with the Camera video / Crew voice checkboxes) | view_data | M |
+| GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `reports` (bool: standard Excel/PDF reports), `reports_max_mb` (≤64) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
 | POST | `/api/recordings/import` | `.gsreplay` bytes (≤256 MiB) → 201 `{id, label, rows, alerts, start_ms, end_ms, source, csv_sha256}`; 409 `{error, id}` duplicate; 400/413/422 ([replay-bundle.md](replay-bundle.md#import-into-a-station)) | not yet in the UI | admin | M |
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
 | GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import; offline from a bundle (every page) | view_data | M |
