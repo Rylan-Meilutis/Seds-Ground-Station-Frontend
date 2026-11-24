@@ -204,6 +204,8 @@ fn replay_flight_state_rows_become_the_state_timeline() {
 
 const BUNDLE: &[u8] = include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/flight.gsreplay");
 const STATION_CSV: &[u8] = include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/flight.csv");
+/// An SD-resolved recording's bundle (GroundStation26 `contract_fixtures_sd`).
+const SD_BUNDLE: &[u8] = include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/sd.gsreplay");
 
 #[test]
 fn a_station_bundle_opens_with_everything_and_exports_the_station_csv() {
@@ -442,11 +444,21 @@ fn offline_exports_equal_the_station_exports_byte_for_byte() {
     let flight = session.exports.clone().expect("a bundle answers exports");
     let cases = report_cases_inputs();
     assert!(!cases.calibration_history.is_empty());
+    let sd = bundle::open("sd.gsreplay", SD_BUNDLE).unwrap().exports.clone().expect("an SD-resolved bundle answers exports");
+    assert!(sd.receipt_csv.is_some(), "the bundle holds the rows as received");
+    let mut sd_compared = 0;
     let requests: Value = serde_json::from_slice(&export_fixture("exports/requests.json")).unwrap();
     let mut compared = 0;
     for request in requests.as_array().unwrap() {
         let path = request["path"].as_str().unwrap();
-        let inputs = if request["case"] == "flight" { &flight } else { &cases };
+        let inputs = match request["case"].as_str() {
+            Some("flight") => &flight,
+            Some("sd") => {
+                sd_compared += 1;
+                &sd
+            }
+            _ => &cases,
+        };
         let answer = exports::answer(inputs, path).unwrap_or_else(|| panic!("{path} is an export route"));
         let status = request["status"].as_u64().unwrap() as u16;
         match answer {
@@ -469,6 +481,7 @@ fn offline_exports_equal_the_station_exports_byte_for_byte() {
         compared += 1;
     }
     assert!(compared >= 30, "{compared} requests");
+    assert!(sd_compared >= 12, "{sd_compared} SD-resolved requests");
     // The bundle's own CSV route and the preview served inline.
     let csv = exports::answer(&flight, "/api/recordings/groundstation_recording_2026-01-01_00-00-00_000.db/csv").unwrap().unwrap();
     assert_eq!(csv.filename, "groundstation_recording_2026-01-01_00-00-00_000.csv");
@@ -526,4 +539,68 @@ fn the_flight_prediction_tabs_read_the_local_station() {
     let simulate = station.request("POST", "/api/los_prediction/simulate", Some(b"{}"));
     assert_eq!(simulate.status, 501, "a station computation, not a write to acknowledge");
     assert_eq!(station.request("GET", "/api/terrain/heightmap?lat=1&lon=2&extent_m=2000&size=129", None).text().contains("\"available\":false"), true);
+}
+
+/// An SD-resolved recording's bundle: the resolved CSV is the recording's
+/// CSV route, the rows as received answer the time range, and a bundle
+/// without them (an older station's) says the range needs the station.
+#[test]
+fn an_sd_resolved_bundle_answers_both_timelines() {
+    let session = bundle::open("sd.gsreplay", SD_BUNDLE).unwrap();
+    let id = session.manifest.as_ref().unwrap()["source"]["recording"].as_str().unwrap().to_string();
+    assert_eq!(session.manifest.as_ref().unwrap()["sd"]["receipt_csv"]["included"], true);
+    let station = LocalStation::new(session, EPOCH);
+    let csv = station.request("GET", &format!("/api/recordings/{id}/csv"), None);
+    assert!(csv.body.starts_with(b"id,received_timestamp_ms,source_timestamp_ms,sender_id,data_type,values_json,payload_json,canonical_utc_ms,provenance_json"));
+    let sources: Value = decode(&station, &format!("/api/recordings/{id}/sd/sources"));
+    let sha = sources["sources"][0]["file_sha256"].as_str().unwrap().to_owned();
+    let original = station.request("GET", &format!("/api/recordings/{id}/sd/sources/{sha}"), None);
+    assert_eq!(original.status, 200, "the original SD file is bundled");
+    assert!(original.body.starts_with(b"timestamp_ms,monotonic_ms,sensor"));
+    let mut files = bundle::unzip(SD_BUNDLE).unwrap();
+    files.remove("data/receipt_telemetry.csv");
+    let older = exports::ExportInputs::from_bundle(&id, std::rc::Rc::new(files["data/telemetry.csv"].clone()), &files);
+    let snapshot: vehicle_replay::Snapshot = decode(&station, &format!("/api/recordings/{id}/replay"));
+    let (code, message) = exports::answer(&older, &format!("/api/recordings/csv?start_ms={}&end_ms={}", snapshot.start_ms.unwrap(), snapshot.end_ms.unwrap() + 1)).unwrap().unwrap_err();
+    assert_eq!(code, 501);
+    assert!(message.contains("rows as received"), "{message}");
+}
+
+/// Station records a bundle carries (checklists, recovery history) are
+/// served byte for byte under their routes, the bundled checklist document
+/// replaces the empty one, and the demo station answers the same routes in
+/// the station's shapes.
+#[test]
+fn station_records_are_served_from_the_bundle_and_by_the_demo() {
+    let mut session = bundle::open("flight.gsreplay", BUNDLE).unwrap();
+    let records = [
+        ("/api/checklists", &br#"{"revision":7,"signoffs":[],"completion_events":[],"enforce_before_launch":true,"checklists":[]}"#[..], "application/json"),
+        ("/api/checklists/export", br#"{"revision":7,"signoffs":[],"completion_events":[],"enforce_before_launch":true,"checklists":[]}"#, "application/json"),
+        ("/api/checklists/export.csv", b"checklist_id,checklist_title,status,signed_by,signed_at_ms,signed_revision,content_digest,invalidated_at_ms,invalidation_reason\r\n", "text/csv"),
+        ("/api/recovery/export.json", br#"{"version":1,"events":[]}"#, "application/json"),
+        ("/api/recovery/export.csv", b"event_id,launch_session\r\n", "text/csv"),
+    ];
+    let empty = LocalStation::new(bundle::open("flight.gsreplay", BUNDLE).unwrap(), EPOCH);
+    assert_eq!(empty.request("GET", "/api/recovery/export.csv", None).status, 404, "a bundle without records says so");
+    for (route, body, media_type) in records {
+        session.routes.insert(route.to_owned(), RouteEntry { body: std::rc::Rc::new(body.to_vec()), media_type: media_type.to_owned() });
+    }
+    let station = LocalStation::new(session, EPOCH);
+    for (route, body, _) in records {
+        let reply = station.request("GET", route, None);
+        assert_eq!((reply.status, reply.body.as_slice()), (200, body), "{route}");
+    }
+    let demo = LocalStation::new(demo::session(0), EPOCH);
+    let document: Value = decode(&demo, "/api/checklists/export");
+    assert_eq!(document, decode::<Value>(&demo, "/api/checklists"), "the export is the document the tab shows");
+    for key in ["revision", "signoffs", "completion_events", "enforce_before_launch", "checklists"] {
+        assert!(document.get(key).is_some(), "{key}");
+    }
+    let csv = demo.request("GET", "/api/checklists/export.csv", None).text();
+    assert!(csv.starts_with("checklist_id,checklist_title,status,signed_by,signed_at_ms,signed_revision,content_digest,invalidated_at_ms,invalidation_reason\r\n"));
+    assert!(csv.contains("\"pad\",\"Pad checks (demo)\",unsigned,,,,,,\r\n") && csv.contains(",\"signed_off\","), "{csv}");
+    let recovery: Value = decode(&demo, "/api/recovery/export.json");
+    assert_eq!(recovery["events"][0]["launch_session"], recovery["current"]["session"]);
+    let csv = demo.request("GET", "/api/recovery/export.csv", None).text();
+    assert!(csv.starts_with("event_id,launch_session,authority,clock_revision,t0_utc_ms,reached_utc_ms,t_relative_ms,actor,auth_session,station,primary_verified\r\n\"demo-recovery-1\""), "{csv}");
 }

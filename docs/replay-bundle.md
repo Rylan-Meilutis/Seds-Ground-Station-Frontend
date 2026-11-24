@@ -61,6 +61,7 @@ Another station or tool can produce bundles by following this page.
 | `tiles` | Map tiles included, their bytes, the budget, and whether the budget cut them short. |
 | `terrain` | Whether `terrain/heightmap.json` is included: `{included: true, bytes, extent_m, size, zoom, source, attribution}`, or `{included: false, reason?}`. Absent in older bundles. |
 | `missing` | Optional resources the station could not supply, with the route and HTTP status. |
+| `sd` | Only for an SD-resolved recording: `resolved_rows`; `receipt_csv` `{path, included, rows, bytes}` (or `reason` when not included); `sources` `{listed, bytes}` (the SD files the merge used); `files` `{requested, included, bytes, budget_bytes, complete}` (original SD files bundled). |
 | `entries` | Every other entry, with size, SHA-256 (lower-case hex), media type and, when the entry is the body of a station route, `route`: the path and query exactly as a client requests them (the real recording id in place of `{id}`). Readers verify every hash and refuse a bundle whose listed entry is absent or differs. A reader may answer any GET whose path and query equal an entry's `route` with that entry's bytes (the UI's local station does). Entries with no `route` (`derived/burn_reports.json`, `derived/fire_archive.json`, `exports/*`, `config/report_context.json`, `derived/calibration_history.json`) are filtered lists or export inputs, not route bodies. |
 
 ## Entries
@@ -120,12 +121,31 @@ A plan bundle (`GET /api/flight_plans/{id}/bundle`) sets `manifest.predicted: tr
 and `manifest.label`; its `replay.json` has `"predicted": true`. The flight replay
 shows a Predicted badge for either. The offline workspace passes these entries to
 the player as the document's `replay_extras` (`local_station/bundle.rs`).
+| `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background |
+| `data/receipt_telemetry.csv` | no | SD-resolved recordings only: the rows as received (`main.telemetry`), in the CSV a recording that was never resolved exports (no route); omitted above 96 MiB (listed in `missing` with 507) | time-range CSV offline, import |
+| `derived/sd_sources/after_{n}.json` | no | `GET /api/recordings/{id}/sd/sources?after_id={n}`, the SD source list's later pages (128 sources each) | SD import list |
+| `sd/sources/{sha256}.csv` | no | `GET /api/recordings/{id}/sd/sources/{sha256}`, byte for byte: the original SD files, opt-in (`sd_files`) | SD source download, import |
+| `records/checklists.json` | no | `GET /api/checklists`, byte for byte | Checklists tab |
+| `records/checklists_export.json`, `records/checklist_signoffs.csv` | no | `GET /api/checklists/export`, `GET /api/checklists/export.csv`, byte for byte | Data Export: checklists |
+| `records/recovery_history.json`, `records/recovery_history.csv` | no | `GET /api/recovery/export.json`, `GET /api/recovery/export.csv`, byte for byte | Data Export: recovery history |
 
 Map tiles are opt-in. Request them with `?tiles=1&tiles_max_mb=N`; the default
 budget is 8 MiB and the maximum 32 MiB. The station collects tiles from zoom
 10 up to its `max_native_zoom`, starting at the lowest zoom. It skips tiles it
 does not have and stops at the budget. The UI draws the deepest zoom whose
 tiles cover the whole track.
+
+The station records (`records/*`) are included by default; `records=false`
+leaves them out. They are the station's answers at bundle time, not
+filtered to the recording: the checklist document is the station's one
+current document (its sign-offs have no recording link), and recovery events
+name a launch session that the station does not map to recordings. The
+checklist routes refuse anonymous callers, so a bundle made without signing
+in lists them under `missing` (403).
+
+The original SD files of an SD-resolved recording are opt-in:
+`?sd_files=1&sd_files_max_mb=N` (default 16 MiB, at most 64), in listing
+order; a file that does not fit is skipped and `sd.files.complete` is false.
 
 Models the UI ships itself (for example the GSE site model and the generic
 rocket) are not copied into bundles.
@@ -183,11 +203,18 @@ GroundStation26 `POST /api/recordings/import` (administrators; body: the
 bundle, at most 256 MiB) applies the reading rules above and stores
 `data/telemetry.csv` (plus `derived/alerts.json`) as a recording
 `event.imported.<folder>.db` (kind `imported`). Its CSV export equals the
-bundle's CSV byte for byte. Responses: 201
-`{id,label,rows,alerts,start_ms,end_ms,source,csv_sha256}`; 400 unreadable,
-unsafe or inconsistent bundle; 403 not an administrator; 409 `{error,id}`
-already imported (same source recording and CSV); 413 too large; 422 newer
-version or SD-merged recording.
+bundle's CSV byte for byte. An SD-resolved recording imports from
+`data/receipt_telemetry.csv` (the rows as received) and `data/telemetry.csv`
+(the resolved rows with their provenance), with the SD imports' manifests,
+the resolution summary (`replay.json` `sd_provenance`), the source list and
+any bundled original SD files; its CSV, time-range rows and SD source list
+then equal the source station's. The SD samples left unresolved and the
+coverage ends (`valid_until_ms` in replay windows) are not carried.
+Responses: 201 `{id,label,rows,alerts,start_ms,end_ms,source,csv_sha256}`;
+400 unreadable, unsafe or inconsistent bundle; 403 not an administrator; 409
+`{error,id}` already imported (same source recording and CSV); 413 too
+large; 422 newer version, or an SD-resolved recording without
+`data/receipt_telemetry.csv` (a bundle from an older station).
 
 ## Exports offline
 
@@ -198,8 +225,9 @@ the station's answer to the same request, byte for byte.
 | Export | Route | Offline |
 | --- | --- | --- |
 | Recording CSV | `GET /api/recordings/{id}/csv` | `data/telemetry.csv`, unchanged. |
-| Time-range CSV | `GET /api/recordings/csv?start_ms=&end_ms=` | Derived from `data/telemetry.csv`: the rows received in `[start_ms, end_ms)`, each record's cells unchanged behind a `recording` column. Over-range values are `OVR`/`-OVR` in both (the station's range export applies the same markers as the recording CSV). |
-| Report studio preview, CSV, DAQ SD CSV/TSV | `GET /api/recordings/report?request=` with `format` `preview`, `csv`, `daq_csv`, `daq_tsv` | Computed from `data/telemetry.csv`, `derived/calibration_history.json` and `config/report_context.json` by a Rust port of the station's report worker (`exports/report.rs`, from GroundStation26 `recording_report.py`). The preview is the same JSON. |
+| Time-range CSV | `GET /api/recordings/csv?start_ms=&end_ms=` | Derived from `data/telemetry.csv` (for an SD-resolved recording, from `data/receipt_telemetry.csv`, the rows as received, which the station's range export reads): the rows received in `[start_ms, end_ms)`, each record's cells unchanged behind a `recording` column. Over-range values are `OVR`/`-OVR` in both (the station's range export applies the same markers as the recording CSV). |
+| Report studio preview, CSV, DAQ SD CSV/TSV | `GET /api/recordings/report?request=` with `format` `preview`, `csv`, `daq_csv`, `daq_tsv` | Computed from `data/telemetry.csv`, `derived/calibration_history.json` and `config/report_context.json` by a Rust port of the station's report worker (`exports/report.rs`, from GroundStation26 `recording_report.py`). The preview is the same JSON. For an SD-resolved recording the rows are the resolved ones on their canonical UTC time, with each row's provenance: the CSV's received time and `sample_provenance`, the units an SD import names, and SD rows copied whole (the original thirteen cells) into the DAQ SD layout, as the station writes them. The merge itself is the station's: it needs the operator's SD assignment, and the bundle carries its result. |
+| Checklists and recovery history | `GET /api/checklists/export`, `/api/checklists/export.csv`, `/api/recovery/export.json`, `/api/recovery/export.csv` | The bundled `records/*` entries, byte for byte (404 "Not available offline" when the bundle has none). The demo answers them with small demo records in the station's shapes. |
 | Motor and flight review exports | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | The bundled ZIP, for a request without a window or with the default window (as given in `exports/index.json`, or as the export form fills it in whole seconds). |
 
 Not offline:
@@ -213,14 +241,11 @@ Not offline:
 - The raster charts (PNG) and PDF report inside the review exports: the
   bundled ZIPs are made without them (SVG charts, data and the HTML report
   are kept).
-- Time-range CSV and reports of an SD-resolved recording (its CSV has
-  `canonical_utc_ms` and `provenance_json` columns): 501. Their CSV is on the
-  resolved timeline, while the station's range export reads the receipt rows.
+- The time-range CSV of an SD-resolved recording from a bundle made before
+  `data/receipt_telemetry.csv` existed: 501.
 - Other recordings: the range CSV and a report of all recordings
   (`recording` empty) cover only the bundle's recording, labelled with its
   id. The station covers every primary recording in the range.
-- Checklist and recovery exports: station records, not recording data, so
-  bundles do not carry them.
 
 A text cell the station guarded against spreadsheet formulas (a leading `'`
 before `=`, `+`, `-` or `@`) is read back without the guard, so a sender or
@@ -238,6 +263,16 @@ station.
 | --- | --- | --- | --- |
 | Contract fixture (nominal 10k ft flight, 0.5 Hz) | 601 | — | 105 KB (13 KB of it the flight review export, about 35 KB the five replay-view layouts) |
 | Synthetic ten-minute capture at flight rates (100 Hz IMU, 50 Hz loadcell/PT/baro, 5 Hz GPS) | 154,200 | 20.3 MB | 4.3 MB |
+
+| SD-resolved contract fixture (synthetic: 39 receipt rows, 40 resolved rows, one 2 KB SD file) | 40 | — | 96 KB (receipt CSV 2.9 KB, resolved CSV 38 KB, SD file 2 KB) |
+
+An SD-resolved recording's bundle holds its rows twice (as received, and
+resolved with per-row provenance, which is most of the resolved CSV) and the
+provenance once more in `replay.json` (`sd_provenance`). The resolved CSV is
+about ten times the receipt CSV for SD rows (each carries its SD record and
+mapping); a ten-minute capture with SD-resolved load cells at 50 Hz (30,000
+SD rows) adds about 30 MB unpacked, 3 to 4 MB packed. The replay export caps
+the provenance at 64 MiB and the bundle reader at 192 MiB unpacked.
 
 The second row comes from GroundStation26
 `recording_bundle::tests::realistic_capture_bundle_size`
@@ -259,7 +294,13 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
     bundled. A second recording (`cases`) covers what the flight lacks:
     recorded calibration epochs, an inferred regression, an over-range
     value, DAQ SD sensor names, valve labels, a recorded diagnostic stream,
-    formula-like and non-ASCII senders and Python float formatting.
+    formula-like and non-ASCII senders and Python float formatting. A third
+    (`sd`, `contract_fixtures_sd.rs`) is an SD-resolved recording with the
+    resolver's tables and row shapes; its bundle is
+    `replay-bundle/sd.gsreplay` (with the original SD file).
+  - `recording_bundle_records` checks that each bundled record is the
+    station's answer byte for byte, and `recording_import` that an
+    SD-resolved bundle imports with both timelines.
 - UI `local_station/tests.rs`:
   - opens the bundle with no station;
   - checks the layout, geometry, diagrams, boards, track and summaries;
@@ -270,6 +311,9 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
 - UI `local_station/tests.rs`: a plan bundle opens labelled Predicted with its
   plan; `derived/flight_plans.json` plans are offered for comparison.
 - UI `tests/offline-replay-predicted.test.mjs`: the 3D player's Predicted label.
+  - checks that hash, version and format errors are refused;
+  - answers the `sd` case from `sd.gsreplay`, and serves station records
+    from bundle entries and from the demo.
 - UI `local_station/tests.rs` also serves the bundle as a station: the
   recording's routes, replay snapshot and windows, the store listing.
 - UI `tests/offline-preview-browser.mjs`: opens the bundle in a fresh browser

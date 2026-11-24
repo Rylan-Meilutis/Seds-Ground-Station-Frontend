@@ -551,10 +551,13 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory, with `phases`, `events` and a `phase` per point ([section 12](#12-terrain-and-the-3d-map)) | vehicle replay, 3D map | view_data | M |
 | GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export; 3D replay → Flight replay (whole recording) | view_data | M |
 | GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `terrain` (bool, default = `tiles`) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
+| GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory | vehicle replay | view_data | M |
+| GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export | view_data | M |
+| GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `records` (bool, default true: checklists and recovery history), `sd_files` (bool), `sd_files_max_mb` (≤64; original SD files of an SD-resolved recording) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
 | POST | `/api/recordings/import` | `.gsreplay` bytes (≤256 MiB) → 201 `{id, label, rows, alerts, start_ms, end_ms, source, csv_sha256}`; 409 `{error, id}` duplicate; 400/413/422 ([replay-bundle.md](replay-bundle.md#import-into-a-station)) | not yet in the UI | admin | M |
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
-| GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import | view_data | M |
-| GET | `/api/recordings/{id}/sd/sources/{sha256}` | file | SD recording import | view_data | M |
+| GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import; offline from a bundle (every page) | view_data | M |
+| GET | `/api/recordings/{id}/sd/sources/{sha256}` | file | SD recording import; offline from a bundle made with `sd_files` | view_data | M |
 | POST | `/api/recordings/{id}/sd/imports` | `{manifest, filename}` → `{upload_id}` (`station_ui/sd-recording-upload.js`) | SD recording import | send_commands | M |
 | PUT | `/api/recordings/{id}/sd/imports/{token}` | CSV body | same | send_commands | M |
 | DELETE | `/api/recordings/{id}/sd/imports/{token}` | none (abort) | same | send_commands | M |
@@ -1181,6 +1184,13 @@ A station-made bundle (`GET /api/recordings/{id}/bundle`) completes
 `valve_mappings` and `mode` itself, so a bundle fetched by any client (or by
 `curl`) is complete. Each manifest entry names the station `route` it
 answers, so the local station serves the live replay tabs from the bundle.
+That includes the station records a bundle carries (`GET /api/checklists`,
+`/api/checklists/export`, `/api/checklists/export.csv`,
+`/api/recovery/export.json`, `/api/recovery/export.csv`, byte for byte) and,
+for an SD-resolved recording, its SD source list and original files. The
+exports of an SD-resolved recording (time-range CSV from its rows as
+received, reports from its resolved rows and provenance) are computed as for
+any bundle ([replay-bundle.md](replay-bundle.md#exports-offline)).
 
 Predicted data: a replay file or bundle with `"predicted": true` (in
 `replay.json` or `manifest.json`) is a flight plan played as a recording
@@ -1208,7 +1218,10 @@ armed, a 10 s countdown, the GroundStation26 IGT `nominal_10k` flight (about
 example warnings. The dashboard, data tabs and actions come from the demo's
 layout, not from code in the pages. Commands and writes are answered by the
 local station ("Nothing was sent; no station is connected"; a replay answers
-that it is read-only); nothing leaves the device.
+that it is read-only); nothing leaves the device. The Data Export panel's
+checklist and recovery exports answer with small demo records in the
+station's shapes (`demo::record`), and the Checklists tab shows the same
+checklist document.
 
 Cost when a station is connected: the WebSocket supervisor checks the
 selection once per connection and each HTTP helper once per request (a
