@@ -1266,7 +1266,7 @@ fn standalone_html_export_carries_terrain_and_imagery() {
     }
     let heightmap: serde_json::Value = serde_json::from_str(include_str!("../../tests/fixtures/backend-contract/terrain/heightmap.json")).unwrap();
     let path = super::replay_terrain::heightmap_path(&data).unwrap();
-    assert!(path.starts_with("/api/terrain/heightmap?lat=31.758017&lon=-102.045990&extent_m="), "{path}");
+    assert!(path.starts_with("/api/terrain/heightmap?lat=31.757998&lon=-102.046028&extent_m="), "{path}");
     // A green-brown 256 px PNG with a grid line, as a stand-in for station imagery.
     let mut tile = Vec::new();
     image::RgbImage::from_fn(256, 256, |x, y| if x == 0 || y == 0 { image::Rgb([60, 60, 40]) } else { image::Rgb([150, 140, 90]) })

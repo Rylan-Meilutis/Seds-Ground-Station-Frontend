@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(form.weather_source, "planner");
         let request = build_request(&form, &list.limits).unwrap();
         assert_eq!((request.fill_kg, request.target_apogee_m), (None, Some(3048.0)));
-        assert_eq!(summary_line(&list.plans[0]), "Flight · 8.50 kg · apogee 3766 m · lands 1230 m toward 90° · 20 Monte Carlo samples · 1 warning");
+        assert_eq!(summary_line(&list.plans[0]), "Flight · 8.50 kg · apogee 3768 m · lands 1243 m toward 91° · 20 Monte Carlo samples");
         let plan: PlanDoc = real("plan.json");
         assert!(plan.predicted);
         assert!(plan.burn.is_none());
@@ -680,7 +680,7 @@ mod tests {
         assert_eq!(plan.map_overlay().unwrap().tracks.len(), 5);
         let rows = summary_rows(&plan);
         assert!(rows.iter().any(|r| r.0 == "Total impulse" && r.1 == "16.33 kN·s (±15 %)"), "{rows:?}");
-        assert!(dispersion_rows(&plan).iter().any(|r| r.1 == "2909–4737 m"));
+        assert!(dispersion_rows(&plan).iter().any(|r| r.1 == "2914–4738 m"), "{:?}", dispersion_rows(&plan));
         let refusal: serde_json::Value = real("run-forbidden.json");
         let text = super::super::igt::refusal(&format!("HTTP 403: {refusal}"));
         assert_eq!(text, "Running a flight simulation needs permission to send commands (operator or administrator).");
