@@ -32,4 +32,15 @@ for(const a of [flight,stand]){
  a.group.traverse(n=>{if(n.geometry){geometries++;triangles+=(n.geometry.index?.count||n.geometry.attributes.position.count)/3;n.geometry.addEventListener('dispose',()=>disposedGeometry++);}if(n.material){materials++;n.material.addEventListener('dispose',()=>disposedMaterial++);}});
  assert.ok(triangles<8000,'procedural model remains bounded');a.dispose();assert.equal(disposedGeometry,geometries);assert.equal(disposedMaterial,materials);
 }
+{
+ // Flight state on the assembly: the plume scales with thrust/chamber, chutes deploy; the stand burns.
+ const f=createReplayAssembly(T,'flight'),st=createReplayAssembly(T,'test_fire');
+ f.update({valves:[],components:[],flight:{phase:'boost',plume:.5,drogue:false,main:false}});
+ assert.ok(f.group.getObjectByName('motor-flame').visible);assert.equal(f.group.getObjectByName('motor-flame').scale.y,.5);assert.equal(f.group.getObjectByName('main-parachute').visible,false);
+ f.update({valves:[],components:[],flight:{phase:'main',plume:0,drogue:true,main:true}});
+ assert.equal(f.group.getObjectByName('motor-flame').visible,false);assert.ok(f.group.getObjectByName('main-parachute').visible);assert.deepEqual(f.group.userData.flightState,{plume:0,drogue:true,main:true,phase:'main'});
+ f.update({valves:[],components:[]});assert.equal(f.group.getObjectByName('main-parachute').visible,false,'no flight state: chutes stowed');
+ st.update({valves:[],components:[],flight:{plume:1}});assert.ok(st.group.getObjectByName('StandPlume').visible);
+ st.update({valves:[],components:[],flight:{plume:0}});assert.equal(st.group.getObjectByName('StandPlume').visible,false);f.dispose();st.dispose();
+}
 console.log('PASS actual Three geometry: distinct flight/motor stand, named valve states, pressure/unknown refusal, explicit mass range, bounded repeated seeks and disposal');

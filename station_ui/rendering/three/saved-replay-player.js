@@ -19,14 +19,16 @@ export function replayPosition(plan,serverNow){
 }
 function normalized(value){return String(value||'').replace(/[^a-z0-9]/gi,'').toLowerCase();}
 export function savedFrame(rows,config,at,start,gpsSender){
- const phase=latestSaved(rows,'FLIGHT_STATE','FC',at)?.phase||'Unknown';
+ const stateRow=latestSaved(rows,'FLIGHT_STATE','FC',at),phase=stateRow?.phase||'Unknown';
+ // The raw FLIGHT_STATE number too, so the scene shows the flight state when a row carries no name.
+ const phaseValue=Number.isFinite(stateRow?.values?.[0])?stateRow.values[0]:null;
  const get=b=>savedValue(rows,b,at);
  const attitude=[get(config.attitude?.pitch),get(config.attitude?.yaw),get(config.attitude?.roll)];
  let gps=null;const candidates=['GPS_DATA','GPS','ROCKET_GPS'].map(type=>latestSaved(rows,type,gpsSender,at)).filter(Boolean).sort((a,b)=>b.timestamp_ms-a.timestamp_ms||b.id-a.id);
  const fix=candidates[0];if(fix&&at-fix.timestamp_ms<=5000){const v=fix.values?.slice(0,3);if(v?.length===3&&v.every(Number.isFinite)&&Math.abs(v[0])<=90&&Math.abs(v[1])<=180&&v[2]>=-20000&&v[2]<=10000000)gps=v;}
  const motions=(config.motions||[]).slice(0,128).map(m=>({...m,value:m.binding?get(m.binding):Object.entries(m.phase_values||{}).find(([name])=>normalized(name)===normalized(phase))?.[1]??m.phase_values?.['*']??null}));
  const clip=Object.entries(config.phase_animations||{}).find(([name])=>normalized(name)===normalized(phase))?.[1]||null;
- return {motions,attitude,gps,clip,orbit:config.camera_orbit||'',replay_time_seconds:Math.max(0,at-start)/1000,replay_timestamp_ms:at,phase};
+ return {motions,attitude,gps,clip,orbit:config.camera_orbit||'',replay_time_seconds:Math.max(0,at-start)/1000,replay_timestamp_ms:at,phase,phase_value:phaseValue};
 }
 export class SavedReplayPlayer {
  constructor(viewer,{ticket='',fetcher=fetch,status=()=>{},clock=()=>performance.now(),automatic=true}={}){

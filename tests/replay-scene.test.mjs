@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const source=process.env.GS_REPLAY_SCENE_SOURCE||new URL('../station_ui/rendering/three/replay-scene.js',import.meta.url);
-const {gpsToLocal,recordedSegments,recordedPath,visibleSegmentCount,EARTH_RADIUS_M}=await import('data:text/javascript;base64,'+fs.readFileSync(source).toString('base64'));
+const {gpsToLocal,recordedSegments,recordedPath,visibleSegmentCount,EARTH_RADIUS_M,trackSampler,renderQuality}=await import('data:text/javascript;base64,'+fs.readFileSync(source).toString('base64'));
 const near=(a,b,tolerance=.001)=>assert(Math.abs(a-b)<tolerance,`${a} != ${b}`);
 assert.deepEqual(gpsToLocal([0,0,0],[0,0,0]),[0,0,0]);
 near(gpsToLocal([0,0,10000],[0,0,0])[1],10000);
@@ -34,3 +34,16 @@ assert.equal(visibleSegmentCount(path.times,2500),1);
 assert.equal(visibleSegmentCount(path.times,4000),3);
 assert.equal(visibleSegmentCount(path.times,2000),1,'seekrewindhidefuturepath');
 console.log('PASS progressive recorded trail uses bounded prebuilt geometry andsavedtime');
+
+// Flight replay: the interpolated track never bridges a recorded break, and weak devices get the low budget.
+{
+ const s=trackSampler([0,2000,4000,30000],[[0,0,0],[0,200,0],[0,400,0],[0,0,0]],[3],1000);
+ assert.deepEqual(s.position(1000),[0,100,0]);assert.deepEqual(s.position(20000),[0,400,0],'held across the gap');
+ assert.equal(s.velocity(2000)[1],100);assert.equal(s.position(-5),null);
+ assert.equal(renderQuality({software:true,cores:16,memory:16,width:1920}),'low');
+ assert.equal(renderQuality({software:false,cores:4,memory:8,width:1920}),'low');
+ assert.equal(renderQuality({software:false,cores:8,memory:8,width:390}),'low');
+ assert.equal(renderQuality({software:false,cores:8,memory:8,width:1920}),'high');
+ assert.equal(renderQuality({software:true,forced:'high'}),'high');
+ console.log('PASS flight track sampling and render budget');
+}

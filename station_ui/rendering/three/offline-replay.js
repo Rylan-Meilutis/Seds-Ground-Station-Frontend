@@ -123,7 +123,7 @@ function flightTimeline(p,extras={},options={}){
  const plan=extras.flight_plan;const planZero=finite(plan?.created_ms)?plan.created_ms:start;
  for(const e of Array.isArray(plan?.events)?plan.events:[])if(finite(e?.t_s))addEvent(eventKindOf(e.kind),planZero+e.t_s*1000,'flight plan');
  // No recorded apogee: the highest altitude between ignition and the drogue (or landing).
- if(!seen.has('apogee')&&typeof options.altitudeAt==='function'){
+ if(!seen.has('apogee')&&Array.isArray(options.altitudeRows)&&options.altitudeRows.length){
   const a=events.find(e=>e.kind==='ignition')?.t,b=events.find(e=>e.kind==='drogue'||e.kind==='landing')?.t;
   if(finite(a)&&finite(b)&&b>a){let best=null;for(const r of options.altitudeRows||[]){if(r.t<a||r.t>b||!finite(r.v))continue;if(!best||r.v>best.v)best=r;}if(best)addEvent('apogee',best.t,'highest recorded altitude');}
  }
@@ -133,7 +133,8 @@ function flightTimeline(p,extras={},options={}){
  return {segments:segments.filter(s=>s.to>=s.from),events,t0,start,end,source:rows.length?'FLIGHT_STATE':'none'};
 }
 function phaseAt(timeline,t){const s=timeline.segments;for(let i=s.length-1;i>=0;i--)if(t>=s[i].from)return s[i].phase;return s[0]?.phase||'unknown';}
-// T-clock. Local helper until the shared T-clock formatter lands; the integrator swaps it in.
+// T-clock. TODO(integration): same output as the shared tclock.js formatTClock (fp-tclock);
+// this classic script cannot import the ES module, so it keeps this copy (a test checks parity once both are on one branch).
 function formatTClock(ms){
  if(!finite(ms))return 'T --:--';
  const negative=ms<0,total=negative?Math.ceil(-ms/1000):Math.floor(ms/1000),d=Math.floor(total/86400),h=Math.floor(total%86400/3600),m=Math.floor(total%3600/60),s=total%60,pad=v=>String(v).padStart(2,'0');

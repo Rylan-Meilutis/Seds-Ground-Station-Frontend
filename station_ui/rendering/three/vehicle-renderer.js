@@ -1,13 +1,13 @@
 import * as T from './three.module.js';
 import {GLTFLoader} from './GLTFLoader.js';
 import {SoftwareRenderer} from './software-renderer.js';
-import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedPath, visibleSegmentCount, createReplayAssembly, buildVehicle, vehicleGeometry} from './replay-scene.js';
+import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedPath, visibleSegmentCount, createReplayAssembly, buildVehicle, vehicleGeometry, flightPhaseOf, phaseVisual, buildOverlayGroup, cameraPose} from './replay-scene.js';
 // The bundled model stands in for the station's vehicle: with station geometry (data-geometry,
 // GET /api/vehicle/geometry) it is built from that instead, with the same node names.
 const BUNDLED_VEHICLE=/(^|\/)(station-)?assets\/models\/vehicle\.glb([?#]|$)/;
 // Explicit named-node transforms; no dependence on model-viewer's private scene graph.
 class VehicleViewer extends HTMLElement {
- static observedAttributes=['src','data-state','data-track','data-geometry'];
+ static observedAttributes=['src','data-state','data-track','data-geometry','data-overlays'];
  connectedCallback(){
   if(this.renderer)return;
   this.tabIndex=0;this.setAttribute('role','group');this.setAttribute('aria-description','Drag to orbit; shift-drag or two fingers to pan; pinch or scroll to zoom. Arrow keys orbit, W A S D pan, Q E rise or descend, F follows, R resets.');this.style.display='block';this.style.touchAction='none';this.status=document.createElement('div');this.status.className='gs-vehicle-reference-note';this.status.setAttribute('role','note');this.status.style.cssText='position:absolute;top:64px;left:12px;max-width:calc(100% - 24px);width:max-content;box-sizing:border-box;padding:6px 8px;border-radius:7px;background:#142534e8;pointer-events:none;color:#cfdfec;font:12px/1.4 system-ui;z-index:2';this.append(this.status);
@@ -57,15 +57,19 @@ class VehicleViewer extends HTMLElement {
   };
   this.clock=new T.Clock();this.load();this.renderer.setAnimationLoop(()=>this.frame());
  }
- attributeChangedCallback(name,old,value){if(old===value)return;if(name==='data-geometry'){this.geometry=vehicleGeometry(value);this.dataset.vehicleSource=this.geometry?.source?.kind||'generic';if(this.renderer){if(this.replayAssembly){this.replaySceneMode=null;this.dirty=true;}else if(BUNDLED_VEHICLE.test(this.getAttribute('src')||''))this.load();}}if(name==='src'&&this.renderer)this.load();if(name==='data-track'){try{this.track=JSON.parse(value);}catch{this.track=null;}this.trackChanged=true;this.dirty=true;}if(name==='data-state'){this.dirty=true;try{this.state=JSON.parse(value);}catch{this.state={};}}}
+ attributeChangedCallback(name,old,value){if(old===value)return;if(name==='data-geometry'){this.geometry=vehicleGeometry(value);this.dataset.vehicleSource=this.geometry?.source?.kind||'generic';if(this.renderer){if(this.replayAssembly){this.replaySceneMode=null;this.dirty=true;}else if(BUNDLED_VEHICLE.test(this.getAttribute('src')||''))this.load();}}if(name==='src'&&this.renderer)this.load();if(name==='data-track'){try{this.track=JSON.parse(value);}catch{this.track=null;}this.trackChanged=true;this.dirty=true;}if(name==='data-state'){this.dirty=true;try{this.state=JSON.parse(value);}catch{this.state={};}}if(name==='data-overlays'){let list;try{list=JSON.parse(value);}catch{list=null;}this.overlays=Array.isArray(list)?list.slice(0,16):[];this.overlaysChanged=true;this.dirty=true;}}
  viewDistance(){return this.distance/Math.min(1,Math.max(.1,this.camera.aspect));}
  pan(dx,dy){
   const scale=2*this.viewDistance()*Math.tan(T.MathUtils.degToRad(this.camera.fov/2))/Math.max(this.clientHeight,1);
   const right=new T.Vector3(Math.cos(this.theta),0,-Math.sin(this.theta));
   const up=new T.Vector3(-Math.cos(this.phi)*Math.sin(this.theta),Math.sin(this.phi),-Math.cos(this.phi)*Math.cos(this.theta));
-  this.target.addScaledVector(right,-dx*scale).addScaledVector(up,dy*scale);this.follow=false;this.dirty=true;
+  this.target.addScaledVector(right,-dx*scale).addScaledVector(up,dy*scale);this.follow=false;this.viewMode=null;this.dirty=true;
  }
  cameraAction(action){
+  // Camera modes shared with the flight replay: chase, pad view and top-down; follow and free orbit as before.
+  if(['chase','pad','top'].includes(action)){this.viewMode=action;this.overview=false;this.follow=true;this.dataset.cameraMode=action;this.dirty=true;return;}
+  if(action==='orbit'){this.viewMode=null;this.follow=false;this.target.copy(this.root.position);this.dataset.cameraMode='free';this.dirty=true;return;}
+  if(['follow','reset','overview','rise','descend'].includes(action)||action.startsWith('pan-'))this.viewMode=null;
   if(action==='follow'||action==='reset'){this.overview=false;this.follow=true;this.target.copy(this.root.position);if(action==='reset'){this.theta=.6;this.phi=1.28;this.distance=this.modelDistance||14;}}
   if(action==='overview'&&this.positionAvailable&&this.trackPositions?.length){this.overview=true;const box=new T.Box3();for(let i=0;i<this.trackPositions.length;i+=3)box.expandByPoint(new T.Vector3(...this.trackPositions.slice(i,i+3)));box.getCenter(this.target);this.distance=Math.max(box.getSize(new T.Vector3()).length()*1.6,this.modelDistance||14);this.phi=1.28;this.follow=false;}
   if(action==='zoom-in')this.distance=Math.max(.3,this.distance/1.4);
@@ -74,7 +78,7 @@ class VehicleViewer extends HTMLElement {
   if(action==='up')this.phi=Math.max(.03,this.phi-.15);if(action==='down')this.phi=Math.min(Math.PI-.03,this.phi+.15);
   if(action.startsWith('pan-'))this.pan(action==='pan-left'?40:action==='pan-right'?-40:0,action==='pan-up'?40:action==='pan-down'?-40:0);
   if(action==='rise'||action==='descend'){this.target.y+=(action==='rise'?1:-1)*this.distance*.12;this.follow=false;}
-  this.dataset.cameraMode=this.follow?'follow':'free';this.dirty=true;
+  this.dataset.cameraMode=this.viewMode||(this.follow?'follow':'free');this.dirty=true;
  }
  updatePositionMarker(){
   let visible=false;
@@ -85,7 +89,7 @@ class VehicleViewer extends HTMLElement {
   }
   this.positionMarker.style.display=visible?'block':'none';this.dataset.positionMarkerVisible=String(visible);
  }
- clearFlightScene(){this.overview=false;if(this.positionMarker)this.positionMarker.style.display='none';this.dataset.positionMarkerVisible='false';for(const object of [this.ground,this.trajectory])if(object){this.scene.remove(object);object.geometry.dispose();object.material.dispose();}this.ground=this.trajectory=null;this.origin=null;this.trackPositions=[];this.trackTimes=[];}
+ clearFlightScene(){this.clearOverlays();this.overview=false;if(this.positionMarker)this.positionMarker.style.display='none';this.dataset.positionMarkerVisible='false';for(const object of [this.ground,this.trajectory])if(object){this.scene.remove(object);object.geometry.dispose();object.material.dispose();}this.ground=this.trajectory=null;this.origin=null;this.trackPositions=[];this.trackTimes=[];}
  updateFlightScene(state){
   if(this.trackChanged){
    const first=this.track?.points?.find(p=>validGps([p.latitude,p.longitude,p.altitude_m])),origin=first?[first.latitude,first.longitude,first.altitude_m]:null;
@@ -107,8 +111,11 @@ class VehicleViewer extends HTMLElement {
   this.scene.background=available?this.skyColor:this.referenceColor;
   if(position){this.root.position.set(...position);if(this.follow)this.target.copy(this.root.position);}
   else{this.root.position.set(0,0,0);if(this.follow)this.target.set(0,0,0);}
-  this.dataset.positionAvailable=String(!!position);this.dataset.cameraMode=this.follow?'follow':'free';
+  this.dataset.positionAvailable=String(!!position);this.dataset.cameraMode=this.viewMode||(this.follow?'follow':'free');
  }
+ clearOverlays(){if(this.overlayGroup){this.scene.remove(this.overlayGroup);this.overlayGroup.traverse(n=>{n.geometry?.dispose();n.material?.map?.dispose();n.material?.dispose?.();});this.overlayGroup=null;}}
+ // MapOverlays (data-overlays) in the saved flight's frame: predicted tracks dashed and lighter, ellipses on the pad-altitude reference.
+ updateOverlays(){if(!this.overlaysChanged&&this.overlayOrigin===this.origin)return;this.overlaysChanged=false;this.overlayOrigin=this.origin;this.clearOverlays();if(!this.origin||!this.overlays?.length)return;const R=EARTH_RADIUS_M;this.overlayGroup=buildOverlayGroup(T,this.overlays,this.origin,(x,z)=>{const r2=x*x+z*z;return r2<R*R?Math.sqrt(R*R-r2)-R:0;});this.scene.add(this.overlayGroup);this.dataset.overlays=String(this.overlayGroup.userData.tracks+this.overlayGroup.userData.areas);}
  createGround(){
   // Curved sea-level reference, centred under the first saved GPS fix. No fabricated terrain.
   const positions=[],rings=30,slices=96,radius=EARTH_RADIUS_M;
@@ -123,7 +130,10 @@ class VehicleViewer extends HTMLElement {
     this.generation=(this.generation||0)+1;this.disposeModel();this.replayAssembly=createReplayAssembly(T,mode,this.geometry);this.replaySceneMode=mode;this.model=this.replayAssembly.group;this.root.add(this.model);this.mixer=new T.AnimationMixer(this.model);this.clips=[];this.activeClip=null;this.base=new Map();this.smooth=new Map();this.driven=[];
     this.model.traverse(n=>this.base.set(n,{position:n.position.clone(),scale:n.scale.clone(),quaternion:n.quaternion.clone(),visible:n.visible}));this.modelDistance=mode==='test_fire'?11:10;this.distance=this.modelDistance;this.theta=.6;this.phi=1.2;this.follow=true;this.dataset.loaded='true';
    }
-   this.replayAssembly.update({attitude:null,valves:state.visual_valves||[],components:state.visual_components||[]});this.dataset.replayScene=mode;return true;
+   // Flight state on the model from the saved phase (FLIGHT_STATE), or as sent.
+   const named=typeof state.phase==='string'&&state.phase&&state.phase!=='Unknown'?state.phase:Number.isFinite(state.phase_value)?state.phase_value:null,phase=named!==null?flightPhaseOf(named,this.flightPhase||'pad'):null;if(phase)this.flightPhase=phase;
+   const flight=state.flight&&typeof state.flight==='object'?state.flight:phase&&mode==='flight'?phaseVisual(phase,{plume:1}):null;
+   this.replayAssembly.update({attitude:null,valves:state.visual_valves||[],components:state.visual_components||[],flight});this.dataset.replayScene=mode;this.dataset.flightPhase=phase||'';return true;
   }
   if(this.replayAssembly){this.generation=(this.generation||0)+1;this.disposeModel();this.load();}
   this.dataset.replayScene='configured';return false;
@@ -162,7 +172,10 @@ class VehicleViewer extends HTMLElement {
   const stand=procedural&&state.replay_scene==='test_fire';this.updateFlightScene(stand?{...state,gps:null}:state);
   const a=stand?[0,0,0]:state.attitude||[null,null,null];this.root.rotation.set(...a.map(v=>T.MathUtils.degToRad(Number.isFinite(v)?v:0)));this.dataset.attitudeAvailable=String(a.every(Number.isFinite));if(!a.every(Number.isFinite))this.status.textContent=[this.status.textContent,'Attitude unavailable · reference orientation'].filter(Boolean).join(' · ');
   const note=stand?'Illustrative fixed motor stand · saved component values':!this.origin?'Reference attitude mode · no saved GPS track':!validGps(state.gps)?'Reference attitude mode · no fresh saved GPS':'Reference Earth surface · terrain unavailable'+(this.track?.sampled||this.track?.truncated?' · sampled path':'');this.status.textContent=[this.status.textContent,note].filter(Boolean).join(' · ');
-  const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);if(this.inViewport!==false)this.renderer.render(this.scene,this.camera);this.updatePositionMarker();this.dirty=false;
+  this.updateOverlays();const distance=this.viewDistance(),far=Math.max(20000000,distance*2);if(this.camera.far!==far){this.camera.far=far;this.camera.updateProjectionMatrix();}
+  const at=this.root.position.toArray(),prev=this.lastRootPosition;if(prev&&Math.hypot(at[0]-prev[0],at[1]-prev[1],at[2]-prev[2])>.5)this.direction=[0,1,2].map(i=>at[i]-prev[i]);this.lastRootPosition=at;
+  if(this.viewMode&&this.origin){const pose=cameraPose(this.viewMode,{rocket:at,direction:this.direction?this.direction.map(v=>v/Math.hypot(...this.direction)):null,pad:[0,0,0],theta:this.theta,phi:this.phi,distance});this.camera.position.set(...pose.position);this.camera.up.set(...pose.up);this.camera.lookAt(...pose.target);}
+  else{this.camera.up.set(0,1,0);this.camera.position.set(this.target.x+distance*Math.sin(this.phi)*Math.sin(this.theta),this.target.y+distance*Math.cos(this.phi),this.target.z+distance*Math.sin(this.phi)*Math.cos(this.theta));this.camera.lookAt(this.target);}if(this.inViewport!==false)this.renderer.render(this.scene,this.camera);this.updatePositionMarker();this.dirty=false;
  }
  disconnectedCallback(){this.generation++;this.visibilityObserver?.unobserve(this);this.visibilityObserver?.disconnect();this.visibilityObserver=null;this.resize?.disconnect();this.renderer?.setAnimationLoop(null);this.disposeModel();this.clearFlightScene();this.pointers?.clear();this.renderer?.dispose();this.renderer?.domElement.remove();this.status?.remove();this.positionMarker?.remove();this.renderer=null;}
 }

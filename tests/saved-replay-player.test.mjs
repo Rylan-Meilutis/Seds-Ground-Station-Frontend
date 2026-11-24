@@ -14,7 +14,9 @@ assert.equal(savedValue(rows,{data_type:'ROLL',sender_id:'FC',index:0,scale:2,of
 assert.equal(savedValue(rows,{data_type:'ROLL',sender_id:'FC',index:0},9000),null);
 const cfg={attitude:{roll:{data_type:'ROLL',sender_id:'FC',index:0}},motions:[],phase_animations:{ascent:'motor'}};
 const frame=savedFrame(rows,cfg,1500,1000,'RF');assert.deepEqual(frame.gps,[43,-78,300]);assert.deepEqual(frame.attitude,[null,null,10]);assert.equal(frame.clip,'motor');assert.equal(frame.replay_timestamp_ms,1500);
-assert.equal(savedFrame(rows,cfg,999,1000,'RF').gps,null);assert.equal(savedFrame(rows,cfg,9000,1000,'RF').gps,null);
+assert.equal(savedFrame(rows,cfg,999,1000,'RF').gps,null);
+assert.equal(frame.phase,'Ascent');assert.equal(frame.phase_value,1,'the raw FLIGHT_STATE number travels with the name');
+{const unnamed=[...rows,row(6,1800,'FLIGHT_STATE',[11],'FC')];const f=savedFrame(unnamed,cfg,1900,1000,'RF');assert.equal(f.phase,'Unknown');assert.equal(f.phase_value,11,'a row with no name still gives the scene its flight state');}assert.equal(savedFrame(rows,cfg,9000,1000,'RF').gps,null);
 const viewer={attributes:{},setAttribute(k,v){this.attributes[k]=v;}},requests=[];let now=0,fail=false;
 const fetcher=async url=>{requests.push(url);if(fail)throw Error('offline');const kind=new URL(url,'http://test').pathname.split('/').at(-1);
  if(kind==='state')return{ok:true,json:async()=>({plan,config:cfg,server_now_ms:50000})};

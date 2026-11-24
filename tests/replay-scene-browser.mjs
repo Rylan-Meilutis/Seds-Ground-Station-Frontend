@@ -50,6 +50,21 @@ try {
  checks.pressureNotLiquid=!m.replayAssembly.tanks[0].fluid.visible&&m.replayAssembly.tanks[0].unknown.visible;
  visual.replay_scene='flight';m.setAttribute('data-state',JSON.stringify(visual));await new Promise(r=>setTimeout(r,150));
  checks.illustrativeFlight=m.model.name==='ReplayFlightVehicle'&&!!m.model.getObjectByName('Nose')&&savedFlightPosition.length()>0&&m.root.position.distanceTo(savedFlightPosition)<1e-6;
+ // Flight state from the saved phase: plume in powered ascent, the drogue under canopy.
+ visual.phase='Ascent';m.setAttribute('data-state',JSON.stringify(visual));await new Promise(r=>setTimeout(r,150));
+ checks.plumeInAscent=m.dataset.flightPhase==='boost'&&m.model.getObjectByName('motor-flame').visible&&!m.model.getObjectByName('main-parachute').visible;
+ visual.phase='Descent';m.setAttribute('data-state',JSON.stringify(visual));await new Promise(r=>setTimeout(r,150));
+ checks.noPlumeInDescent=m.dataset.flightPhase==='drogue'&&!m.model.getObjectByName('motor-flame').visible&&!m.model.getObjectByName('main-parachute').visible;
+ // The generic rocket has only a main chute (the geometry's recovery list).
+ visual.phase='Reefing';m.setAttribute('data-state',JSON.stringify(visual));await new Promise(r=>setTimeout(r,150));checks.mainUnderCanopy=m.dataset.flightPhase==='main'&&m.model.getObjectByName('main-parachute').visible;
+ // A predicted plan overlay: dashed, lighter tracks and the landing ellipse.
+ const ring=Array.from({length:24},(_,i)=>[45.003+.002*Math.cos(i/24*Math.PI*2),-72.997+.003*Math.sin(i/24*Math.PI*2)]);
+ m.setAttribute('data-overlays',JSON.stringify([{id:'flight_plan:t',kind:'flight_plan',label:'Predicted: test',predicted:true,tracks:[{id:'boost',phase:'boost',style:'predicted',points:[[44,-73,300],[44.002,-72.999,5000],[44.004,-72.998,9500]]}],markers:[{id:'landing',kind:'landing',label:'Predicted landing',lat_deg:45.003,lon_deg:-72.997,alt_msl_m:300}],areas:[{id:'e',kind:'landing_ellipse',polygon:ring}]}]));
+ await new Promise(r=>setTimeout(r,200));
+ checks.overlaysDrawn=m.dataset.overlays==='2'&&m.overlayGroup.children.some(n=>n.name==='OverlayTrack'&&n.material.isLineDashedMaterial&&n.material.opacity===.55)&&m.overlayGroup.children.some(n=>n.name==='OverlayAreaFill');
+ for(const mode of ['chase','pad','top']){m.cameraAction(mode);await new Promise(r=>setTimeout(r,80));checks['camera_'+mode]=m.dataset.cameraMode===mode;}
+ m.cameraAction('orbit');checks.camera_orbit=m.dataset.cameraMode==='free';m.cameraAction('follow');checks.camera_follow=m.dataset.cameraMode==='follow';
+ m.setAttribute('data-overlays','[]');await new Promise(r=>setTimeout(r,150));checks.overlaysCleared=!m.overlayGroup;delete visual.phase;
  visual.replay_scene='configured';m.setAttribute('data-state',JSON.stringify(visual));
  await new Promise((resolve,reject)=>{const timer=setInterval(()=>{if(m.model&&!m.replayAssembly){clearInterval(timer);resolve();}},25);setTimeout(()=>{clearInterval(timer);reject(Error('Configured GLB did not restore'));},10000);});
  checks.configuredModelRestored=!!m.model&&!m.replayAssembly;
