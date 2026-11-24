@@ -332,11 +332,17 @@ pub(super) async fn delay() {
     #[cfg(not(target_arch = "wasm32"))]
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
-fn sync_scene(status: &Status) {
-    // With a local station the UI's own copies of the shared assets serve.
-    let base = if super::station_link::is_local() { String::new() } else { UrlConfig::base_http() };
-    let url = serde_json::to_string(&format!("{base}/assets/models/gse-site.glb")).unwrap();
-    let renderer = serde_json::to_string(&format!("{base}/assets/model-viewer.min.js")).unwrap();
+/// The GSE scene model when `/api/vehicle_visualization` names none.
+const DEFAULT_GSE_MODEL: &str = "/assets/models/gse-site.glb";
+
+/// The station's `ground_model_url`, or the stock GSE model when it is absent.
+fn gse_model_path(config: Option<&super::vehicle_tab::VehicleVisualizationConfig>) -> &str {
+    config.map(|config| config.ground_model_url.trim()).filter(|url| !url.is_empty()).unwrap_or(DEFAULT_GSE_MODEL)
+}
+
+fn sync_scene(status: &Status, model_path: &str) {
+    let url = serde_json::to_string(&super::vehicle_tab::backend_url(model_path)).unwrap();
+    let renderer = serde_json::to_string(&super::vehicle_tab::backend_url("/assets/model-viewer.min.js")).unwrap();
     let animation = match status.phase.as_str() {
         "raising" | "settling" | "holding" => "nitrogen-test",
         "filling" => "nitrous-fill",
@@ -446,9 +452,14 @@ pub(super) fn GsePanel(
         }
     }});
     let snapshot = status.read().clone();
+    let vehicle = use_resource(move || async move {
+        if !show_model { return None; }
+        super::http_get_json::<super::vehicle_tab::VehicleVisualizationConfig>("/api/vehicle_visualization").await.ok()
+    });
     use_effect(move || {
         if show_model {
-            sync_scene(&status.read());
+            let config = vehicle.read().clone().flatten();
+            sync_scene(&status.read(), gse_model_path(config.as_ref()));
         }
     });
     let pressure_label = snapshot
@@ -1390,5 +1401,23 @@ mod fill_status_hold_tests {
         assert!(!super::fill_status_hold(1_000.0, 1_001.0 + window));
         assert!(!super::fill_status_hold(1_000.0, 999.0), "monotonic time never runs backwards");
         assert!(!super::fill_status_hold(f64::NAN, 1_000.0));
+    }
+}
+
+#[cfg(test)]
+mod scene_model_tests {
+    use super::*;
+
+    #[test]
+    fn scene_model_comes_from_the_vehicle_visualization() {
+        let station: super::super::vehicle_tab::VehicleVisualizationConfig =
+            serde_json::from_value(crate::backend_contract::fixture("replay-export/flight")["view_config"].clone()).unwrap();
+        assert_eq!(gse_model_path(Some(&station)), "/assets/models/gse-site.glb");
+        let mut other = station.clone();
+        other.ground_model_url = "/assets/models/pad-b.glb".into();
+        assert_eq!(gse_model_path(Some(&other)), "/assets/models/pad-b.glb");
+        other.ground_model_url = "  ".into();
+        assert_eq!(gse_model_path(Some(&other)), DEFAULT_GSE_MODEL);
+        assert_eq!(gse_model_path(None), DEFAULT_GSE_MODEL);
     }
 }

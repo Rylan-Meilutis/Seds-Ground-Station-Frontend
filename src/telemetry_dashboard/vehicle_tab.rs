@@ -144,7 +144,7 @@ fn value(binding: &VehicleTelemetryBinding, frame: &super::vehicle_replay::Frame
     frame.value(binding, false)
 }
 
-fn backend_url(path: &str) -> String {
+pub(super) fn backend_url(path: &str) -> String {
     if let Some(local)=crate::native_assets::station_asset_url(path) { return local; }
     if path.starts_with("http://") || path.starts_with("https://") {
         return path.to_string();
