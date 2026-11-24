@@ -6,7 +6,7 @@
 //! | --- | --- |
 //! | `GET /api/recordings/{id}/csv` | `data/telemetry.csv`, unchanged |
 //! | `GET /api/recordings/csv?start_ms&end_ms` | the rows of `data/telemetry.csv` in the range, behind a `recording` column (this recording only) |
-//! | `GET /api/recordings/report?request=` | `preview`, `csv`, `daq_csv`, `daq_tsv` computed here ([`report`]); `xlsx`/`pdf` need the station |
+//! | `GET /api/recordings/report?request=` | `preview`, `csv`, `daq_csv`, `daq_tsv` computed here ([`report`]); `xlsx`/`pdf`: the bundle's ready-made standard report, else built here ([`xlsx`], [`pdf`]) |
 //! | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | without a window: `exports/*.zip` from the bundle; with `from_ms`/`to_ms`: computed here ([`review`]) as the station sends it with `raster=false` |
 //! | `GET /api/flight_review/recording/{id}?from_ms&to_ms` | the review of that window, computed here ([`review`]); without a window the bundle's `derived/flight_review.json` answers |
 //!
@@ -20,9 +20,13 @@
 //! Each answer is byte for byte the station's for the same request
 //! (GroundStation26 `contract_fixtures` writes the station's answers to
 //! `replay-bundle/exports/`; `local_station/tests.rs` compares).
+#[cfg(test)]
+mod document_tests;
+mod pdf;
 mod py;
 mod report;
 pub(crate) mod review;
+mod xlsx;
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -81,6 +85,11 @@ pub(crate) struct ExportInputs {
     /// `derived/review_inputs.json` (+ the hybrid motor model): reviews and
     /// review exports of any window. `None` for an older bundle.
     pub review: Option<review::Bundle>,
+    /// The station's standard Excel/PDF reports by format (`xlsx`, `pdf`),
+    /// from a bundle made with `?reports=1` (`exports/reports.json`).
+    pub reports: BTreeMap<String, Vec<u8>>,
+    /// The bundle's `created_ms`: the document time of reports built here.
+    pub created_ms: i64,
 }
 
 impl ExportInputs {
@@ -117,7 +126,14 @@ impl ExportInputs {
         }
         let receipt_csv = files.get("data/receipt_telemetry.csv").map(|b| Rc::new(b.clone()));
         let review = review::Bundle::from_files(files);
-        Self { recording: recording.to_owned(), csv, receipt_csv, calibration_history, report_context: json("config/report_context.json"), export_index: index.is_some(), zips, review }
+        let mut reports = BTreeMap::new();
+        for (format, entry) in json("exports/reports.json").as_ref().and_then(Value::as_object).into_iter().flatten() {
+            if let Some(bytes) = entry["path"].as_str().and_then(|p| files.get(p)) {
+                reports.insert(format.clone(), bytes.clone());
+            }
+        }
+        let created_ms = json("manifest.json").and_then(|m| m["created_ms"].as_i64()).unwrap_or(0);
+        Self { recording: recording.to_owned(), csv, receipt_csv, calibration_history, report_context: json("config/report_context.json"), export_index: index.is_some(), zips, review, reports, created_ms }
     }
 }
 
@@ -344,13 +360,15 @@ fn report_answer(inputs: &ExportInputs, query: &BTreeMap<String, String>) -> Ans
         Ok(value @ Value::Object(_)) => value,
         _ => return Err((400, "Invalid report selection.".into())),
     };
-    let format = request["format"].as_str().unwrap_or("preview");
+    let format = request["format"].as_str().unwrap_or("preview").to_owned();
+    let format = format.as_str();
     let (content_type, filename) = match format {
         "preview" => ("application/json", String::new()),
         "csv" => ("text/csv; charset=utf-8", "telemetry-report.csv".to_owned()),
         "daq_csv" => ("text/csv; charset=utf-8", "telemetry-daq-sd.csv".to_owned()),
         "daq_tsv" => ("text/tab-separated-values; charset=utf-8", "telemetry-daq-sd.tsv".to_owned()),
-        "xlsx" | "pdf" => return Err((NEED_STATION, "Excel and PDF reports need the station. Offline, choose CSV or a DAQ SD layout.".into())),
+        "xlsx" => ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "telemetry-report.xlsx".to_owned()),
+        "pdf" => ("application/pdf", "telemetry-report.pdf".to_owned()),
         _ => return Err((400, "Choose CSV, DAQ SD CSV/TSV, Excel or PDF.".into())),
     };
     let selected = request["recording"].as_str().unwrap_or("");
@@ -358,6 +376,16 @@ fn report_answer(inputs: &ExportInputs, query: &BTreeMap<String, String>) -> Ans
         return Err((404, "Recording not found. Refresh the recording list.".into()));
     }
     let rows: Vec<Row> = rows(&inputs.csv)?.into_iter().map(|(row, _)| row).collect();
+    // The station's own standard Excel/PDF report when the bundle has it.
+    if let Some(bytes) = inputs.reports.get(format)
+        && report::selects_everything(&rows, &request)
+    {
+        return Ok(ExportFile { bytes: bytes.clone(), content_type, filename });
+    }
+    let mut request = request;
+    if matches!(format, "xlsx" | "pdf") && !request["generated_ms"].is_i64() {
+        request["generated_ms"] = inputs.created_ms.into();
+    }
     let context = report::context(inputs.report_context.as_ref());
     let bytes = report::run(&inputs.recording, &rows, &inputs.calibration_history, &context, &request, format)?;
     Ok(ExportFile { bytes, content_type, filename })

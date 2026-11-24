@@ -75,20 +75,20 @@ fn fail<T>(message: &str) -> Result<T, Failure> {
 }
 
 #[derive(Clone)]
-struct Sample<'a> {
-    t: i64,
-    value: Option<Py>,
-    source: Option<i64>,
-    recording: &'a str,
-    row_id: i64,
+pub(super) struct Sample<'a> {
+    pub(super) t: i64,
+    pub(super) value: Option<Py>,
+    pub(super) source: Option<i64>,
+    pub(super) recording: &'a str,
+    pub(super) row_id: i64,
 }
 
-struct Stream<'a> {
-    key: String,
+pub(super) struct Stream<'a> {
+    pub(super) key: String,
     sender: String,
     kind: String,
     index: usize,
-    samples: Vec<Sample<'a>>,
+    pub(super) samples: Vec<Sample<'a>>,
 }
 
 /// Python's `sum()` (3.12+): exact int sums, then Neumaier-compensated
@@ -871,8 +871,47 @@ pub(crate) fn run(recording: &str, rows: &[Row], history_rows: &[HistoryRow], co
             }
             export_daq(&chosen, &metadata, context, &versions, if format == "daq_tsv" { '\t' } else { ',' }, &provenance, &streams)
         }
+        "xlsx" | "pdf" => {
+            let generated_ms = request.get("generated_ms").and_then(serde_json::Value::as_i64).unwrap_or(0);
+            if format == "xlsx" { Ok(super::xlsx::workbook(&chosen, &metadata, generated_ms)) } else { super::pdf::document(&chosen, &metadata, generated_ms) }
+        }
         _ => fail("Choose CSV, DAQ SD CSV/TSV, Excel or PDF."),
     }
+}
+
+/// Whether `request` selects every row and every channel of the recording in
+/// the default order: the station's standard report, which a bundle made
+/// with `?reports=1` carries ready-made.
+pub(crate) fn selects_everything(rows: &[Row], request: &serde_json::Value) -> bool {
+    let (start, end) = (request.get("start_ms").and_then(serde_json::Value::as_f64), request.get("end_ms").and_then(serde_json::Value::as_f64));
+    if rows.iter().any(|r| start.is_some_and(|s| (r.received as f64) < s) || end.is_some_and(|e| r.received as f64 >= e)) {
+        return false;
+    }
+    let keys = match request.get("channels") {
+        None | Some(serde_json::Value::Null) => return true,
+        Some(serde_json::Value::Array(keys)) => keys,
+        Some(_) => return false,
+    };
+    let mut ordered: Vec<&Row> = rows.iter().collect();
+    ordered.sort_by_key(|r| (r.received, r.id));
+    let mut all: Vec<String> = Vec::new();
+    for row in ordered {
+        let Ok(Py::List(values)) = Py::parse(if row.values.is_empty() { "[]" } else { &row.values }) else { return false };
+        for index in 0..values.len() {
+            let key = key_of(&row.sender, &row.kind, index);
+            if !all.contains(&key) {
+                all.push(key);
+            }
+        }
+    }
+    let mut chosen: Vec<&str> = Vec::new();
+    for key in keys {
+        let Some(key) = key.as_str() else { return false };
+        if !chosen.contains(&key) {
+            chosen.push(key);
+        }
+    }
+    chosen == all
 }
 
 /// The context from `config/report_context.json` (empty when absent).

@@ -102,6 +102,10 @@ pub(crate) const COVERED: &[&str] = &[
     "replay-bundle/review/fire-burn-summary",
     "replay-bundle/review/flight-launch-summary",
     "replay-bundle/review/requests",
+    // The station's Excel/PDF reports, compared with the ones built offline
+    // (local_station/exports/document_tests.rs).
+    "replay-bundle/exports/report-documents",
+    "replay-bundle/exports/reports",
     "requests/gse-self-test-confirmation",
     "rrls/status",
     "rrls/status-relaying",

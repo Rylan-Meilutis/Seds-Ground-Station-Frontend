@@ -489,7 +489,7 @@ fn offline_exports_equal_the_station_exports_byte_for_byte() {
 }
 
 #[test]
-fn exports_the_bundle_cannot_make_say_they_need_the_station() {
+fn exports_the_bundle_cannot_make_say_they_need_the_station_and_reports_are_built() {
     let flight = bundle::open("flight.gsreplay", BUNDLE).unwrap().exports.clone().unwrap();
     let id = "groundstation_recording_2026-01-01_00-00-00_000.db";
     let report = |format: &str| {
@@ -497,11 +497,11 @@ fn exports_the_bundle_cannot_make_say_they_need_the_station() {
         let encoded: String = request.bytes().map(|b| format!("%{b:02X}")).collect();
         exports::answer(&flight, &format!("/api/recordings/report?request={encoded}")).unwrap()
     };
-    for format in ["xlsx", "pdf"] {
-        let (code, message) = report(format).unwrap_err();
-        assert_eq!(code, 501);
-        assert!(message.contains("Excel and PDF reports need the station"));
-    }
+    // Excel and PDF are built offline (local_station/exports/document_tests.rs compares them).
+    let xlsx = report("xlsx").unwrap();
+    assert_eq!((xlsx.filename.as_str(), &xlsx.bytes[..2]), ("telemetry-report.xlsx", &b"PK"[..]));
+    let pdf = report("pdf").unwrap();
+    assert_eq!((pdf.filename.as_str(), &pdf.bytes[..5]), ("telemetry-report.pdf", &b"%PDF-"[..]));
     assert_eq!(report("csv").unwrap().filename, "telemetry-report.csv");
     assert_eq!(report("preview").unwrap().filename, "");
     // Without a window the review export is the bundled file; a window is computed.
