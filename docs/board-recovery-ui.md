@@ -21,7 +21,9 @@ SD retry remains a separate explicit operator action.
 
 Recover Abort requires an advertised capability, a fresh two-second board
 readback and safe GS Startup/Idle/Aborted. Reset ALL to Startup additionally
-requires all seven boards' fresh boot/epoch/nonce identities and explicit
+requires fresh boot/epoch/nonce identities from every board the station lists
+(`boards[].id` in its order, `Status::board_ids`; the SEDS seven only while it
+lists none) and explicit
 `capabilities.reset_startup == true`; query or resync support alone is insufficient.
 Unsupported boards are listed and prevent a misleading global success claim.
 Reset ALL cancels queued automation, turns AB supplies and igniter OFF, puts its

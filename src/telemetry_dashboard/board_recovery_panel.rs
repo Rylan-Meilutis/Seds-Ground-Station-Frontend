@@ -203,7 +203,8 @@ fn acceptance_message(value: &Accepted) -> &'static str {
     }
     "Request accepted; awaiting fresh device confirmation."
 }
-fn operation_view(operation: &Operation) -> Element {
+/// `order`: the station's board list ([`Status::board_ids`]).
+fn operation_view(operation: &Operation, order: &[&str]) -> Element {
     let scope = if operation.global_startup_best_effort == Some(true) {
         let proof = if operation.targets.is_empty() {
             "No proof targets; no board completion or readback is claimed.".to_string()
@@ -215,7 +216,7 @@ fn operation_view(operation: &Operation) -> Element {
         format!("Targets: {}.", operation.targets.join(", "))
     };
     rsx! {div{role:"status",class:"gs26-recovery-operation gs-notice",style:"display:grid;gap:var(--gs-space-1);",
-        strong{"{operation.label()} — {operation.phase}"}
+        strong{"{operation.label(order)} — {operation.phase}"}
         if !operation.message.is_empty() {span{"{operation.message}"}}
         if operation.completed && operation.success == Some(true) && operation.reset_applied_state == Some(0) {
             span{"Startup applied; normal initialization may advance to Idle."}
@@ -526,7 +527,8 @@ pub(super) fn RecoveryBoardActions(board_id: String, ws_connected: bool) -> Elem
         mut message,
         ..
     } = ui;
-    if !BOARD_IDS.contains(&board_id.as_str()) {
+    // Only boards the station lists (any board while it lists none).
+    if snapshot.peek().as_ref().is_some_and(|current| !current.status.board_ids().contains(&board_id.as_str())) {
         return rsx! {};
     }
     let unavailable = || rsx! {div{class:"gs26-recovery-actions",style:"display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;",button{disabled:true,"Query board"}button{disabled:true,{targeted_recovery_label(&board_id).map_or("Recovery unavailable",|(label,_)|label)}}
@@ -696,7 +698,7 @@ pub(super) fn RecoveryBoardDetails(
         p{"Physical valve position is not verified by GPIO/servo command registers."
             if display.physical_verified {" The server claims physical verification, but these fields alone do not establish valve position."}}
     }
-    if let Some(operation)=raw.and_then(|board|board.operation.as_ref()){{operation_view(operation)}}
+    if let Some(operation)=raw.and_then(|board|board.operation.as_ref()){{operation_view(operation,&current.as_ref().map_or_else(||BOARD_IDS.to_vec(),|snapshot|snapshot.status.board_ids()))}}
     }}
 }
 #[component]
@@ -795,7 +797,7 @@ pub(super) fn RecoveryTools(ws_connected: bool, theme: ThemeConfig) -> Element {
 enum ToolsSection { Boards, Reset, Launch }
 /// One row per reported board: state, latched abort, and its own recovery commands.
 fn boards_section(current: &Snapshot, ws_connected: bool) -> Element {
-    let boards: Vec<Board> = BOARD_IDS.iter().filter_map(|id| current.status.board(id).cloned()).collect();
+    let boards: Vec<Board> = current.status.board_ids().into_iter().filter_map(|id| current.status.board(id).cloned()).collect();
     rsx! {
         if boards.is_empty() {p{class:"gs-notice","No boards are reported yet."}}
         for board in boards {
@@ -853,7 +855,7 @@ fn reset_section(current: &Snapshot, connected: bool, ui: (Signal<bool>, Signal<
             FinishWithoutAbsent::None=>rsx!{},
             offer=>rsx!{FinishWithoutAbsentControl{offer,connected,controls_busy}},
         }}
-        if let Some(operation)=status.operation.as_ref(){{operation_view(operation)}}
+        if let Some(operation)=status.operation.as_ref(){{operation_view(operation,&status.board_ids())}}
     }
 }
 const FINISH_WITHOUT_ABSENT: &str = "/api/board-recovery/finish-without-absent";
@@ -1078,7 +1080,7 @@ pub(super) fn RecoveryDialogs(ws_connected: bool) -> Element {
                                             Ok(value)=>{
                                                 if owned.snapshot.binding==ConnectionBinding::current(){
                                                     let result=acceptance_message(&value);
-                                                    let op=value.operation.map(|op|format!(" {}: {}",op.label(),op.message)).unwrap_or_default();
+                                                    let op=value.operation.map(|op|format!(" {}: {}",op.label(&fresh.status.board_ids()),op.message)).unwrap_or_default();
                                                     message.set(format!("{result} {}{op}",value.message));
                                                 }
                                             }
@@ -1215,10 +1217,10 @@ mod tests {
         .unwrap()
     }
     fn host_result() -> Element {
-        operation_view(&result(true))
+        operation_view(&result(true),&BOARD_IDS)
     }
     fn selected_result() -> Element {
-        operation_view(&result(false))
+        operation_view(&result(false),&BOARD_IDS)
     }
     fn host_scope() -> Element {
         let ticket: Challenge = serde_json::from_value(serde_json::json!({

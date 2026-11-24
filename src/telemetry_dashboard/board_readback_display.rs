@@ -1,7 +1,7 @@
 //! Presentation only. Cached readbacks never supply command capabilities or tickets.
 use super::{
     board_recovery_guard::{ConnectionBinding, status_age_ms},
-    board_recovery_model::{BOARD_IDS, Board, Status},
+    board_recovery_model::{Board, Status},
 };
 use std::collections::BTreeMap;
 #[derive(Clone, PartialEq, Eq)]
@@ -112,7 +112,10 @@ impl DisplayCache {
             self.boards.clear();
             self.owner = Some(next);
         }
-        for id in BOARD_IDS {
+        let ids = status.board_ids();
+        // A board the station no longer lists keeps no retained readback.
+        self.boards.retain(|id, _| ids.contains(&id.as_str()));
+        for id in ids {
             let Some(board) = status.board(id) else {
                 self.boards.remove(id);
                 continue;

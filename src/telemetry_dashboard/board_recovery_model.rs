@@ -20,10 +20,13 @@ pub(super) fn targeted_recovery_label(id: &str) -> Option<(&'static str, &'stati
 
 use serde::{Deserialize, Serialize};
 
+/// The board set of a station whose status lists no boards yet
+/// ([`Status::board_ids`] is the station's own list).
 pub(super) const BOARD_IDS: [&str; 7] = ["RF", "FC", "PB", "AB", "VB", "GB", "DAQ"];
-fn canonical_targets(targets: &[String]) -> bool {
-    targets.len() <= BOARD_IDS.len()
-        && BOARD_IDS
+/// `targets` are distinct boards of `order`, in its order.
+fn canonical_targets(targets: &[String], order: &[&str]) -> bool {
+    targets.len() <= order.len()
+        && order
             .iter()
             .copied()
             .filter(|id| targets.iter().any(|target| target == id))
@@ -123,7 +126,8 @@ impl Operation {
                 "idle" | "completed" | "failed" | "cancelled"
             )
     }
-    pub fn label(&self) -> &'static str {
+    /// `order` is the station's board list ([`Status::board_ids`]).
+    pub fn label(&self, order: &[&str]) -> &'static str {
         match (self.completed, self.success, self.phase.as_str()) {
             (_, _, "cancelled") => "Cancelled",
             (_, Some(false), _) | (_, _, "failed") => "Failed",
@@ -138,7 +142,7 @@ impl Operation {
             {
                 if self.global_startup_best_effort == Some(true) {
                     if self.selected_proof_count != Some(self.targets.len())
-                        || !canonical_targets(&self.targets)
+                        || !canonical_targets(&self.targets, order)
                         || self.unselected_board_verification.as_deref()
                             != Some("unverified_best_effort")
                     {
@@ -151,8 +155,8 @@ impl Operation {
                 } else if self.global_startup_best_effort.is_none()
                     && self.selected_proof_count.is_none()
                     && self.unselected_board_verification.is_none()
-                    && self.targets.len() == 7
-                    && canonical_targets(&self.targets)
+                    && self.targets.len() == order.len()
+                    && canonical_targets(&self.targets, order)
                 {
                     "Confirmed by board readbacks"
                 } else {
@@ -385,6 +389,18 @@ impl Status {
     pub fn board(&self, id: &str) -> Option<&Board> {
         self.boards.iter().find(|b| b.id == id)
     }
+    /// The station's boards in its order (`boards[].id`); [`BOARD_IDS`]
+    /// only while it lists none. Reset-all scopes, phrases and readbacks
+    /// follow this list, so another vehicle's board set is not refused.
+    pub fn board_ids(&self) -> Vec<&str> {
+        let mut ids: Vec<&str> = Vec::with_capacity(self.boards.len());
+        for board in &self.boards {
+            if !board.id.is_empty() && !ids.contains(&board.id.as_str()) {
+                ids.push(board.id.as_str());
+            }
+        }
+        if ids.is_empty() { BOARD_IDS.to_vec() } else { ids }
+    }
     /// Only an advertised mutation owns recovery admission. Background status
     /// queries may run while preparation asks the backend for fresh proof.
     pub fn mutating_pending(&self) -> bool {
@@ -476,8 +492,9 @@ impl Status {
             // ticket must still bind exact selected proof targets and policy.
             return None;
         }
-        let missing: Vec<_> = BOARD_IDS
-            .iter()
+        let missing: Vec<_> = self
+            .board_ids()
+            .into_iter()
             .filter(|id| {
                 !self.board(id).is_some_and(|b| {
                     b.fresh(elapsed)
@@ -485,7 +502,6 @@ impl Status {
                         && b.capabilities.reset_startup == Some(true)
                 })
             })
-            .copied()
             .collect();
         if !missing.is_empty() {
             return Some(format!(
@@ -726,7 +742,7 @@ impl Challenge {
                     || self.required_proof_boards.as_ref() != Some(&policy.base_required_boards)
                     || self.unselected_board_verification.as_deref()
                         != Some("unverified_best_effort")
-                    || !canonical_targets(&self.targets)
+                    || !canonical_targets(&self.targets, &status.board_ids())
                     || !policy
                         .base_required_boards
                         .iter()
@@ -782,12 +798,12 @@ impl Challenge {
                 return self.confirmation == FC_RESET_PHRASE && status.board("FC").is_some();
             }
             ("reset_startup", None, None)
-                if self.targets.len() == 7
-                    && BOARD_IDS.iter().all(|id| {
+                if self.targets.len() == status.board_ids().len()
+                    && status.board_ids().iter().all(|id| {
                         self.targets.iter().filter(|x| x.as_str() == *id).count() == 1
                     }) =>
             {
-                format!("RESET STARTUP {}", BOARD_IDS.join(" "))
+                format!("RESET STARTUP {}", status.board_ids().join(" "))
             }
             ("change_mode", None, Some(mode))
                 if status
@@ -808,7 +824,7 @@ impl Challenge {
             && self
                 .targets
                 .iter()
-                .all(|id| BOARD_IDS.contains(&id.as_str()) && status.board(id).is_some())
+                .all(|id| status.board_ids().contains(&id.as_str()) && status.board(id).is_some())
     }
     pub fn context_unchanged(&self, original: &Status, current: &Status) -> bool {
         original.valid()
@@ -1357,15 +1373,15 @@ mod tests {
         ))
         .unwrap();
         assert!(op.pending());
-        assert_eq!(op.label(), "Pending / not confirmed");
+        assert_eq!(op.label(&BOARD_IDS), "Pending / not confirmed");
         op.completed = true;
-        assert_eq!(op.label(), "Pending / not confirmed");
+        assert_eq!(op.label(&BOARD_IDS), "Pending / not confirmed");
         op.success = Some(true);
-        assert_eq!(op.label(), "Reset result is not confirmed");
+        assert_eq!(op.label(&BOARD_IDS), "Reset result is not confirmed");
         op.reset_applied_state = Some(0);
-        assert_eq!(op.label(), "Confirmed by board readbacks");
+        assert_eq!(op.label(&BOARD_IDS), "Confirmed by board readbacks");
         op.phase = "cancelled".into();
-        assert_eq!(op.label(), "Cancelled");
+        assert_eq!(op.label(&BOARD_IDS), "Cancelled");
     }
     #[test]
     fn actual_server_readback_expiry_must_not_cancel_live_confirmation_identity() {
@@ -1490,6 +1506,53 @@ mod tests {
             s.reset_reason(0).is_some(),
             "Server must withhold reset permission for an active operation"
         );
+    }
+
+    /// The board set comes from the station's status (`boards[].id`); the
+    /// SEDS station lists exactly the seven built-in boards, in that order.
+    #[test]
+    fn the_board_set_and_reset_phrase_come_from_the_station_status() {
+        assert_eq!(status().board_ids(), BOARD_IDS);
+        let backend: Status = serde_json::from_str(include_str!(
+            "../../tests/fixtures/backend-contract/board-recovery/status-operator.json"
+        ))
+        .unwrap();
+        assert_eq!(backend.board_ids(), BOARD_IDS, "GroundStation26 lists the SEDS boards");
+        let mut empty = status();
+        empty.boards.clear();
+        assert_eq!(empty.board_ids(), BOARD_IDS, "built-in only while the station lists none");
+
+        let mut s = all_boards();
+        let ab = s.board("AB").unwrap().clone();
+        s.boards = ["EB", "AB", "TB"]
+            .into_iter()
+            .map(|id| {
+                let mut b = ab.clone();
+                b.id = id.into();
+                b
+            })
+            .collect();
+        assert_eq!(s.board_ids(), ["EB", "AB", "TB"]);
+        let mut c = challenge();
+        c.targets = vec!["EB".into(), "AB".into(), "TB".into()];
+        c.confirmation = "RESET STARTUP EB AB TB".into();
+        s.confirmation = Some(identity(&c));
+        assert!(c.matches(&s, "reset_startup", None, None), "another vehicle's boards are not refused");
+        c.confirmation = format!("RESET STARTUP {}", BOARD_IDS.join(" "));
+        assert!(!c.matches(&s, "reset_startup", None, None), "the SEDS phrase is not this station's");
+        let mut op: Operation = serde_json::from_str(include_str!(
+            "../../tests/fixtures/board-recovery/operation-example.json"
+        ))
+        .unwrap();
+        op.action = "reset_startup".into();
+        op.completed = true;
+        op.success = Some(true);
+        op.reset_applied_state = Some(0);
+        op.targets = vec!["EB".into(), "AB".into(), "TB".into()];
+        assert_eq!(op.label(&s.board_ids()), "Confirmed by board readbacks");
+        assert_eq!(op.label(&BOARD_IDS), "Reset result is not confirmed");
+        op.targets = vec!["AB".into(), "EB".into(), "TB".into()];
+        assert_eq!(op.label(&s.board_ids()), "Reset result is not confirmed", "out of the station's order");
     }
 
     #[test]
@@ -1780,20 +1843,20 @@ mod tests {
             "selected_proof_count":0,"unselected_board_verification":"unverified_best_effort"
         }))
         .unwrap();
-        assert_eq!(operation.label(), "Host Startup reset; no board proof");
+        assert_eq!(operation.label(&BOARD_IDS), "Host Startup reset; no board proof");
         operation.targets = vec!["AB".into(), "VB".into(), "GB".into(), "DAQ".into()];
         operation.selected_proof_count = Some(4);
         assert_eq!(
-            operation.label(),
+            operation.label(&BOARD_IDS),
             "Selected boards verified; global broadcast best effort"
         );
         operation.selected_proof_count = Some(0);
-        assert_eq!(operation.label(), "Reset result is not confirmed");
+        assert_eq!(operation.label(&BOARD_IDS), "Reset result is not confirmed");
         operation.targets.clear();
         operation.global_startup_best_effort = None;
         operation.selected_proof_count = None;
         operation.unselected_board_verification = None;
-        assert_eq!(operation.label(), "Reset result is not confirmed");
+        assert_eq!(operation.label(&BOARD_IDS), "Reset result is not confirmed");
     }
     #[test]
     fn present_hitl_capability_requires_every_field_without_guessing_empty_base() {
