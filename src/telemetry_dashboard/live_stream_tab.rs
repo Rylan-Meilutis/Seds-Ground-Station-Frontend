@@ -200,8 +200,8 @@ pub(crate) fn LiveStreamTab(
         // Live camera and voice are a station's; a replay shows what was recorded.
         return rsx! {
             div { class:"gs26-program-shell", "data-local-station":"true", style:"height:100%;min-height:0;overflow:auto;padding:8px 12px;box-sizing:border-box;color:{theme.text_primary};background:{theme.tab_shell_background};",
-                p { class:"gs-notice gs-notice--info", role:"status", "data-testid":"live-camera-needs-station", "Live camera needs a station." }
-                p { class:"gs-notice gs-notice--info", role:"status", "data-testid":"live-voice-needs-station", "Live voice needs a station." }
+                p { class:"gs-notice gs-notice--info", role:"status", "data-testid":"live-camera-needs-station", "Live cameras need a Ground Station." }
+                p { class:"gs-notice gs-notice--info", role:"status", "data-testid":"live-voice-needs-station", "Live voice needs a Ground Station." }
                 super::recorded_media_view::RecordedMedia {}
             }
         };

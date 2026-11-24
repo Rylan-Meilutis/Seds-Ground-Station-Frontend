@@ -245,8 +245,8 @@ Elsewhere `voice.recorded` is false and the replay says so.
 Playback (`local_station/media.rs`, `recorded_media_view.rs`):
 
 - `bundle::open` moves the clips out of the archive without copying them.
-- On a local station the broadcast page (Mission tab) says "Live camera
-  needs a station." and "Live voice needs a station." instead of polling
+- On a local station the broadcast page (Mission tab) says "Live cameras
+  needs a Ground Station." and "Live voice needs a Ground Station." instead of polling
   `/api/live_streams`.
 - Below that it shows one `<video>` per camera stream, with the segment that
   covers the playback position, and one `<audio>` per voice burst on air,

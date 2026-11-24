@@ -1238,7 +1238,7 @@ station's shapes (`demo::record`), and the Checklists tab shows the same
 checklist document.
 
 Live camera and voice are a station's. On a local station the broadcast page
-says "Live camera needs a station." and "Live voice needs a station." and
+says "Live cameras need a Ground Station." and "Live voice needs a Ground Station." and
 does not poll `/api/live_streams`. A replay bundle made with recorded media
 plays its camera segments and voice bursts there, in step with the playback
 clock ([replay-bundle.md](replay-bundle.md#recorded-media)).
