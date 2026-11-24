@@ -62,6 +62,7 @@ pub(crate) struct LocalStation {
     /// Unbounded position up to which rows were pushed.
     pushed_to: Cell<i64>,
     last_state: RefCell<String>,
+    last_phase: Cell<Option<&'static str>>,
     last_status_wall: Cell<i64>,
     outbox: RefCell<VecDeque<String>>,
     next_notification: Cell<u64>,
@@ -136,6 +137,71 @@ pub(crate) fn percent_component(value: &str) -> String {
 }
 
 
+/// A recorded or scenario state as the station's network contract states it:
+/// `FlightState` (network state, fill sub-phase, FC phase) and the matching
+/// `MissionPhase` (the operator phase the dashboard's views follow). Older
+/// recordings carry the retired detailed names; the station reports those as
+/// their network state with the name as detail.
+fn state_wire(name: &str, previous: Option<&'static str>, mode: super::Mode, since_ms: i64) -> (Value, Value, &'static str) {
+    const FC: [(&str, u8); 6] = [("Ascent", 8), ("Coast", 9), ("Apogee", 10), ("Descent", 11), ("Reefing", 12), ("ParachuteDeploy", 11)];
+    let fill_label = |n: &str| match n {
+        "PreFill" => Some("Pre-fill"),
+        "FillTest" => Some("Fill test"),
+        "NitrogenFill" => Some("Nitrogen fill"),
+        "NitrousFill" => Some("Nitrous fill"),
+        _ => None,
+    };
+    let (network, fill, fc) = if let Some(label) = fill_label(name) {
+        ("Fill", Some((name, label)), None)
+    } else if let Some((label, value)) = FC.iter().find(|(n, _)| *n == name) {
+        ("InFlight", None, Some(json!({"value": value, "label": if *label == "ParachuteDeploy" { "Descent" } else { label }, "source": "fc_state_report", "age_ms": 0})))
+    } else {
+        (match name {
+            "Startup" | "Unknown" => "Startup",
+            "Idle" => "Idle",
+            "Fill" => "Fill",
+            "Armed" => "Armed",
+            "Launch" => "Launch",
+            "InFlight" => "InFlight",
+            "Landed" | "Recovery" => "Landed",
+            "Aborted" => "Aborted",
+            _ => "Idle",
+        }, None, None)
+    };
+    let phase: &'static str = match network {
+        "Startup" => "startup",
+        "Idle" => "idle",
+        "Fill" | "Armed" => "fill",
+        "Launch" => "launch",
+        "InFlight" => "in_flight",
+        "Landed" => "landed",
+        _ => match previous {
+            Some(p @ ("in_flight" | "landed")) => p,
+            _ => "idle",
+        },
+    };
+    let phase_label = match phase {
+        "startup" => "Startup",
+        "idle" => "Idle",
+        "fill" => "Fill",
+        "launch" => "Launch",
+        "in_flight" => "In flight",
+        _ => "Landed",
+    };
+    let detail = fill.map(|(_, label)| label.to_string()).or_else(|| fc.as_ref().and_then(|f| f["label"].as_str().map(str::to_owned)));
+    let state_label = match network { "InFlight" => "In flight", "Armed" => "Armed", "Aborted" => "Aborted", _ => phase_label };
+    let flight_state = json!({"state": network, "label": state_label, "fill_phase": fill.map(|(n, _)| n), "fill_phase_label": fill.map(|(_, l)| l), "fc_phase": fc});
+    let player_mode = match mode { super::Mode::TestFire => "test_fire", super::Mode::Hitl => "hitl", _ => "flight" };
+    let mission = json!({
+        "phase": phase, "label": phase_label, "detail": detail, "detailed": network,
+        "fill_phase": fill.map(|(n, _)| n), "fill_phase_label": fill.map(|(_, l)| l), "fc_phase": fc,
+        "mode": player_mode, "manual_only": false, "aborted": network == "Aborted", "required_boards_seen": true,
+        "fill_activity": fill.is_some(), "disconnect_aborts_armed": false, "comms_loss_landed": false, "since_ms": since_ms,
+        "simulated": mode == super::Mode::GroundTest && matches!(phase, "in_flight" | "landed"),
+    });
+    (flight_state, mission, phase)
+}
+
 impl LocalStation {
     /// A station serving `session`, playing from `start_pos` at `now_wall`.
     pub(crate) fn new(session: Session, now_wall: i64) -> Self {
@@ -144,12 +210,12 @@ impl LocalStation {
             Source::Replay { .. } => session.start_ms(),
         };
         let clock = Clock { anchor_wall: now_wall, anchor_pos: start, speed: 1.0, paused: false };
-        let state = session.state_at(start);
         Self {
             session,
             clock: Cell::new(clock),
             pushed_to: Cell::new(start),
-            last_state: RefCell::new(state),
+            last_state: RefCell::new(String::new()),
+            last_phase: Cell::new(None),
             last_status_wall: Cell::new(i64::MIN),
             outbox: RefCell::new(VecDeque::new()),
             next_notification: Cell::new(1),
@@ -201,7 +267,7 @@ impl LocalStation {
         clock.anchor_wall = wall;
         self.clock.set(clock);
         self.pushed_to.set(pos);
-        *self.last_state.borrow_mut() = self.session.state_at(self.wrap(pos));
+        self.last_state.borrow_mut().clear();
         self.last_status_wall.set(i64::MIN);
     }
 
@@ -272,6 +338,14 @@ impl LocalStation {
             }
         }
         json!({"generated_ms": wall, "simulated": false, "nodes": nodes, "links": links, "health": health})
+    }
+
+    /// `FlightState` and `MissionPhase` for the playback position.
+    fn state_frames(&self, wall: i64) -> (Value, Value, &'static str) {
+        let at = self.wrap(self.position(wall));
+        let name = self.session.state_at(at);
+        let since = self.session.states.iter().rev().find(|(t, _)| *t <= at).map_or(wall, |(t, _)| self.clock.get().wall_of(self.position(wall) - at + t));
+        state_wire(&name, self.last_phase.get(), self.session.mode, since)
     }
 
     fn mode_line(&self) -> String {
@@ -372,7 +446,7 @@ impl LocalStation {
         let at = self.wrap(self.position(wall));
         Some(match path {
             "/api/auth/session" => self.session_status(),
-            "/flightstate" => json!({"state": self.session.state_at(at)}),
+            "/flightstate" => self.state_frames(wall).0,
             "/api/recent" => self.recent(wall),
             "/api/boards" => self.board_json(wall),
             "/api/network_topology" => self.topology_json(wall),
@@ -555,8 +629,11 @@ impl LocalStation {
         }
         let state = self.session.state_at(self.wrap(to));
         if *self.last_state.borrow() != state {
-            frames.push(json!({"ty": "FlightState", "data": {"state": state}}).to_string());
+            let (flight_state, mission, phase) = self.state_frames(wall);
+            frames.push(json!({"ty": "FlightState", "data": flight_state}).to_string());
+            frames.push(json!({"ty": "MissionPhase", "data": mission}).to_string());
             frames.push(json!({"ty": "LaunchClock", "data": self.launch_clock(wall)}).to_string());
+            self.last_phase.set(Some(phase));
             *self.last_state.borrow_mut() = state;
         }
         if wall.saturating_sub(self.last_status_wall.get()) >= 1_000 {

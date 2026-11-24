@@ -25,8 +25,9 @@ fn demo_routes_decode_with_the_live_dashboard_types() {
     let boards: types::BoardStatusMsg = decode(&station, "/api/boards");
     assert_eq!(boards.boards.len(), 7);
     assert!(boards.boards.iter().all(|b| b.seen && b.age_ms.is_some_and(|a| a <= 1_000)), "every demo board is fresh");
-    let (state, _) = decode::<FlightStateReply>(&station, "/flightstate").into_parts();
-    assert_eq!(state, "NitrousFill");
+    let (state, detail) = decode::<FlightStateReply>(&station, "/flightstate").into_parts();
+    assert_eq!(state, "Fill", "the network state, as a station reports it");
+    assert_eq!(detail.unwrap().fill_phase.as_deref(), Some("NitrousFill"));
     let recent: Vec<types::TelemetryRow> = decode(&station, "/api/recent?display=true&max_rows=12000");
     assert!(recent.len() > 100);
     assert!(recent.iter().all(|r| r.timestamp_ms <= EPOCH && r.timestamp_ms >= EPOCH - demo::OPEN_AT_MS), "history is the scenario so far, stamped as received");
@@ -58,6 +59,12 @@ fn the_clock_pushes_station_frames_in_order() {
     let batches: Vec<&Vec<types::TelemetryRow>> = later.iter().filter_map(|f| match f { WsInMsg::TelemetryBatch(rows) => Some(rows), _ => None }).collect();
     assert!(batches.iter().flat_map(|b| b.iter()).all(|r| r.timestamp_ms > EPOCH && r.timestamp_ms <= EPOCH + 40_000), "rows are stamped as received now");
     assert!(later.iter().any(|f| matches!(f, WsInMsg::FlightState(m) if m.state == "Launch")));
+    assert!(later.iter().any(|f| matches!(f, WsInMsg::MissionPhase(p) if p.phase == crate::telemetry_dashboard::mission_phase::Phase::Launch)),
+        "the operator phase the dashboard's phase profiles follow");
+    // In flight: the FC's detailed phase rides along as detail, never a retired state name.
+    let flying = frames(&station, EPOCH + 60_000);
+    assert!(flying.iter().any(|f| matches!(f, WsInMsg::FlightState(m) if m.state == "InFlight" && m.detail.fc_phase.as_ref().is_some_and(|p| p.label == "Ascent" || p.label == "Coast"))));
+    assert!(flying.iter().any(|f| matches!(f, WsInMsg::MissionPhase(p) if p.phase == crate::telemetry_dashboard::mission_phase::Phase::InFlight)));
     assert!(frames(&station, EPOCH + 40_000).iter().all(|f| !matches!(f, WsInMsg::TelemetryBatch(_))), "nothing is sent twice");
     // Ten times faster: 10 s of wall time covers 100 s of the scenario.
     station.set_speed(10.0, false, EPOCH + 40_000);
