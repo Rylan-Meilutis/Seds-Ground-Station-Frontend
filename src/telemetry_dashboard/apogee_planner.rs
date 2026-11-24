@@ -724,7 +724,9 @@ pub(super) fn ApogeePlannerView(theme: super::layout::ThemeConfig, admin: bool, 
             }
             fieldset { disabled: !editable, style: "display:grid;gap:8px;border:1px solid {theme.border_soft};border-radius:10px;padding:10px;min-width:0;",
                 legend { "Target and weather" }
-                div { key: "target-{rev}", style: "display:flex;flex-wrap:wrap;gap:8px;align-items:end;",
+                // Dioxus honours `key` only on a template root, so each keyed block is
+                // its own rsx!: Discard (draft_rev) then remounts its uncontrolled inputs.
+                {rsx! { div { key: "target-{rev}", style: "display:flex;flex-wrap:wrap;gap:8px;align-items:end;",
                     label { r#for: "gs26-apogee-target", style: label_style, "Target apogee (AGL)"
                         input { id: "gs26-apogee-target", r#type: "text", inputmode: "decimal", value: "{target_text}", style: input_style,
                             oninput: move |e| target_text.set(e.value()) }
@@ -752,7 +754,7 @@ pub(super) fn ApogeePlannerView(theme: super::layout::ThemeConfig, admin: bool, 
                             option { value: "cached", "Last cached forecast" }
                         }
                     }
-                }
+                }}}
                 if let Err(problem) = parsed_target.as_ref() {
                     p { role: "status", class: "gs-notice gs-notice--warn", style: "margin:0;", "{problem}" }
                 }
@@ -766,24 +768,24 @@ pub(super) fn ApogeePlannerView(theme: super::layout::ThemeConfig, admin: bool, 
                     p { style: "margin:0;", "Exactly this request, with the launch site rounded to 0.01° (about 1 km). No key, station name or user is sent." }
                     code { style: "display:block;overflow-wrap:anywhere;font-size:12px;", "{s.online_request_preview}" }
                 }
-                div { key: "weather-{rev}", style: "display:flex;flex-wrap:wrap;gap:8px;align-items:end;",
+                {rsx! { div { key: "weather-{rev}", style: "display:flex;flex-wrap:wrap;gap:8px;align-items:end;",
                     for (key, label, value, set, optional) in fields {
                         label { key: "{key}", style: label_style, "{label}"
                             input { r#type: "text", inputmode: "decimal", initial_value: "{value}", style: input_style,
                                 oninput: move |e| number_field(key, e.value(), set, optional) }
                         }
                     }
-                }
+                }}}
                 details {
                     summary { "Tank and limits" }
-                    div { key: "limits-{rev}", style: "display:flex;flex-wrap:wrap;gap:8px;align-items:end;",
+                    {rsx! { div { key: "limits-{rev}", style: "display:flex;flex-wrap:wrap;gap:8px;align-items:end;",
                         for (key, label, value, set, optional) in limit_fields {
                             label { key: "{key}", style: label_style, "{label}"
                                 input { r#type: "text", inputmode: "decimal", initial_value: "{value}", style: input_style,
                                     oninput: move |e| number_field(key, e.value(), set, optional) }
                             }
                         }
-                    }
+                    }}}
                 }
                 if admin {
                     div { style: "display:flex;flex-wrap:wrap;gap:8px;",
