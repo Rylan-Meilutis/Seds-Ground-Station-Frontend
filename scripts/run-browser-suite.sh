@@ -61,7 +61,7 @@ bg_log() { local log=$1; shift; setsid "$@" </dev/null >"$log" 2>&1 & pids+=($!)
 cd "$ui"
 dx_out="$ui/target/dx"
 release="$dx_out/groundstation_frontend/release/web/public"
-previews=(paired_settings_preview station_positions_preview antenna_preview network_health_preview sd_health_preview offline_preview)
+previews=(paired_settings_preview station_positions_preview antenna_preview network_health_preview sd_health_preview)
 if [ "$build" = 1 ]; then
   step "Building the release web bundle"
   dx build --platform web --release > "$work/build-release.log" 2>&1 || { tail -20 "$work/build-release.log"; exit 1; }
@@ -90,7 +90,7 @@ mkdir -p "$GS_UI_ARTIFACTS"
 step "Serving the previews"
 bg node scripts/serve-static.mjs "$(preview antenna_preview)" 19091
 bg node scripts/serve-static.mjs "$(preview network_health_preview)" 19094
-bg node scripts/serve-static.mjs "$(preview offline_preview)" 19096
+bg node scripts/serve-static.mjs "$release" 19096  # offline workspace at /preview
 bg node scripts/serve-static.mjs "$(preview sd_health_preview)" 19097
 
 media_tests="station-broadcast.cjs station-model-animation.cjs concurrent-broadcast-browser.mjs station-voice_browser.mjs station-voice_join_failure.mjs"

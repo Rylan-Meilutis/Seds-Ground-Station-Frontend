@@ -154,7 +154,8 @@ Backend compatibility note:
 
 If your goal is to build a backend that works with this frontend, start here:
 
-- Backend contract: [`docs/backend-api.md`](docs/backend-api.md)
+- **Backend contract (start here):** [`docs/backend-contract.md`](docs/backend-contract.md): every route and WebSocket message the UI uses, the minimum backend, what degrades when something is missing, what the backend configures versus what is hard-coded, offline replay files and the demo station
+- Per-route schemas: [`docs/backend-api.md`](docs/backend-api.md)
 - Example payloads: [`docs/api-examples`](docs/api-examples)
 - Build helper: [`build.py`](build.py)
 - Streaming `/api/recent` notes: [`docs/backend-recent-streaming.md`](docs/backend-recent-streaming.md)
@@ -264,10 +265,12 @@ Layout-sensitive behavior is backend-driven. Board ids, data tab labels, graph e
 
 ## Running The Frontend
 
-Native clients can use **Explore offline** from connection setup or a failed
-connection to learn the sample UI without a station. Example data is labelled,
-outputs are disabled, and practice choices never change real station state. See
-[Disconnected native preview](docs/offline-preview.md).
+**Explore offline** (connection setup or a failed connection, or `/preview` on
+the web) opens the offline workspace with no station: a looping demo
+(fill, countdown and a 10,000 ft flight) that fills every page, and **Open
+replay file** for exported `*.seds-replay.json` recordings, which work on a
+fresh device with nothing cached. Commands are acknowledged locally and never
+sent. See [Offline workspace](docs/offline-preview.md).
 
 Web:
 

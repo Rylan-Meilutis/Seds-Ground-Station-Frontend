@@ -94,7 +94,6 @@ pub enum Route {
     #[route("/connect")]
     Connect {},
 
-    #[cfg(not(target_arch = "wasm32"))]
     #[route("/preview")]
     Preview {},
 
@@ -407,7 +406,6 @@ fn LoginCard(
 fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element {
     let theme = shell_theme();
     let nav = use_navigator();
-    #[cfg(not(target_arch = "wasm32"))]
     let explore_button = rsx! {
         button {
             style: shell_button_alt_style(&theme),
@@ -415,8 +413,6 @@ fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element 
             "Explore offline"
         }
     };
-    #[cfg(target_arch = "wasm32")]
-    let explore_button = rsx! {};
     rsx! {
         div {
             class: "gs26-connection-failure",
@@ -612,6 +608,10 @@ pub fn Version() -> Element {
 
 #[component]
 pub fn Dashboard() -> Element {
+    // The offline workspace's local session is dropped when its route
+    // unmounts; the live dashboard never runs beside one.
+    #[cfg(debug_assertions)]
+    use_effect(|| debug_assert_eq!(telemetry_dashboard::local_station::live_sessions(), 0, "offline session alive on the dashboard route"));
     #[cfg(not(target_arch = "wasm32"))]
     {
         let nav = use_navigator();
@@ -787,7 +787,6 @@ pub fn Dashboard() -> Element {
     rsx! { document::Title { "{station_name}" } {content} }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 #[component]
 fn Preview() -> Element {
     let nav = use_navigator();

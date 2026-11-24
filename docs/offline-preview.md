@@ -1,47 +1,102 @@
-# Disconnected native preview
+# Offline workspace: demo mode and replay files
 
-On the native app’s connection page, choose **Explore offline**. It is also
-available after a connection failure. **Exit preview** returns to connection
-setup; connecting to a real station still uses the normal session and permission
-checks.
+With no station connected, the app opens an offline workspace at `/preview`:
 
-The persistent preview header labels every page as example data with controls
-disabled. A bundled sample layout covers Dashboard, Mission, Data, Network, Map,
-Checklists, Voice Chat, Stream Control and Settings. Real stations can configure
-different pages and permissions. Preview supports sidebar/collapsed-sidebar and
-page-picker navigation, flight/test-fire examples, example phase and sensor
-selection, and a practice checklist.
+- native: **Explore offline** on the connection page or after a connection
+  failure;
+- web: **Explore offline** on the connection-failure card, or open
+  `/preview` directly.
 
-Preview is a separate component. It does not mount the live dashboard, start
-HTTP/WebSocket station clients, read live telemetry, request map tiles or
-location/microphone access, or open cameras. Operational and media buttons are
-disabled. Its local training choices and checklist checks are discarded on exit;
-they do not change saved station addresses, login credentials, dashboard layouts,
-calibration, qualification or shared checklists. It is an orientation aid, not
-simulator or procedure qualification.
+**Exit** returns to connection setup. Connecting to a real station still uses
+the normal session and permission checks.
 
-The shipped preview route is native-only. Web users retain the station’s normal
-UI and authentication. The `offline_preview` example mounts the exact same
-component for browser acceptance testing without a backend.
+## Demo mode
 
-Validation:
+The workspace starts in demo mode. Its banner reads "Demo mode — no station
+connected". The demo is a looping 380 s scenario:
+
+- fill;
+- arm;
+- a 10 s countdown;
+- the GroundStation26 IGT `nominal_10k` mock flight to about 10,000 ft;
+- landing.
+
+Every page shows data from it:
+
+- the Dashboard, built from the demo layout's `state_tab` for the current
+  state;
+- Mission steps and actions;
+- Data charts for every channel;
+- live Diagrams;
+- Network, with seven boards and four example warnings;
+- the Map, as a GPS track on a grid;
+- Replay & summary, with flight figures and the 3D player;
+- Calibration points and fit;
+- Recordings.
+
+Use Play/Pause, the position slider and 1–10× speed to move through it.
+
+Commands are acknowledged in the workspace ("Nothing was sent; no station is
+connected"). Nothing leaves the device.
+
+## Replay files
+
+**Open replay file** loads a portable `*.seds-replay.json`, as does dropping
+the file on the window. You export these files from 3D replay on a connected
+station. Opening one needs no station, no sign-in and no cache. All pages read
+the file, in flight, test-fire, ground-test (IGT) and HITL recordings. The
+banner names the file and the mode.
+
+Commands answer that a replay is read-only. **Back to demo** returns to the
+scenario.
+
+The file format, and what each page needs from it, are in
+[backend-contract.md, section 10](backend-contract.md#10-offline-replay-files).
+
+## Isolation
+
+The workspace does not mount the live dashboard and does not start station
+HTTP/WebSocket clients. It does not request map tiles or location or
+microphone access, and does not open cameras.
+
+Its checklist ticks and choices are discarded on exit. They do not change:
+
+- saved station addresses;
+- credentials;
+- layouts;
+- calibration;
+- qualification;
+- shared checklists.
+
+The workspace is an orientation and review aid. It is not a simulator or
+procedure qualification.
+
+The demo's data, layout and session are created when the route mounts and
+dropped when it unmounts. A connected station pays nothing for them (see
+[backend-contract.md, section 11](backend-contract.md#11-demo-mode-a-local-reference-station)).
+
+## Validation
 
 ```sh
-cargo test --bin groundstation_frontend
+cargo test --bin groundstation_frontend -- local_station offline_preview
 cargo check --bin groundstation_frontend --target wasm32-unknown-unknown
-cargo build --release --example offline_preview --target wasm32-unknown-unknown
+dx build --platform web --release
 ```
 
-After generating a web bootstrap with the wasm-bindgen CLI version matching
-Cargo.lock and serving it on loopback, run
-`node tests/offline-preview-browser.mjs`. Set `GS_PREVIEW_URL` for another test
-port and `PLAYWRIGHT_MODULE` / `CHROME_BINARY` for local browser tooling.
-`GS_UI_ARTIFACTS` optionally saves the mobile and desktop screenshots. Use a
-release fixture for the no-network assertion: debug Dioxus builds poll their dev
-server independently of the preview.
+Serve the release bundle on loopback, for example
+`node scripts/serve-static.mjs target/dx/groundstation_frontend/release/web/public 19096`,
+then run `node tests/offline-preview-browser.mjs`.
 
-The browser check covers local navigation, practice-check reset, mode-sensitive
-examples, 320/390/844/1280-pixel layouts, sidebar spacing, disabled operational
-buttons, zero application network traffic and unchanged browser storage. Native
-compilation includes the Connect and failed-connection route integration. Real
-phone/native-window input and accessibility remain device checks.
+- `GS_PREVIEW_URL` selects another port.
+- `PLAYWRIGHT_MODULE` and `CHROME_BINARY` select local browser tooling.
+- `GS_UI_ARTIFACTS` saves screenshots at four widths.
+
+The browser test checks:
+
+- the demo pages and the moving clock;
+- the local command acknowledgement;
+- opening the backend's replay-export fixture, including the 3D player;
+- the read-only command notice;
+- widths of 320, 390, 844 and 1280 px;
+- no application network traffic;
+- unchanged browser storage.
