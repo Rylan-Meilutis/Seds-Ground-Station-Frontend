@@ -44,6 +44,7 @@ Another station or tool can produce bundles by following this page.
   "time_range": {"start_ms": 1767225600000, "end_ms": 1767225836000},
   "rows": 601,
   "tiles": {"included": 0, "bytes": 0, "budget_bytes": 1048576, "complete": true},
+  "terrain": {"included": false, "reason": "no DEM tiles are cached on this station"},
   "missing": [{"path": "derived/flight_review.json", "route": "/api/flight_review/recording/…", "status": 404}],
   "entries": [{"path": "replay.json", "bytes": 232028, "sha256": "…", "media_type": "application/json"}]
 }
@@ -56,6 +57,7 @@ Another station or tool can produce bundles by following this page.
 | `mode`, `recorded_mode` | Replay scene: `mode` is `flight` or `test_fire` (3D player); `recorded_mode` is the station mode (`normal`, `test_fire`, `hitl`, `integrated_ground_test`, `testing`) from the recording's context. |
 | `time_range`, `rows` | Reception-time range and row count of the replayed rows. |
 | `tiles` | Map tiles included, their bytes, the budget, and whether the budget cut them short. |
+| `terrain` | Whether `terrain/heightmap.json` is included: `{included: true, bytes, extent_m, size, zoom, source, attribution}`, or `{included: false, reason?}`. Absent in older bundles. |
 | `missing` | Optional resources the station could not supply, with the route and HTTP status. |
 | `entries` | Every other entry, with size and SHA-256 (lower-case hex). Readers verify every hash and refuse a bundle whose listed entry is absent or differs. |
 
@@ -78,16 +80,19 @@ schemas are those in [backend-contract.md](backend-contract.md) and
 | `models/vehicle_geometry.json` | no | `GET /api/vehicle/geometry` | 3D vehicle (generic rocket without it) |
 | `derived/context.json` | no | `GET /api/recordings/{id}/replay/context`, when the export has no `replay_context` | mode |
 | `derived/alerts.json` | no | `GET /api/recordings/{id}/replay/alerts` | warnings list |
-| `derived/trajectory.json` | no | `GET /api/recordings/{id}/replay/trajectory?upper_id=…` | track and tile selection |
+| `derived/trajectory.json` | no | `GET /api/recordings/{id}/replay/trajectory?upper_id=…`, with the station's flight `phases`, `events` and per-point `phase` | track (coloured by phase), tile selection, `GET /api/flight_phases` offline |
 | `derived/flight_review.json` | no | `GET /api/flight_review/recording/{id}` | flight/motor summary figures |
 | `derived/apogee_planner.json` | no | `GET /api/apogee_planner` (state at export) | reference |
 | `derived/burn_reports.json`, `derived/fire_archive.json` | no | entries of `GET /api/burn_reports` / `GET /api/fire_archive` that name the recording | burn summary |
 | `derived/flight_plans.json` | no | `{"plans": [plan document, …]}`, the five most recent flight plans (`GET /api/flight_plans/{id}`) | comparing the recording with a prediction offline (map and altitude chart) |
 | `derived/flight_plan.json` | plan bundles only | `GET /api/flight_plans/{id}` | the plan itself: its landing area and markers on the map |
-| `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background |
-| `derived/flight_plan.json` | no | `GET /api/flight_plans/{id}` (plan bundles only) | flight replay: plan events, the Predicted label, the landing ellipse |
-| `derived/flight_plans.json` | no | `{"plans": [plan document, …]}`, the latest plans at export | flight replay: plan overlays on the recorded flight |
 | `derived/stations.json` | no | `GET /api/antenna/status` at export (not written by GroundStation26 yet) | flight replay: ground-station camera and masts |
+| `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background, 3D terrain imagery |
+| `terrain/heightmap.json` | no | `GET /api/terrain/heightmap?lat=…&lon=…&extent_m=…&size=129`, centred on the track's first fix and covering the track plus 1 km (2–30 km), at most 1 MiB, only when the station has DEM tiles there | 3D terrain ([backend-contract.md §12](backend-contract.md#12-terrain-and-the-3d-map)) |
+
+Terrain follows the tiles: `?tiles=1` also adds the heightmap when the station
+has a DEM for the area (`terrain=0` leaves it out, `terrain=1` adds it without
+tiles). Without it the 3D view draws flat ground at the pad's altitude.
 
 A plan bundle (`GET /api/flight_plans/{id}/bundle`) sets `manifest.predicted: true`
 and `manifest.label`; its `replay.json` has `"predicted": true`. The flight replay

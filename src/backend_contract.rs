@@ -60,6 +60,8 @@ pub(crate) const COVERED: &[&str] = &[
     "flight-plans/run-forbidden",
     "los-prediction/idle",
     "los-prediction/simulate",
+    // map_3d.rs: the live track, the recorded trajectory and terrain, with phases.
+    "flight-phases/live",
     "network-diagnostics/radio-tx-budget",
     "radio/modem",
     // Opened with no station in offline_preview/tests.rs and local_station/tests.rs.
@@ -67,6 +69,7 @@ pub(crate) const COVERED: &[&str] = &[
     // With replay-bundle/flight.gsreplay and flight.csv: opened with no station
     // and its CSV export compared with the station's (local_station/tests.rs).
     "replay-bundle/flight.manifest",
+    "replay-trajectory/flight",
     "requests/gse-self-test-confirmation",
     "rrls/status",
     "rrls/status-relaying",
@@ -76,6 +79,9 @@ pub(crate) const COVERED: &[&str] = &[
     "station-modes/prepare-restart",
     "station-modes/snapshot",
     "station-modes/snapshot-after-switch",
+    "terrain/heightmap",
+    "terrain/heightmap-unavailable",
+    "terrain/status-empty",
     "vehicle/geometry",
     "websocket/action-policy",
     "websocket/alert-ack-state",

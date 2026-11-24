@@ -385,6 +385,10 @@ schema. Where the path is built at run time, the variable segment is shown as
 | GET | `/api/vehicle_visualization` | → `VehicleVisualizationConfig` ([detail](backend-api.md#get-apivehicle_visualization), [example](api-examples/vehicle-visualization.json)) | Vehicle tab, replay export | view_data | H |
 | GET | `/api/map_config` | → `{max_native_zoom, max_display_zoom, default_center_lat, default_center_lon, default_zoom, map_title, tracked_asset_label}` ([detail](backend-api.md#get-apimap_config), [example](api-examples/map-config.json)) | Map tab, watch map sync, connect test | view_data | cached config; watch plans z15 |
 | GET | `/tiles/{z}/{x}/{y}.jpg` | JPEG tile ([detail](backend-api.md#get-tileszxyjpg)) | map (browser direct; native via local `gs26://` / `gs26.localhost` proxy in `main.rs`), watch direct | view_data / watch token | blank tile |
+| GET | `/terrain/{z}/{x}/{y}.png` | cached Terrarium DEM tile, 404 when not cached ([section 12](#12-terrain-and-the-3d-map)) | tools; the UI reads the decoded grid below | none (like `/tiles`) | — |
+| GET | `/api/terrain/heightmap` | query `lat`, `lon`, `extent_m` (200–60,000, default 12,000), `size` (2–257, default 129) → `gs26.heightmap` grid or `{available:false, reason}` ([section 12](#12-terrain-and-the-3d-map)) | Map tab 3D view | view_data | flat ground at pad altitude, then the plain reference ground |
+| GET | `/api/terrain/status` | query `lat`, `lon`, `radius_m` (default: launch site, 6 km) → `{dem, imagery, check}` coverage | Map tab 3D view (coverage line) | view_data | no coverage line |
+| GET | `/api/flight_phases` | → `{source, window_start_ms, current_phase, phases, events, source_sender_id, points, sampled}` ([section 12](#12-terrain-and-the-3d-map)) | Map tab: the rocket track coloured by phase (2D and 3D), polled every 2 s | view_data | no track |
 | GET | `/api/station_positions` | → `{ground_station, rrls, ...}` document | Admin → Station positions | admin | M |
 | POST | `/api/station_positions` | `Update` → document | Admin → Station positions | admin | M |
 | GET | `/api/antenna/status` | → `{ground_station?: StationFix, rrls?: StationFix, ...rssi}`; `StationFix` = `{latitude, longitude, altitude_m?, altitude_reference?, accuracy_m?, age_ms, stale, source, manual}` | Map markers, antenna aiming, live diagrams, custom dashboard, watch, flight replay ground-station camera | view_data | K |
@@ -544,9 +548,9 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/{id}/replay/overlays` | → overlays | saved replay | view_data | K |
 | GET | `/api/recordings/{id}/replay/alerts` | → alerts | saved replay | view_data | K |
 | GET | `/api/recordings/{id}/replay/layout` | query `view` (`normal`, `test_fire`, `testing`, `hitl`, `integrated_ground_test`) → `LayoutConfig` | saved replay | view_data | M |
-| GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory | vehicle replay | view_data | M |
+| GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory, with `phases`, `events` and a `phase` per point ([section 12](#12-terrain-and-the-3d-map)) | vehicle replay, 3D map | view_data | M |
 | GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export; 3D replay → Flight replay (whole recording) | view_data | M |
-| GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
+| GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `terrain` (bool, default = `tiles`) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
 | GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import | view_data | M |
 | GET | `/api/recordings/{id}/sd/sources/{sha256}` | file | SD recording import | view_data | M |
@@ -1159,6 +1163,96 @@ render test check that no session is alive after leaving the workspace.
 
 ---
 
+## 12. Terrain and the 3D map
+
+The map tab has a **2D / 3D** switch under its header (2D is the default and the
+fallback; the choice is remembered on the device). The 3D view
+(`station_ui/rendering/three/map-3d.js`, served at `/assets/three/map-3d.js`)
+drapes the map imagery over the station's terrain with
+`station_ui/rendering/three/terrain.js` (the terrain module the 3D replay also
+uses) and draws the rocket track coloured by flight phase, overlays, stations
+and the pad. Orbit by dragging, pan with two fingers / right-drag / shift-drag,
+zoom by pinching or scrolling; arrow keys orbit, `+`/`-` zoom, `R` refits.
+
+### Sources, attribution and licence
+
+| Layer | Source | Attribution / licence |
+| --- | --- | --- |
+| Imagery | the station's `/tiles/{z}/{x}/{y}.jpg` (Esri World Imagery, prefetched by GroundStation26 `download_map.py`) | "Imagery: Esri, Maxar, Earthstar Geographics and the GIS User Community"; Esri terms of use |
+| DEM | the station's `/api/terrain/heightmap`, from AWS Terrain Tiles in Terrarium PNG encoding (`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/{z}/{x}/{y}.png`, keyless open data, prefetched by the same downloader) | "Terrain: Mapzen/Tilezen Terrain Tiles via AWS Open Data (SRTM, USGS 3DEP, GMTED2010, ETOPO1 and others)"; attribution required, <https://github.com/tilezen/joerd/blob/master/docs/attribution.md> |
+
+The 3D view shows both lines at its bottom-right corner. Neither the station
+nor the UI fetches imagery or terrain from the internet in flight: both are
+prefetched for a region before the trip (GroundStation26
+`docs/backend/terrain.md`), and the 3D view's status line shows the offline
+coverage around the pad (`GET /api/terrain/status`).
+
+### `GET /api/terrain/heightmap`
+
+```json
+{"available": true, "format": "gs26.heightmap", "version": 1, "lat_deg": 31.758, "lon_deg": -102.046,
+ "extent_m": 12000.0, "size": 129, "spacing_m": 93.75, "zoom": 11, "min_m": 861.3, "max_m": 905.8,
+ "encoding": "u16le-base64", "base_m": 861.0, "scale_m": 0.1, "values": "…",
+ "exact_fraction": 1.0, "coverage": 1.0, "source": "AWS Terrain Tiles (Terrarium)", "attribution": "Terrain: …"}
+```
+
+Sample `i` (row-major, row 0 north, column 0 west, evenly spaced over
+`[-extent/2, +extent/2]` metres east/north of `lat_deg, lon_deg`) is
+`base_m + u16le(values)[i] * scale_m` metres MSL. With no DEM:
+`{"available": false, "format": "gs26.heightmap", "version": 1, "reason", "source", "attribution"}` (HTTP 200).
+
+### Flight phases
+
+Phases are the station's (CONTRACT vocabulary `pad`, `boost`, `coast`,
+`drogue`, `main`, `landed`; `apogee` is an event), from its flight states and
+the FC's detailed phase. Segments are `[start_ms, end_ms)` (a boundary point
+belongs to the phase that starts there; the last segment also holds its end,
+and `end_ms: null` means it is still going). Events are `liftoff`, `burnout`,
+`apogee`, `drogue`, `main`, `landing` with `t_ms` and, when the track covers
+that time, `latitude`, `longitude`, `altitude_m`.
+
+- `GET /api/recordings/{id}/replay/trajectory` adds `phases`, `events` and a
+  `phase` on each point (absent before the first known state).
+- `GET /api/flight_phases` (live): `{"source": "live", "window_start_ms",
+  "current_phase", "phases", "events", "source_sender_id", "points":
+  [{timestamp_ms, latitude, longitude, altitude_m, phase}], "sampled"}`, the
+  current flight's rocket track (RF fixes, else FC; at most 2,000 points). The
+  UI polls it every 2 s while the map is shown and draws it on the 2D map
+  (`window.setGroundMapFlightTrack`) and the 3D view (`gs26-flight-track`
+  event). An offline replay bundle serves the same document from its
+  `derived/trajectory.json` up to the replay position.
+
+Palette (both views, the legend and the 3D replay): pad `#94a3b8`, boost
+`#f97316`, coast `#facc15`, apogee marker `#ffffff` with a dark outline,
+drogue `#38bdf8`, main `#22c55e`, landed `#a78bfa`, unknown `#64748b`.
+Predicted plan tracks use the same colours dashed at 55 %; loss-of-signal
+predictions are pink `#f472b6`; search swaths green `#22c55e` at 30 %, the
+uncovered landing area red `#ef4444` at 25 % (flight-predict CONTRACT.md).
+The 3D view reads `window.__gs26_map_overlays` and the `gs26-map-overlays`
+event (MapOverlay arrays) and the station markers (`gs26-map-stations`).
+
+### Terrain module (`terrain.js`)
+
+`loadTerrain(T, origin, opts)` → `{group, heightAt(x, z), source, attribution,
+ready, dispose()}`; `source` is `dem`, `flat-imagery` or `generic`, and it
+never throws. `opts`: `extent_m`, `fetchJson(path)`, `fetchImage(path)` or
+`fetchTile(z, x, y)`, `bundle: {heightmap, tiles: {"z/x/y": Blob|bytes|image},
+offline}`, `maxTriangles` (default 60,000), `maxTextureSize` (default 2,048),
+`maxTiles` (36 per texture), `maxImageryZoom` (17). Also exported:
+`groundOffset(positions, heightAt)` (the vertical shift that puts a track's
+lowest point on the ground, at most 300 m), `decodeHeightmap`,
+`terrariumHeight`. Bounds: a 129 × 129 grid (32,768 triangles) plus a
+4,608-triangle far-field ring to 150 km following the Earth's curvature; two
+imagery textures (the inner quarter around the pad at a finer zoom, the whole
+grid at a coarser one), each at most 36 tiles and 2,048 px (1,024 on phones);
+tiles load nearest-first, four at a time, after the mesh is shown. The view
+renders only when something changes, at a pixel ratio of at most 1.5.
+
+Tests: `tests/terrain.test.mjs`, `tests/map-3d.test.mjs`,
+`tests/map-3d-browser.mjs`, `map_3d.rs` and `local_station/tests.rs`.
+
+---
+
 ## Appendix: route index
 
 Every backend route the frontend code uses, as `METHOD path`, grouped as in
@@ -1207,6 +1301,10 @@ section 5. WebSocket upgrades are listed as `GET`.
 - `GET /api/vehicle_visualization`
 - `GET /api/map_config`
 - `GET /tiles/{z}/{x}/{y}.jpg`
+- `GET /terrain/{z}/{x}/{y}.png`
+- `GET /api/terrain/heightmap`
+- `GET /api/terrain/status`
+- `GET /api/flight_phases`
 - `GET /api/station_positions`
 - `POST /api/station_positions`
 - `GET /api/antenna/status`
