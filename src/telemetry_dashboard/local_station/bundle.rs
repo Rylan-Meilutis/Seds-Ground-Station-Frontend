@@ -221,6 +221,9 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
             session.lists.insert(path.to_string(), list);
         }
     }
+    if let (Some(csv), Some(recording)) = (&session.csv, manifest["source"]["recording"].as_str()) {
+        session.exports = Some(std::rc::Rc::new(super::exports::ExportInputs::from_bundle(recording, csv.clone(), &files)));
+    }
     session.notes.push(format!(
         "Bundle from {} ({}), {} entries, made {}.",
         manifest["source"]["station_name"].as_str().unwrap_or("a station"),

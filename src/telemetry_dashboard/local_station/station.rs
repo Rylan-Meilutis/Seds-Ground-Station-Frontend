@@ -500,7 +500,16 @@ impl LocalStation {
             }
             return text_reply(409, &self.refusal(&format!("{} {}", method.to_ascii_uppercase(), percent_decode(path))));
         }
-        // Bundle entries and exports: the station's own bytes.
+        // Exports (CSV, reports, review zips) as the station writes them, from a bundle.
+        if let Some(inputs) = &self.session.exports
+            && let Some(answer) = super::exports::answer(inputs, path_and_query)
+        {
+            return match answer {
+                Ok(file) => reply(200, file.bytes, file.content_type),
+                Err((status, message)) => text_reply(status, &message),
+            };
+        }
+        // Bundle entries: the station's own bytes.
         if let Some(found) = self.session.route_entry(path, query) {
             return found;
         }
