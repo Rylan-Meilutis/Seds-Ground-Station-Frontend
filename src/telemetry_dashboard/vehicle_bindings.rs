@@ -163,15 +163,14 @@ mod tests {
         let file: serde_json::Value =
             serde_json::from_str(include_str!("../../tests/fixtures/backend-contract/replay-export/flight.json")).unwrap();
         let layout: LayoutConfig = serde_json::from_value(file["layout"].clone()).unwrap();
-        assert!(layout.gps.is_some() && !layout.watch_items.is_empty() && !layout.actions_tab.controls.is_empty());
+        assert!(layout.gps.is_some() && !layout.watch_items.is_empty());
         assert_eq!(gps_types_of(layout.gps.as_ref()), BUILT_IN_GPS_TYPES);
         assert_eq!(gps_indices_of(layout.gps.as_ref()), BUILT_IN_GPS_INDICES);
         assert_eq!(fluids_of(&layout.actions_tab.fill_target_fluids), fluids_of(&[]));
-        let labels: Vec<_> = ["TogglePlumbingDelayInterlock", "ToggleChecklistInterlock", "ToggleSupplyInterlock", "ToggleBoardStateProofInterlock"]
-            .iter()
-            .map(|cmd| control_label_in(&layout.actions_tab.controls, cmd).unwrap())
-            .collect();
-        assert_eq!(labels, ["Retraction minimum 45 seconds", "Checklist enforcement", "Nitrogen/nitrous one at a time", "Board state checks"]);
+        // The interlock labels are in the HITL layout only (GroundStation26
+        // `layout::vehicle_binding_tests` checks they equal the built-in text);
+        // the flight layout names none, so the built-in text stays.
+        assert!(layout.actions_tab.controls.is_empty());
         for item in super::super::watch_companion::registry::ITEMS {
             if let super::super::watch_companion::registry::Source::Telemetry { channels, .. } = item.source {
                 let built_in: Vec<Channel> = channels.iter().map(|(dt, s, i)| ((*dt).to_owned(), s.map(str::to_owned), *i)).collect();
