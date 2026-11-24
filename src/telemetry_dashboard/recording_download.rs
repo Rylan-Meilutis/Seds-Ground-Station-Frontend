@@ -447,6 +447,10 @@ fn saved_json_captured<T: serde::de::DeserializeOwned>(
     };
     owner.check()?;
     if let Some(context) = &context { context.check_current()?; }
+    if !(200..300).contains(&status) && local.is_some() {
+        // A local station (demo, replay) says in words why it has no answer.
+        return Err(SavedJsonError { message: text.chars().take(300).collect(), transient: false });
+    }
     if !(200..300).contains(&status) {
         // A stale export response must never clear a newer account's session.
         return Err(SavedJsonError {

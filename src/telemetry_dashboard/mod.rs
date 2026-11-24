@@ -34,6 +34,7 @@ mod daq_dac_model;
 mod daq_dac_panel;
 mod daq_dac_preview;
 mod dac_sim_patch;
+mod firmware_recorded;
 mod firmware_sim_panel;
 mod igniter_sense_model;
 mod igniter_sense_panel;

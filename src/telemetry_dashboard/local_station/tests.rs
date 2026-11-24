@@ -666,3 +666,40 @@ fn offline_review_windows_equal_the_station_byte_for_byte() {
     }
     assert!(compared >= 12, "{compared} requests");
 }
+
+/// Firmware, mode and the live review answer from what the session holds;
+/// live-only panels and missing settings say why in words.
+#[test]
+fn firmware_mode_and_review_are_answered_from_the_session() {
+    use crate::telemetry_dashboard::{flight_review_view::LiveReview, station_mode, station_mode_contract::Snapshot};
+    let demo = LocalStation::new(demo::session(0), EPOCH);
+    let id = demo.recording_id().unwrap();
+    let firmware: Value = decode(&demo, &format!("/api/recordings/{}/firmware", station::percent_component(&id)));
+    let boards = firmware["boards"].as_array().unwrap();
+    assert_eq!(boards.len(), 7);
+    assert!(boards.iter().all(|b| b["firmware"]["describe"].is_string() && b["health"]["reports"].as_u64() > Some(0)));
+    let snapshot = Snapshot::decode(decode::<Value>(&demo, "/api/station-modes")).expect("a valid mode capability");
+    assert!(!snapshot.change_supported && snapshot.reason.as_deref().is_some_and(|r| r.contains("needs a Ground Station")));
+    let mode: Value = decode(&demo, "/api/station_mode");
+    assert!(station_mode::description(&mode, false).contains("Normal"), "{}", station_mode::description(&mode, false));
+    let review: LiveReview = decode(&demo, "/api/flight_review/live");
+    assert!(review.flight.is_none() && review.show_flight);
+    let reply = demo.request_at("GET", "/api/gse/config", None, EPOCH);
+    assert_eq!((reply.status, reply.text().starts_with("Demo mode has no station settings")), (404, true));
+
+    let replay = LocalStation::new(bundle::open("flight.gsreplay", BUNDLE).unwrap(), EPOCH);
+    let id = replay.recording_id().unwrap();
+    let firmware: Value = decode(&replay, &format!("/api/recordings/{}/firmware", station::percent_component(&id)));
+    assert!(firmware["identity_note"].is_string(), "hardware recordings say why there is no build");
+    assert_eq!(firmware["boards"].as_array().unwrap().iter().map(|b| b["sender_id"].as_str().unwrap()).collect::<Vec<_>>(), ["FC", "PB", "VB"]);
+    let review: LiveReview = decode(&replay, "/api/flight_review/live");
+    assert!(review.flight.is_some(), "the recording's flight summary");
+    assert_eq!(review.latest_capture_id.as_deref(), Some(id.as_str()));
+    for route in ["/api/gse/config", "/api/fill_targets", "/api/safety/about", "/api/fc/launch-site"] {
+        assert_eq!(replay.request_at("GET", route, None, EPOCH).status, 200, "{route}: the station's settings at export");
+    }
+    let reply = replay.request_at("GET", "/api/live_streams", None, EPOCH);
+    assert_eq!((reply.status, reply.text()), (404, "Live cameras need a Ground Station.".to_string()));
+    assert_eq!(replay.request_at("GET", "/api/firmware/targets", None, EPOCH).text(), "Flashing needs a station.");
+    assert_eq!(replay.misses(), ["/api/firmware/targets", "/api/live_streams"], "only the live-only routes asked here were not served");
+}

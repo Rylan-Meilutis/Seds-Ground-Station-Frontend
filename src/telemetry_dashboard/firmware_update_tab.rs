@@ -261,8 +261,20 @@ async fn poll_update(
     }
 }
 
+/// The firmware tab: flashing through a station, or (demo mode and replays)
+/// the recorded firmware and health, read-only. The station is chosen once
+/// per connection, so the choice never changes while the tab is mounted.
 #[component]
 pub(crate) fn FirmwareUpdateTab(theme: ThemeConfig) -> Element {
+    if super::station_link::is_local() {
+        rsx! { super::firmware_recorded::RecordedFirmware { theme } }
+    } else {
+        rsx! { LiveFirmwareUpdate { theme } }
+    }
+}
+
+#[component]
+fn LiveFirmwareUpdate(theme: ThemeConfig) -> Element {
     let mut targets = use_signal(Vec::<FirmwareTarget>::new);
     let mut selected_board = use_signal(String::new);
     let mut selected_filename = use_signal(String::new);

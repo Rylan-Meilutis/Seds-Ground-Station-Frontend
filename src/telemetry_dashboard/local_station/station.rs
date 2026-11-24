@@ -66,6 +66,9 @@ pub(crate) struct LocalStation {
     last_status_wall: Cell<i64>,
     outbox: RefCell<VecDeque<String>>,
     next_notification: Cell<u64>,
+    /// GET routes this station did not serve ("Not available offline"), for
+    /// the offline browser tests (`window.__gs26LocalMisses` in the browser).
+    misses: RefCell<std::collections::BTreeSet<String>>,
 }
 
 fn reply(status: u16, body: Vec<u8>, content_type: &str) -> Reply {
@@ -202,6 +205,44 @@ fn state_wire(name: &str, previous: Option<&'static str>, mode: super::Mode, sin
     (flight_state, mission, phase)
 }
 
+/// Station settings a replay bundle snapshots (GroundStation26
+/// `recording_bundle_settings`); a session without them says so.
+pub(crate) const STATION_SETTINGS: [&str; 8] = [
+    "/api/fill_targets", "/api/flight_setup", "/api/auto_zero", "/api/calibration/kg50_input",
+    "/api/gse/config", "/api/fc/launch-site", "/api/safety/about", "/api/apogee_planner",
+];
+
+/// Routes that only a live station can answer, with what the panel says.
+/// Writes are answered separately (acknowledged or refused, never sent).
+pub(crate) fn live_only(path: &str) -> Option<&'static str> {
+    let starts = |prefix: &str| path.starts_with(prefix);
+    Some(match path {
+        "/api/live_streams" => "Live cameras need a Ground Station.",
+        _ if starts("/api/media-assets") || starts("/api/video") => "Live video needs a Ground Station.",
+        _ if starts("/api/stream/raw") => "The raw packet feed is live only; it needs a Ground Station.",
+        "/api/antenna/status" => "Antenna tracking is live only; it needs a Ground Station.",
+        _ if starts("/api/rrls") => "The RRLS relay link is live only; it needs a Ground Station.",
+        _ if starts("/api/radio/") => "Radio checks are live only; they need a Ground Station.",
+        _ if starts("/api/board-recovery") || starts("/api/board_abort") => "Board recovery is live only; it needs a Ground Station.",
+        _ if starts("/api/recovery") => "Recovery tracking is live only; it needs a Ground Station.",
+        _ if starts("/api/proximity") => "The proximity lock is live only; it needs a Ground Station.",
+        _ if starts("/api/igt") => "The integrated ground test runs on a Ground Station.",
+        "/api/gse/status" => "GSE sequences run on a Ground Station.",
+        _ if starts("/api/actuator/") => "Actuator status is live only; it needs a Ground Station.",
+        _ if starts("/api/firmware-sim") => "Firmware simulation runs on a Ground Station.",
+        _ if starts("/api/firmware/") => "Flashing needs a station.",
+        _ if starts("/api/checklists/sync") => "Checklist sync needs a Ground Station.",
+        _ if starts("/api/sd_download") => "Board SD downloads need a Ground Station.",
+        _ if starts("/api/daq/dac") => "The DAQ signal generator needs a Ground Station.",
+        _ if starts("/api/mission-settings") => "Shared settings sync between stations is live only; it needs a Ground Station.",
+        _ if starts("/api/admin") || starts("/api/stream-roles") => "User and access management needs a Ground Station.",
+        _ if starts("/api/station/pairing") => "Station pairing needs a Ground Station.",
+        _ if starts("/api/system/power") => "Station power control needs a Ground Station.",
+        _ if starts("/api/watch") || starts("/api/auth/watch-token") => "The watch companion pairs with a Ground Station.",
+        _ => return None,
+    })
+}
+
 impl LocalStation {
     /// A station serving `session`, playing from `start_pos` at `now_wall`.
     pub(crate) fn new(session: Session, now_wall: i64) -> Self {
@@ -219,6 +260,7 @@ impl LocalStation {
             last_status_wall: Cell::new(i64::MIN),
             outbox: RefCell::new(VecDeque::new()),
             next_notification: Cell::new(1),
+            misses: RefCell::new(Default::default()),
         }
     }
 
@@ -414,6 +456,82 @@ impl LocalStation {
         Some(document["recording"].as_str().filter(|r| !r.is_empty()).unwrap_or("replay").to_string())
     }
 
+    /// The recording this session plays: a bundle's source recording, or
+    /// the recording a replay document (or the demo) stands for.
+    pub(crate) fn recording_id(&self) -> Option<String> {
+        self.session.manifest.as_ref().and_then(|m| m["source"]["recording"].as_str().map(str::to_owned)).or_else(|| self.replay_id())
+    }
+
+    /// `GET /api/recordings/{id}/firmware` when the session has no bundle
+    /// entry for it: the demo's boards, or the boards a replay file heard
+    /// (a portable replay file carries no health reports).
+    fn firmware_record(&self) -> Value {
+        if self.session.is_demo() {
+            return super::demo::firmware(&self.session);
+        }
+        let boards: Vec<Value> = self.session.boards.iter().map(|b| {
+            let rows = self.session.samples.iter().filter(|s| s.sender == b.sender).count();
+            json!({"sender_id": b.sender, "board_label": b.label, "rows": rows, "firmware": null, "firmware_source": null, "health": null})
+        }).collect();
+        json!({"recording": self.recording_id(), "provenance": null, "identity_note": "This replay file holds the recorded rows only, not the boards' health reports or firmware builds; a replay bundle (.gsreplay) carries the health reports.",
+            "boards": boards, "updates": []})
+    }
+
+    /// The station mode the session was recorded in (`GET /api/station_mode` id).
+    fn recorded_mode_id(&self) -> String {
+        let recorded = self.session.manifest.as_ref().and_then(|m| m["recorded_mode"].as_str())
+            .or_else(|| self.session.replay_document.as_ref().and_then(|d| d["replay_context"]["recorded_mode"].as_str()));
+        recorded.filter(|m| !m.is_empty()).map(str::to_owned).unwrap_or_else(|| match self.session.mode {
+            super::Mode::TestFire => "test_fire".into(),
+            super::Mode::GroundTest => "integrated_ground_test".into(),
+            super::Mode::Hitl => "hitl".into(),
+            super::Mode::Flight => "normal".into(),
+        })
+    }
+
+    /// `GET /api/station_mode`: the recorded mode, as a station reports its own.
+    fn station_mode(&self) -> Value {
+        let id = self.recorded_mode_id();
+        json!({"authority": "local_primary", "effective_mode": id, "error": null, "execution_mode": "compiled_mode", "local_build_mode": id,
+            "local_capabilities_match": true, "output_domain": "build_defined", "persisted": false, "primary_station": null,
+            "retained_configuration": null, "synchronized": true})
+    }
+
+    /// `GET /api/station-modes`: the recorded mode as the only one; changing
+    /// mode needs a station.
+    fn station_modes(&self) -> Value {
+        let id = self.recorded_mode_id();
+        let label = match id.as_str() {
+            "normal" => "Normal", "test_fire" => "Test fire", "testing" => "Testing", "hitl" => "HITL",
+            "integrated_ground_test" => "Integrated ground test", other => other,
+        }
+        .to_owned();
+        let what = if self.session.is_demo() { "Demo mode" } else { "This replay" };
+        json!({"version": 2, "backend_instance": "local-station", "principal_context": "local", "authority_id": "local-station",
+            "revision": "local", "policy_epoch": null, "authority_current": true, "valid_for_ms": 30_000, "epoch_fencing_supported": false,
+            "control_origin_required": false, "admissions_open": true,
+            "current": {"id": id, "mode_id": id, "label": format!("{label} · recorded"), "simulation": false, "output_domain": "Recorded data on this device", "firmware_sim": false},
+            "modes": [{"id": id, "label": label}], "permissions": {"can_change": false, "can_cancel_transition": false},
+            "change_supported": false, "cancel_supported": false, "options": [], "transition": null,
+            "reason": format!("{what} shows the mode the data was recorded in; changing mode needs a Ground Station.")})
+    }
+
+    /// `GET /api/flight_review/live`: the session's recorded review (a
+    /// bundle's `GET /api/flight_review/recording/{id}`) as the live one.
+    fn live_review(&self) -> Value {
+        let recorded = self.recording_id().and_then(|id| self.session.route_entry(&format!("/api/flight_review/recording/{}", percent_component(&id)), ""))
+            .and_then(|reply| serde_json::from_slice::<Value>(&reply.body).ok());
+        let mode = recorded.as_ref().and_then(|r| r["mode"].as_str().map(str::to_owned)).unwrap_or_else(|| self.recorded_mode_id());
+        let motor = recorded.as_ref().map_or(Value::Null, |r| r["motor"].clone());
+        let flight = recorded.as_ref().map_or(Value::Null, |r| r["flight"].clone());
+        json!({"mode": mode, "igt_active": mode == "integrated_ground_test", "firmware_sim": false,
+            "simulated": recorded.as_ref().and_then(|r| r["simulated"].as_bool()).unwrap_or(false),
+            "show_motor": !motor.is_null() || matches!(mode.as_str(), "test_fire" | "integrated_ground_test"),
+            "show_flight": !flight.is_null() || matches!(mode.as_str(), "normal" | "hitl" | "integrated_ground_test"),
+            "capture": null, "motor": motor, "flight": flight,
+            "latest_capture_id": recorded.as_ref().and(self.recording_id()), "latest_capture_label": recorded.as_ref().and_then(|r| r["label"].as_str().map(str::to_owned))})
+    }
+
     fn recordings(&self) -> Value {
         let clock = self.clock.get();
         let wall = |t: i64| if self.session.is_demo() { clock.wall_of(t) } else { t };
@@ -470,6 +588,16 @@ impl LocalStation {
                 None => json!({"rocket": null}),
             },
             "/api/layout" => self.session.layout.clone(),
+            // No machine translations on this device: the UI's own wording.
+            "/api/i18n/catalog" => {
+                let lang = query.split('&').find_map(|p| p.strip_prefix("lang=")).map(percent_decode).unwrap_or_else(|| "en".into());
+                json!({"lang": lang, "translations": {}})
+            }
+            "/api/station_mode" => self.station_mode(),
+            "/api/station-modes" => self.station_modes(),
+            "/api/flight_review/live" => self.live_review(),
+            "/api/vehicle_visualization" => self.session.replay_document.as_ref().map(|d| d["view_config"].clone()).filter(Value::is_object)?,
+            "/api/map_config" if self.session.is_demo() => super::demo::map_config(),
             _ if self.replay_id().is_some_and(|id| path == format!("/api/recordings/{}/replay/export", percent_component(&id))) => {
                 self.session.replay_document.clone()?
             }
@@ -500,6 +628,7 @@ impl LocalStation {
             "/api/fire_archive" => json!({"fires": self.session.listed("derived/fire_archive.json")}),
             "/api/checklists" => if self.session.is_demo() { super::demo::checklists() } else { json!({"revision": 0, "enforce_before_launch": false, "checklists": []}) },
             _ if path.starts_with("/api/recordings/") && path.ends_with("/replay") => self.replay_snapshot()?,
+            _ if self.recording_id().is_some_and(|id| path == format!("/api/recordings/{}/firmware", percent_component(&id))) => self.firmware_record(),
             _ if path.starts_with("/api/recordings/") && path.ends_with("/replay/window") => self.replay_window(query)?,
             _ => {
                 if let Some(value) = self.session.get(&format!("{path}?{query}"), at) {
@@ -655,8 +784,48 @@ impl LocalStation {
         }
         match self.get_json(path, query, wall) {
             Some(value) => json_reply(&value),
-            None => text_reply(404, "Not available offline: this route needs a Ground Station."),
+            None => {
+                self.missed(path);
+                text_reply(404, &self.unavailable(path))
+            }
         }
+    }
+
+    /// Why a route is not answered here, in words a panel can show as is.
+    fn unavailable(&self, path: &str) -> String {
+        if let Some(reason) = live_only(path) {
+            return reason.to_owned();
+        }
+        if STATION_SETTINGS.contains(&path) {
+            return if self.session.is_demo() {
+                "Demo mode has no station settings; connect to a Ground Station to see them.".into()
+            } else {
+                "This replay does not include the station's settings; download a new replay bundle to include them.".into()
+            };
+        }
+        "Not available offline: this route needs a Ground Station.".into()
+    }
+
+    fn missed(&self, path: &str) {
+        if !self.misses.borrow_mut().insert(path.to_owned()) {
+            return;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if let Some(window) = web_sys::window() {
+            let key = wasm_bindgen::JsValue::from_str("__gs26LocalMisses");
+            let list = js_sys::Reflect::get(&window, &key).ok().and_then(|v| wasm_bindgen::JsCast::dyn_into::<js_sys::Array>(v).ok()).unwrap_or_else(|| {
+                let list = js_sys::Array::new();
+                let _ = js_sys::Reflect::set(&window, &key, &list);
+                list
+            });
+            list.push(&path.into());
+        }
+    }
+
+    /// Paths of the GET requests answered "Not available offline" so far.
+    #[cfg(test)]
+    pub(crate) fn misses(&self) -> Vec<String> {
+        self.misses.borrow().iter().cloned().collect()
     }
 
     /// A command sent on the live socket: answered with a notification.

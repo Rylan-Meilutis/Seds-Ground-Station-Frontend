@@ -155,7 +155,7 @@ pub(crate) fn layout() -> Value {
     json!({
         "version": 1,
         "branding": {"app_name": "Demo station", "dashboard_title": "Demo rocket"},
-        "main_tabs": ["state", "data", "connection-status", "map", "actions"],
+        "main_tabs": ["state", "data", "connection-status", "map", "actions", "network-topology", "detailed", "notifications", "warnings", "errors", "firmware-update", "calibration"],
         "connection_tab": {"sections": [{"kind": "board_status", "title": "Boards"}]},
         "network_tab": {"enabled": true, "title": "Network", "expected_boards": ["FC", "RF", "PB", "VB", "GB", "AB", "DAQ"]},
         "actions_tab": {"disable_actions_by_default": false, "show_flight_setup": false, "show_fill_targets": false, "actions": [
@@ -475,6 +475,35 @@ pub(crate) fn session(epoch_ms: i64) -> Session {
     });
     session.replay_document = Some(replay_document(&session));
     session
+}
+
+/// `GET /api/recordings/{id}/firmware` of the demo (the station's
+/// `recording_firmware` shape): each board with an example build and health.
+pub(crate) fn firmware(session: &Session) -> Value {
+    let boards: Vec<Value> = session
+        .boards
+        .iter()
+        .enumerate()
+        .map(|(i, b)| {
+            let rows = session.samples.iter().filter(|s| s.sender == b.sender).count();
+            let uptime = 3_600.0 + 600.0 * i as f64;
+            json!({
+                "sender_id": b.sender, "board_label": b.label, "rows": rows, "first_ms": 0, "last_ms": LOOP_MS,
+                "firmware": {"repo": format!("{} firmware (demo)", b.label), "ref": "main", "describe": format!("demo-1.{i}"), "short": format!("de{i:05}")},
+                "firmware_source": "demo",
+                "health": {"reports": LOOP_MS / 5_000, "undecoded_reports": 0, "first_ms": 0, "last_ms": LOOP_MS,
+                    "first_uptime_s": uptime, "last_uptime_s": uptime + (LOOP_MS / 1000) as f64, "resets_observed": 0, "watchdog_missing_mask": 0,
+                    "last": {"version": 1, "die_temperature_centi_c": 3100 + 40 * i as i64, "reset_flags": 0, "heap_peak_bytes": 24_576 + 1024 * i as u64, "allocation_failures": 0}},
+            })
+        })
+        .collect();
+    json!({"recording": "demo-flight.db", "provenance": "demo", "identity_note": null, "boards": boards, "updates": []})
+}
+
+/// `GET /api/map_config` of the demo: the map around its launch site.
+pub(crate) fn map_config() -> Value {
+    json!({"default_center_lat": 31.758, "default_center_lon": -102.046, "default_zoom": 12.0, "map_title": "Map",
+        "max_display_zoom": 18, "max_native_zoom": 17, "tracked_asset_label": "Demo rocket"})
 }
 
 /// The demo as a portable replay document, for the 3D player.
