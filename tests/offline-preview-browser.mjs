@@ -1,6 +1,7 @@
 // The offline workspace at /preview of the web bundle: demo mode and a replay
 // file opened with no station, no credentials and an empty browser profile.
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {fileURLToPath} from 'node:url';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
 const base=(process.env.GS_PREVIEW_URL||'http://127.0.0.1:19096').replace(/\/$/,'');
@@ -18,7 +19,7 @@ try {
  const nav=page.getByRole('navigation',{name:'Mission navigation'});
  const open=async label=>{await nav.getByRole('link',{name:label,exact:true}).click();await page.getByRole('heading',{name:label,exact:true,level:1}).waitFor();};
  const pages={
-  'Dashboard':['Oxidizer mass','Valves'],'Mission':['Flight procedure','Abort'],'Map':['Map tiles are not loaded'],
+  'Dashboard':['Oxidizer mass','Valves'],'Mission':['Flight procedure','Abort'],'Map':['No map tiles offline'],
   'Replay & summary':['Flight summary','Apogee (barometer)'],'Data':['Tank pressure'],'Diagrams':['Fill system'],
   'Network':['Flight Computer','Warnings'],'Calibration':['Fill loadcell (KG50)'],'Recordings':['Demo flight (this scenario)'],
  };
@@ -42,9 +43,18 @@ try {
  for(const width of [320,390,844,1280]){await page.setViewportSize({width,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no page overflow '+width);
   if(shots)await page.screenshot({path:`${shots}/offline-workspace-${width}.png`});}
+ // A replay bundle: the station's CSV comes back out byte for byte.
+ const bundle=fileURLToPath(new URL('./fixtures/backend-contract/replay-bundle/flight.gsreplay',import.meta.url));
+ await page.getByLabel('Open replay file').setInputFiles(bundle);
+ await page.getByText('Offline replay — flight.gsreplay',{exact:true}).waitFor();
+ for(const label of ['Dashboard','Data','Map','Diagrams','Calibration']){await open(label);assert(!/\bNaN\b|undefined/.test(await page.locator('main').innerText()),label+' (bundle) renders no NaN');}
+ await open('Recordings');
+ const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Export CSV (as the station exports it)'}).click()]);
+ const exported=fs.readFileSync(await download.path());
+ assert(exported.equals(fs.readFileSync(fileURLToPath(new URL('./fixtures/backend-contract/replay-bundle/flight.csv',import.meta.url)))),'bundle CSV export equals the station CSV');
  await page.getByRole('button',{name:'Back to demo'}).click();await page.getByText('Demo mode — no station connected',{exact:true}).waitFor();
  assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),stored,'the workspace does not change stored preferences');
  assert.deepEqual(requests,[],'no HTTP API requests');assert.deepEqual(ws.filter(u=>new URL(u).pathname!=='/_dioxus'),[],'no WebSocket');
  assert.deepEqual(errors,[]);
- console.log('PASS: demo pages populated and animated, local command acknowledgement, replay file opened offline (all pages, 3D), four widths, zero network, unchanged storage');
+ console.log('PASS: demo pages populated and animated, local command acknowledgement, replay file and bundle opened offline (all pages, 3D, CSV export identical to the station CSV), four widths, zero network, unchanged storage');
 } finally {await browser.close();}

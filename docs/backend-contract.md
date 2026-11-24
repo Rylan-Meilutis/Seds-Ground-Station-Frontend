@@ -25,7 +25,7 @@ Contents:
 7. [Hard-coding audit](#7-hard-coding-audit)
 8. [Contract checks](#8-contract-checks)
 9. [Related documents](#9-related-documents)
-10. [Offline replay files](#10-offline-replay-files)
+10. [Offline replay files](#10-offline-replay-files) (bundle format: [replay-bundle.md](replay-bundle.md))
 11. [Demo mode: a local reference station](#11-demo-mode-a-local-reference-station)
 10. [Appendix: route index](#appendix-route-index)
 
@@ -546,6 +546,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/{id}/replay/layout` | query `view` (`normal`, `test_fire`, `testing`, `hitl`, `integrated_ground_test`) → `LayoutConfig` | saved replay | view_data | M |
 | GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory | vehicle replay | view_data | M |
 | GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export | view_data | M |
+| GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
 | GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import | view_data | M |
 | GET | `/api/recordings/{id}/sd/sources/{sha256}` | file | SD recording import | view_data | M |
@@ -939,6 +940,15 @@ GroundStation26 (sibling repository):
 
 ## 10. Offline replay files
 
+Two file types open with no station:
+
+- the **replay bundle** (`.gsreplay`, [replay-bundle.md](replay-bundle.md)) is
+  complete: rows, layout, calibration, diagrams, vehicle geometry, derived
+  summaries, the recording's CSV and optional map tiles, with a hashed
+  manifest;
+- the older **portable replay** (`*.seds-replay.json`, below) is the bundle's
+  `replay.json` on its own.
+
 A portable replay file (`*.seds-replay.json`) opens on any device with no
 station connected and nothing cached: **Explore offline** on the connection
 page (native) or a failed-connection card (web, native) opens the offline
@@ -1191,6 +1201,7 @@ section 5. WebSocket upgrades are listed as `GET`.
 - `GET /api/recordings/{id}/replay/layout`
 - `GET /api/recordings/{id}/replay/trajectory`
 - `GET /api/recordings/{id}/replay/export`
+- `GET /api/recordings/{id}/bundle`
 - `GET /api/vehicle/geometry`
 - `GET /api/recordings/{id}/sd/sources`
 - `GET /api/recordings/{id}/sd/sources/{sha256}`

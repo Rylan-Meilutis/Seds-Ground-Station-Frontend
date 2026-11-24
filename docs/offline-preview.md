@@ -41,9 +41,13 @@ connected"). Nothing leaves the device.
 
 ## Replay files
 
-**Open replay file** loads a portable `*.seds-replay.json`, as does dropping
-the file on the window. You export these files from 3D replay on a connected
-station. Opening one needs no station, no sign-in and no cache. All pages read
+**Open replay file** loads a replay bundle (`*.gsreplay`, from the Recordings
+panel's **Download replay bundle**) or a portable `*.seds-replay.json` (from
+3D replay), as does dropping the file on the window. A bundle also brings the
+station's calibration, diagrams, summaries, optional map tiles and the
+recording's CSV. **Recordings → Export CSV** saves that CSV exactly as the
+station exports it; **Export layout.json** saves the layout. Format:
+[replay-bundle.md](replay-bundle.md). Opening one needs no station, no sign-in and no cache. All pages read
 the file, in flight, test-fire, ground-test (IGT) and HITL recordings. The
 banner names the file and the mode.
 
