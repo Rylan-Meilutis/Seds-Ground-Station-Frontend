@@ -777,3 +777,64 @@ fn flight_maxima_are_computed_from_the_rows_as_the_station_does() {
     station.seek(100_000, wall + 90_000);
     assert_eq!(maxima_in(&frames(&station, wall + 90_000)), Some(FlightMaximaView::default()));
 }
+
+/// `GET /api/antenna/status` as the station answered it at export (a bundle's
+/// `derived/stations.json`, listed under that route): the ground station and
+/// RRLS fixes the map and 3D views place their markers from.
+fn antenna_status_body() -> Vec<u8> {
+    serde_json::to_vec(&serde_json::json!({
+        "gpsd_configured": true,
+        "ground_station": {"latitude": 31.7535, "longitude": -102.0505, "altitude_m": 884.0, "altitude_reference": "mean_sea_level", "accuracy_m": 2.5, "age_ms": 800, "stale": false, "source": "GroundStation GPS", "manual": false},
+        "rocket": {"latitude": 31.7601, "longitude": -102.0391, "age_ms": 400, "stale": false, "source": "RF", "manual": false},
+        "rrls": {"latitude": 31.7552, "longitude": -102.0418, "age_ms": 0, "stale": false, "source": "Saved RRLS (manual)", "manual": true},
+        "rssi": {"rssi_dbm": -71.0, "age_ms": 300}
+    }))
+    .unwrap()
+}
+
+/// The fixture bundle with `derived/stations.json` added, listed with its
+/// route as the station lists it (`route: false` leaves the route out, as an
+/// older reader would find it).
+fn bundle_with_stations(route: bool) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+    let mut files = bundle::unzip(BUNDLE).unwrap();
+    let body = antenna_status_body();
+    let mut manifest: Value = serde_json::from_slice(&files["manifest.json"]).unwrap();
+    let mut entry = serde_json::json!({"path": "derived/stations.json", "bytes": body.len(), "media_type": "application/json",
+        "sha256": Sha256::digest(&body).iter().map(|x| format!("{x:02x}")).collect::<String>()});
+    if route {
+        entry["route"] = "/api/antenna/status".into();
+    }
+    manifest["entries"].as_array_mut().unwrap().push(entry);
+    files.insert("manifest.json".into(), serde_json::to_vec(&manifest).unwrap());
+    files.insert("derived/stations.json".into(), body);
+    stored_zip(&files)
+}
+
+#[test]
+fn a_bundles_station_positions_place_the_station_markers() {
+    for route in [true, false] {
+        let session = bundle::open("flight.gsreplay", &bundle_with_stations(route)).unwrap();
+        // The 3D replay player: the document's extras.
+        let extras = &session.replay_document.as_ref().unwrap()["replay_extras"];
+        assert_eq!(extras["stations"]["ground_station"]["latitude"], 31.7535);
+        let station = LocalStation::new(session, EPOCH);
+        // The map and the 3D map: GET /api/antenna/status, decoded as the map does.
+        let snapshot: crate::telemetry_dashboard::station_fix::Snapshot = decode(&station, "/api/antenna/status");
+        let gs = snapshot.ground_station.expect("ground station placed");
+        assert_eq!((gs.latitude, gs.longitude, gs.altitude_m), (31.7535, -102.0505, Some(884.0)));
+        assert!(gs.live());
+        let rrls = snapshot.rrls.expect("RRLS placed");
+        assert!(rrls.manual && !rrls.live(), "a saved fallback stays a saved fallback");
+        // The export moment's rocket fix and signal are not replayed as live tracking.
+        let body: Value = decode(&station, "/api/antenna/status");
+        assert_eq!((body["rocket"].clone(), body["rssi"].clone(), body["gpsd_configured"].clone()), (Value::Null, Value::Null, Value::Bool(true)), "route {route}");
+        assert!(station.misses().is_empty());
+    }
+    // Without station positions the route stays live only, in one sentence.
+    let plain = LocalStation::new(bundle::open("flight.gsreplay", BUNDLE).unwrap(), EPOCH);
+    let reply = plain.request_at("GET", "/api/antenna/status", None, EPOCH);
+    assert_eq!((reply.status, reply.text().as_str()), (404, "Antenna tracking is live only; it needs a Ground Station."));
+    let demo = LocalStation::new(demo::session(0), EPOCH);
+    assert_eq!(demo.request_at("GET", "/api/antenna/status", None, EPOCH).status, 404);
+}

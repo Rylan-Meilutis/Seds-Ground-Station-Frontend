@@ -3,10 +3,38 @@
 // station, no credentials, an empty browser profile and zero network.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 import {fileURLToPath} from 'node:url';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
 const base=(process.env.GS_PREVIEW_URL||'http://127.0.0.1:19096').replace(/\/$/,'');
 const fixture=name=>fileURLToPath(new URL(`./fixtures/backend-contract/${name}`,import.meta.url));
+// The contract bundle with derived/stations.json (GET /api/antenna/status at export) added.
+function bundleWithStations(){
+ const zip=fs.readFileSync(fixture('replay-bundle/flight.gsreplay'));const files=new Map();
+ const end=zip.lastIndexOf(Buffer.from([0x50,0x4b,0x05,0x06]));let at=zip.readUInt32LE(end+16);
+ for(let i=0;i<zip.readUInt16LE(end+10);i++){
+  const method=zip.readUInt16LE(at+10),size=zip.readUInt32LE(at+20),nameLen=zip.readUInt16LE(at+28),extra=zip.readUInt16LE(at+30),comment=zip.readUInt16LE(at+32),local=zip.readUInt32LE(at+42);
+  const name=zip.toString('utf8',at+46,at+46+nameLen);at+=46+nameLen+extra+comment;
+  const start=local+30+zip.readUInt16LE(local+26)+zip.readUInt16LE(local+28),data=zip.subarray(start,start+size);
+  files.set(name,method===8?zlib.inflateRawSync(data):Buffer.from(data));
+ }
+ const stations=Buffer.from(JSON.stringify({gpsd_configured:true,ground_station:{latitude:31.7535,longitude:-102.0505,altitude_m:884,age_ms:800,stale:false,source:'GroundStation GPS',manual:false},
+  rocket:{latitude:31.76,longitude:-102.04,age_ms:400,stale:false,source:'RF',manual:false},rrls:{latitude:31.7552,longitude:-102.0418,age_ms:0,stale:false,source:'Saved RRLS (manual)',manual:true},rssi:null}));
+ const manifest=JSON.parse(files.get('manifest.json'));
+ manifest.entries.push({path:'derived/stations.json',route:'/api/antenna/status',bytes:stations.length,media_type:'application/json',sha256:crypto.createHash('sha256').update(stations).digest('hex')});
+ files.set('manifest.json',Buffer.from(JSON.stringify(manifest)));files.set('derived/stations.json',stations);
+ const parts=[],central=[];let offset=0;
+ for(const [name,data] of files){
+  const n=Buffer.from(name),h=Buffer.alloc(30),c=Buffer.alloc(46),crc=zlib.crc32(data);
+  h.writeUInt32LE(0x04034b50,0);h.writeUInt16LE(20,4);h.writeUInt32LE(crc,14);h.writeUInt32LE(data.length,18);h.writeUInt32LE(data.length,22);h.writeUInt16LE(n.length,26);
+  c.writeUInt32LE(0x02014b50,0);c.writeUInt16LE(20,4);c.writeUInt16LE(20,6);c.writeUInt32LE(crc,16);c.writeUInt32LE(data.length,20);c.writeUInt32LE(data.length,24);c.writeUInt16LE(n.length,28);c.writeUInt32LE(offset,42);
+  parts.push(h,n,data);central.push(c,n);offset+=30+n.length+data.length;
+ }
+ const dir=Buffer.concat(central),e=Buffer.alloc(22);
+ e.writeUInt32LE(0x06054b50,0);e.writeUInt16LE(files.size,8);e.writeUInt16LE(files.size,10);e.writeUInt32LE(dir.length,12);e.writeUInt32LE(offset,16);
+ return Buffer.concat([...parts,dir,e]);
+}
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY});
 const shots=process.env.GS_UI_ARTIFACTS;
 try {
@@ -73,6 +101,21 @@ try {
  await picker.selectOption(recording);
  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Download full recording CSV'}).click()]);
  assert(fs.readFileSync(await download.path()).equals(fs.readFileSync(fixture('replay-bundle/flight.csv'))),'bundle CSV export equals the station CSV');
+ // A bundle with the station positions at export: the map, the 3D map and the
+ // 3D replay place the ground station and RRLS from it.
+ await page.getByLabel('Open replay file').setInputFiles({name:'stations.gsreplay',mimeType:'application/octet-stream',buffer:bundleWithStations()});
+ await page.getByText('Offline replay — stations.gsreplay',{exact:true}).waitFor();
+ await open('Map');
+ await page.locator('.gs26-map-stations [data-station="GS"]').waitFor({timeout:20000});
+ assert.match(await page.locator('.gs26-map-stations').innerText(),/RRLS 31\.75520, -102\.04180 · saved, manual entry/);
+ assert.deepEqual(await page.evaluate(()=>window.__gs26_pending_stations),[{role:'gs',lat:31.7535,lon:-102.0505,live:true},{role:'rrls',lat:31.7552,lon:-102.0418,live:false}]);
+ await open('3D replay');
+ const stationsRecording=JSON.parse(fs.readFileSync(fixture('replay-bundle/flight.manifest.json'),'utf8')).source.recording;
+ const recordingPicker=page.locator(`select:has(option[value="${stationsRecording}"])`).first();
+ if(await recordingPicker.count())await recordingPicker.selectOption(stationsRecording);
+ await page.getByRole('button',{name:'Open flight replay of the selected recording'}).click();
+ // The station camera is offered only when the replay has station positions.
+ await page.locator('[data-camera="station"]').first().waitFor({state:'attached',timeout:60000});
  // A portable replay file too.
  await page.getByLabel('Open replay file').setInputFiles(fixture('replay-export/flight.json'));
  await page.getByText('Offline replay — flight.json',{exact:true}).waitFor();

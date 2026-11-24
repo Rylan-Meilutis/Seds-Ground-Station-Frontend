@@ -151,7 +151,7 @@ sweep; "owned elsewhere" routes are handled by other work.
 | `/api/recovery` | Dashboard | silent 404 | live only |
 | `/api/radio/reject-test`, `/api/radio/modem` | Dashboard, Connection Status | silent 404 | live only |
 | `/api/board-recovery/status` | Connection Status | silent 404 | live only |
-| `/api/antenna/status` | Map, Settings | silent 404 | live only |
+| `/api/antenna/status` | Map, 3D map, 3D replay, Settings | silent 404 | bundle `derived/stations.json`: the ground station and RRLS positions at export place the map, 3D map and 3D replay markers; the export moment's rocket fix and signal are left out (tracking is live only); without the entry (demo, older bundles, `records=false`): live only |
 | `/api/rrls/status` | Actions | silent 404 | live only |
 | `/api/checklists/sync` | Checklists | silent 404 | live only (checklists come from `/api/checklists`) |
 | report, motor/flight custom windows, SD-resolved exports, checklist and recovery exports | Data Export, Report Studio, Motor & flight | — | owned elsewhere |

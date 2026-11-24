@@ -711,6 +711,7 @@ impl LocalStation {
             "/api/station-modes" => self.station_modes(),
             "/api/flight_review/live" => self.live_review(),
             "/api/vehicle_visualization" => self.session.replay_document.as_ref().map(|d| d["view_config"].clone()).filter(Value::is_object)?,
+            "/api/antenna/status" => self.recorded_stations()?,
             "/api/map_config" if self.session.is_demo() => super::demo::map_config(),
             _ if self.replay_id().is_some_and(|id| path == format!("/api/recordings/{}/replay/export", percent_component(&id))) => {
                 self.session.replay_document.clone()?
@@ -783,6 +784,21 @@ impl LocalStation {
             json!({"timestamp_ms": stamp, "latitude": lat, "longitude": lon, "altitude_m": alt, "phase": phase_at(stamp)})
         }).collect();
         json!({"points": points, "phases": segments, "events": [], "source_sender_id": "FC", "current_phase": phases.last().map(|p| p.0.clone()), "sampled": false})
+    }
+
+    /// `GET /api/antenna/status` from the station positions a replay carries
+    /// (a bundle's `derived/stations.json`, the route's body at export): the
+    /// ground station and RRLS fixes as the station reported them, so the map,
+    /// the 3D map and the 3D replay place their markers. The rocket fix and
+    /// signal strength of that moment are left out: tracking is live only.
+    fn recorded_stations(&self) -> Option<Value> {
+        let stations = &self.session.replay_document.as_ref()?["replay_extras"]["stations"];
+        let fix = |role: &str| stations.get(role).filter(|v| v.is_object()).cloned();
+        let (ground_station, rrls) = (fix("ground_station"), fix("rrls"));
+        if ground_station.is_none() && rrls.is_none() {
+            return None;
+        }
+        Some(json!({"rocket": null, "ground_station": ground_station, "rrls": rrls, "rssi": null, "gpsd_configured": stations["gpsd_configured"].as_bool().unwrap_or(false)}))
     }
 
     /// The replay document's rows (portable replay format, with ids).

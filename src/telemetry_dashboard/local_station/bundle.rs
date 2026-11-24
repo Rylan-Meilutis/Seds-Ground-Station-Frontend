@@ -218,6 +218,9 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
     session.trajectory = json(&files, "derived/trajectory.json");
     session.recovery_search = json(&files, "derived/recovery_search.json").filter(|v| v["overlay"].is_object());
     session.routes = routes(&manifest, &files);
+    // The station positions are answered from `replay_extras.stations`
+    // without the export moment's rocket fix (`LocalStation::recorded_stations`).
+    session.routes.remove(super::super::station_fix::STATUS_PATH);
     for path in ["derived/burn_reports.json", "derived/fire_archive.json"] {
         if let Some(list) = json(&files, path) {
             session.lists.insert(path.to_string(), list);
