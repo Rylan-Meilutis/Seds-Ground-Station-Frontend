@@ -178,3 +178,51 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
 - UI `offline_preview/tests.rs`: renders every page from the bundle.
 - UI `tests/offline-preview-browser.mjs`: opens the bundle in a fresh browser
   profile.
+
+## Opening files from other apps
+
+A `.gsreplay` bundle (and, where noted, a `*.seds-replay.json` replay) opens
+in the offline replay view (`/preview`) when another app hands it over. The
+platform code reads the file and passes it to `src/opened_file.rs`
+(`offer(name, bytes)`); the app root then navigates to the replay view, which
+takes it (`take()`) and opens it like a file picked in the view. A file over
+192 MiB is not read whole; the view shows a message instead.
+
+| Platform | Registration | Delivery |
+| --- | --- | --- |
+| iOS | `scripts/patch_plist.sh`: exported type `com.ubseds.gsreplay` (conforms to `public.zip-archive`, `public.data`; extension `gsreplay`; media type `application/vnd.seds.gsreplay+zip`), document type (Viewer, Owner), `LSSupportsOpeningDocumentsInPlace` | Scene `openURLContexts` → Tao `Event::Opened`; vendored Tao starts security-scoped access for file URLs (`vendor-tao/GROUNDSTATION-PATCH.md`) |
+| macOS | Same declarations in `platform/macos/Info.plist` | `application:openURLs:` → `Event::Opened` |
+| Android | `platform/android/AndroidManifest.xml`: `VIEW` by media type; `VIEW` by name (`.*\\.gsreplay`, `.*\\.seds-replay\\.json`) for `application/zip`, `application/octet-stream`, `application/json` on `content`/`file`; `SEND`; the activity is `singleTask` | `MainActivity` (patched by `build.py`) → `OpenedFileBridge` copies the URI into the cache → Rust pulls it through JNI |
+| Linux | `.desktop` `MimeType=application/vnd.seds.gsreplay+zip;`, `Exec=… %f`; shared-mime-info `usr/share/mime/packages/ubseds-groundstation.xml` (glob `*.gsreplay`) | Path as the first argument |
+| Windows | NSIS installer: `HKCU\Software\Classes\.gsreplay` → `UBSEDS.GroundStation.Replay`, `shell\open\command` `"…exe" "%1"` (the IExpress fallback installer does not register it) | Path as the first argument |
+| Web | Not registered (no web app manifest) | Use the file picker or drag and drop |
+
+On Apple platforms `*.seds-replay.json` is not claimed (claiming all JSON
+would put the app in every JSON share sheet); open it from the replay view.
+A desktop file opened while the app is running starts a second window.
+
+How to test on a device:
+
+- iOS: AirDrop a `.gsreplay` to the phone, or in Files long-press it →
+  Share → SEDS GS (or tap it once the app is the owner). Test a file in
+  "On My iPhone", one in iCloud Drive (opened in place) and one received
+  over AirDrop (copied to the app's Inbox), with the app closed and running.
+- Android: copy a bundle to the device and open it from Files, or
+  ```sh
+  adb push flight.gsreplay /sdcard/Download/
+  adb shell am start -a android.intent.action.VIEW \
+    -d content://com.android.externalstorage.documents/document/primary%3ADownload%2Fflight.gsreplay \
+    -t application/vnd.seds.gsreplay+zip
+  ```
+  (a provider URI needs a read grant; opening from the Files app always
+  grants one). Also share it from Files (`SEND`), with the app closed and
+  running.
+- macOS: double-click a `.gsreplay` in Finder, or `open -a "UBSEDS GS"
+  flight.gsreplay`.
+- Linux / Windows: double-click the file after installing the package, or
+  run `groundstation_frontend path/to/flight.gsreplay` (installed launcher:
+  `ubseds-groundstation`, Windows: `"UBSEDS GroundStation.exe"`).
+
+Expected: the app shows the offline replay view with the file's banner
+("Offline replay — flight.gsreplay"); a file over 192 MiB or a damaged file
+shows a message in the view.
