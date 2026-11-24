@@ -990,9 +990,9 @@ are never fetched offline. Files are capped at 64 MiB (as the export).
 GroundStation26's contract fixture `replay-export/flight.json` is the actual
 export of a recorded `nominal_10k` flight plus the attached configuration.
 
-Proposed backend follow-up (not required for the UI): write `boards`,
-`vehicle_geometry` and the recording's alerts into the export itself, so a
-file exported by another client (or by `curl`) is equally complete.
+A station-made bundle (`GET /api/recordings/{id}/bundle`) completes
+`replay.json` with `boards`, `vehicle_geometry`, `layout` and `mode` itself, so
+a bundle fetched by any client (or by `curl`) is complete.
 
 ## 11. Demo mode: a local reference station
 
