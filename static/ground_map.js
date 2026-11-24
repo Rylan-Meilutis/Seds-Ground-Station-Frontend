@@ -3593,6 +3593,8 @@ function syncOverlaySourcesNow() {
             simTrack,
         ),
     );
+    // Overlay labels keep clear of the stations and the rocket.
+    scheduleMapOverlayLabelLayout();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -6289,7 +6291,6 @@ const MAP_OVERLAY_SEARCH_COVERED_COLOR = "#22c55e";
 const MAP_OVERLAY_SEARCH_UNCOVERED_COLOR = "#ef4444";
 const MAP_OVERLAY_SEARCHER_COLORS = ["#0ea5e9", "#eab308", "#ec4899", "#14b8a6", "#f97316", "#8b5cf6"];
 const mapOverlayProviders = new Map();
-let mapOverlayLabelMarkers = [];
 let mapOverlayLabelMap = null;
 let mapOverlaySyncedKey = "";
 
@@ -6449,7 +6450,7 @@ function mapOverlayFeatureCollection(overlays) {
                 properties: {role: MAP_OVERLAY_ROLE_AREA, overlay: overlay.id, id: area.id, kind: area.kind, color: style.color, opacity: style.opacity, fillOpacity: style.fillOpacity, dashed: style.dashed},
             });
             const label = area.label || overlay.kind === "los_prediction" ? mapOverlayElementLabel(overlay, area) : "";
-            if (label) labels.push({latLng: mapOverlayAreaLabelPoint(area.polygon), text: label, color: style.color, kind: "area", overlay: overlay.id});
+            if (label) labels.push({latLng: mapOverlayAreaLabelPoint(area.polygon), text: label, color: style.color, kind: "area", role: area.kind, overlay: overlay.id});
         });
         let longest = null;
         overlay.tracks.forEach((track, index) => {
@@ -6463,7 +6464,7 @@ function mapOverlayFeatureCollection(overlays) {
             }
             if (overlay.kind === "search_coverage" && track.label) {
                 const last = track.points[track.points.length - 1];
-                labels.push({latLng: [last[0], last[1]], text: track.label, color: style.color, kind: "track", overlay: overlay.id});
+                labels.push({latLng: [last[0], last[1]], text: track.label, color: style.color, kind: "track", role: "searcher", overlay: overlay.id});
             }
             if (!longest || track.points.length > longest.points.length) longest = track;
         });
@@ -6472,7 +6473,7 @@ function mapOverlayFeatureCollection(overlays) {
         if (longest && overlay.label && overlay.kind !== "search_coverage" && !labelledByMarker) {
             const mid = longest.points[Math.floor(longest.points.length / 2)];
             const color = overlay.kind === "los_prediction" ? MAP_OVERLAY_LOS_COLOR : (MAP_OVERLAY_PHASE_COLORS[longest.phase] || MAP_OVERLAY_PHASE_COLORS.unknown);
-            labels.push({latLng: [mid[0], mid[1]], text: overlay.label, color, kind: "overlay", overlay: overlay.id});
+            labels.push({latLng: [mid[0], mid[1]], text: overlay.label, color, kind: "overlay", role: overlay.kind, overlay: overlay.id});
         }
         overlay.markers.forEach((marker, index) => {
             const style = mapOverlayElementStyle(overlay, "marker", marker, index);
@@ -6482,7 +6483,7 @@ function mapOverlayFeatureCollection(overlays) {
                 properties: {role: MAP_OVERLAY_ROLE_MARKER, overlay: overlay.id, id: marker.id, kind: marker.kind, color: style.color, fill: style.fill, fillOpacity: style.fillOpacity, radius: style.radius, strokeWidth: style.strokeWidth},
             });
             const label = mapOverlayElementLabel(overlay, marker);
-            if (label) labels.push({latLng: [marker.lat_deg, marker.lon_deg], text: label, color: style.fillOpacity > 0 ? style.fill : style.color, kind: "marker", overlay: overlay.id});
+            if (label) labels.push({latLng: [marker.lat_deg, marker.lon_deg], text: label, color: style.fillOpacity > 0 ? style.fill : style.color, kind: "marker", role: marker.kind, overlay: overlay.id, radius: style.radius + style.strokeWidth / 2});
         });
     }
     return {collection: {type: "FeatureCollection", features}, labels};
@@ -6528,11 +6529,127 @@ function mapOverlayLayerSpecs() {
     }];
 }
 
+// ---------------------------------------------------------------------------
+// Label decluttering. Labels are placed in priority order at the first spot
+// around their point that overlaps no placed label and no marker (stations,
+// rocket, overlay points). Pinned labels (last fix, predicted now, landing)
+// are always shown; others are hidden when no spot is free and appear while
+// the pointer is near their point, or for a few seconds after a tap on it.
+// ---------------------------------------------------------------------------
+const MAP_OVERLAY_LABEL_PINNED = 0;
+const MAP_OVERLAY_LABEL_IMPORTANT = 1;
+const MAP_OVERLAY_LABEL_NORMAL = 2;
+const MAP_OVERLAY_LABEL_GAP_PX = 12;
+const MAP_OVERLAY_LABEL_PAD_PX = 2;
+const MAP_OVERLAY_LABEL_REVEAL_PX = 18;
+const MAP_OVERLAY_LABEL_TAP_REVEAL_PX = 26;
+const MAP_OVERLAY_LABEL_TAP_REVEAL_MS = 5000;
+// Station badges are 64 px images drawn at 0.9 (a 56 x 26 rect inside), the rocket a 48 px image at 0.8.
+const MAP_OVERLAY_STATION_HALF_PX = [26, 12];
+const MAP_OVERLAY_ROCKET_HALF_PX = [16, 16];
+let mapOverlayLabelEntries = [];
+let mapOverlayLabelLayoutFrame = null;
+let mapOverlayLabelTapReveal = null;
+let mapOverlayLabelHooksMap = null;
+
+function mapOverlayLabelPriority(label) {
+    const role = label && label.role;
+    if (label && label.kind === "marker") {
+        if (role === "last_fix" || role === "predicted_position" || role === "landing") return MAP_OVERLAY_LABEL_PINNED;
+        if (role === "apogee") return MAP_OVERLAY_LABEL_IMPORTANT;
+        return MAP_OVERLAY_LABEL_NORMAL;
+    }
+    // Searcher names identify people in the field.
+    if (label && label.kind === "track") return MAP_OVERLAY_LABEL_IMPORTANT;
+    return MAP_OVERLAY_LABEL_NORMAL;
+}
+
+/// Top-left offsets (px from the label's point) to try, best first: beside a
+/// point (right, left, the four diagonals, then stacked rows), or above/below
+/// an area's top vertex.
+function mapOverlayLabelCandidates(kind, w, h) {
+    const g = MAP_OVERLAY_LABEL_GAP_PX;
+    const mid = -h / 2;
+    const row = h + 3;
+    if (kind === "area") {
+        return [[-w / 2, -4 - h], [-w / 2, 4], [g, mid], [-g - w, mid], [-w / 2, -4 - h - row], [-w / 2, 4 + row]];
+    }
+    const out = [[g, mid], [-g - w, mid], [8, -h - 6], [8, 6], [-8 - w, -h - 6], [-8 - w, 6]];
+    // One more row up or down; further away a label no longer reads as its point's.
+    out.push([g, mid - 2 * row], [g, mid + 2 * row], [-g - w, mid - 2 * row], [-g - w, mid + 2 * row]);
+    return out;
+}
+
+function mapOverlayBoxOverlap(a, b, pad) {
+    const dx = Math.min(a.x1, b.x1) - Math.max(a.x0, b.x0) + pad;
+    const dy = Math.min(a.y1, b.y1) - Math.max(a.y0, b.y0) + pad;
+    return dx > 0 && dy > 0 ? dx * dy : 0;
+}
+
+/// Places labels. `items`: {x, y, w, h, priority, kind} in screen px (x, y the
+/// labelled point); `obstacles`: boxes {x0, y0, x1, y1} nothing may cover.
+/// Returns, in input order, {dx, dy, visible, crowded}: the label's top-left
+/// offset from its point, whether it is shown, and whether a pinned label had
+/// to overlap something because no spot was free.
+function layoutMapOverlayLabels(items, obstacles) {
+    const list = Array.isArray(items) ? items : [];
+    const placed = (Array.isArray(obstacles) ? obstacles : []).filter(Boolean).map(b => ({x0: b.x0, y0: b.y0, x1: b.x1, y1: b.y1}));
+    const order = list.map((_, i) => i).sort((a, b) => (list[a].priority - list[b].priority) || (a - b));
+    const out = new Array(list.length);
+    for (const i of order) {
+        const item = list[i];
+        const candidates = mapOverlayLabelCandidates(item.kind, item.w, item.h);
+        const boxAt = ([dx, dy]) => ({x0: item.x + dx, y0: item.y + dy, x1: item.x + dx + item.w, y1: item.y + dy + item.h});
+        let chosen = null;
+        let least = null;
+        for (const candidate of candidates) {
+            const box = boxAt(candidate);
+            let overlap = 0;
+            for (const other of placed) overlap += mapOverlayBoxOverlap(box, other, MAP_OVERLAY_LABEL_PAD_PX);
+            if (overlap === 0) { chosen = candidate; break; }
+            if (!least || overlap < least.overlap) least = {candidate, overlap};
+        }
+        if (chosen) {
+            placed.push(boxAt(chosen));
+            out[i] = {dx: chosen[0], dy: chosen[1], visible: true, crowded: false};
+        } else if (item.priority === MAP_OVERLAY_LABEL_PINNED) {
+            placed.push(boxAt(least.candidate));
+            out[i] = {dx: least.candidate[0], dy: least.candidate[1], visible: true, crowded: true};
+        } else {
+            out[i] = {dx: candidates[0][0], dy: candidates[0][1], visible: false, crowded: false};
+        }
+    }
+    return out;
+}
+
+/// Screen boxes of what labels must not cover, from `project(lat, lon)` -> [x, y].
+function mapOverlayLabelObstacles(project, labels) {
+    const out = [];
+    const box = (latLng, [hx, hy]) => {
+        if (!Array.isArray(latLng)) return;
+        const p = project(latLng[0], latLng[1]);
+        if (p && Number.isFinite(p[0]) && Number.isFinite(p[1])) out.push({x0: p[0] - hx, y0: p[1] - hy, x1: p[0] + hx, y1: p[1] + hy});
+    };
+    for (const station of stationMarkers) box(station.latLng, MAP_OVERLAY_STATION_HALF_PX);
+    box(lastRocketLatLng, MAP_OVERLAY_ROCKET_HALF_PX);
+    for (const label of Array.isArray(labels) ? labels : []) {
+        if (label.kind === "marker" && Number.isFinite(label.radius)) box(label.latLng, [label.radius, label.radius]);
+    }
+    return out;
+}
+
+/// A label's size before it has been laid out by the browser (11 px bold, 6 px padding).
+function estimateMapOverlayLabelSize(text) {
+    return [Math.ceil(String(text || "").length * 6.4 + 14), 18];
+}
+
 function createMapOverlayLabelElement(label) {
     const el = document.createElement("div");
     el.className = "gs26-map-overlay-label";
     el.dataset.overlay = label.overlay;
     el.dataset.kind = label.kind;
+    if (label.role) el.dataset.role = label.role;
+    el.dataset.priority = String(mapOverlayLabelPriority(label));
     el.textContent = label.text;
     el.style.cssText = "pointer-events:none;white-space:nowrap;font:700 11px/1.2 system-ui,sans-serif;"
         + "padding:2px 6px;border-radius:6px;background:rgba(15,23,42,0.82);color:#f8fafc;"
@@ -6541,10 +6658,108 @@ function createMapOverlayLabelElement(label) {
 }
 
 function clearMapOverlayLabels() {
-    for (const marker of mapOverlayLabelMarkers) {
-        try { marker.remove(); } catch (e) {}
+    for (const entry of mapOverlayLabelEntries) {
+        try { entry.marker.remove(); } catch (e) {}
     }
-    mapOverlayLabelMarkers = [];
+    mapOverlayLabelEntries = [];
+}
+
+function mapOverlayLabelSize(entry) {
+    if (!entry.size) {
+        const el = entry.el;
+        const w = el && Number(el.offsetWidth);
+        const h = el && Number(el.offsetHeight);
+        // Measured once it is in a visible map; estimated until then.
+        if (w > 0 && h > 0) entry.size = [w, h];
+        else return estimateMapOverlayLabelSize(entry.label.text);
+    }
+    return entry.size;
+}
+
+function groundMapProjector() {
+    return (lat, lon) => {
+        const p = groundMap.project({lat, lng: lon});
+        return [p.x, p.y];
+    };
+}
+
+function applyMapOverlayLabelState(entry) {
+    const el = entry.el;
+    if (!el || !el.style) return;
+    const revealed = entry.hidden && entry.revealed;
+    el.style.visibility = entry.hidden && !revealed ? "hidden" : "visible";
+    el.style.zIndex = revealed ? "4" : (entry.priority === MAP_OVERLAY_LABEL_PINNED ? "3" : "2");
+    if (el.dataset) el.dataset.declutter = entry.hidden ? (revealed ? "revealed" : "hidden") : (entry.crowded ? "crowded" : "placed");
+}
+
+function layoutMapOverlayLabelsNow() {
+    mapOverlayLabelLayoutFrame = null;
+    if (!groundMap || typeof groundMap.project !== "function" || mapOverlayLabelEntries.length === 0) return;
+    const project = groundMapProjector();
+    const items = mapOverlayLabelEntries.map(entry => {
+        const [x, y] = project(entry.label.latLng[0], entry.label.latLng[1]);
+        const [w, h] = mapOverlayLabelSize(entry);
+        entry.point = [x, y];
+        return {x, y, w, h, priority: entry.priority, kind: entry.label.kind};
+    });
+    const layout = layoutMapOverlayLabels(items, mapOverlayLabelObstacles(project, mapOverlayLabelEntries.map(e => e.label)));
+    layout.forEach((place, i) => {
+        const entry = mapOverlayLabelEntries[i];
+        entry.hidden = !place.visible;
+        entry.crowded = place.crowded;
+        if (!entry.hidden) entry.revealed = false;
+        try { if (typeof entry.marker.setOffset === "function") entry.marker.setOffset([Math.round(place.dx), Math.round(place.dy)]); } catch (e) {}
+        applyMapOverlayLabelState(entry);
+    });
+}
+
+function scheduleMapOverlayLabelLayout() {
+    if (mapOverlayLabelLayoutFrame != null || mapOverlayLabelEntries.length === 0) return;
+    mapOverlayLabelLayoutFrame = requestAnimationFrame(safeMapCallback("overlay label layout", layoutMapOverlayLabelsNow));
+}
+
+/// Shows the hidden labels whose point is within `radius` px of `point`; hides the rest again.
+function revealMapOverlayLabelsNear(point, radius) {
+    let changed = 0;
+    for (const entry of mapOverlayLabelEntries) {
+        if (!entry.hidden) continue;
+        const near = !!(point && entry.point && Math.hypot(entry.point[0] - point[0], entry.point[1] - point[1]) <= radius);
+        if (near !== !!entry.revealed) {
+            entry.revealed = near;
+            applyMapOverlayLabelState(entry);
+            changed += 1;
+        }
+    }
+    return changed;
+}
+
+function installMapOverlayLabelHooks() {
+    if (!groundMap || mapOverlayLabelHooksMap === groundMap || typeof groundMap.on !== "function") return;
+    mapOverlayLabelHooksMap = groundMap;
+    // Panning keeps screen distances; zoom, rotation, pitch and size change them.
+    for (const name of ["zoom", "rotate", "pitch", "resize"]) {
+        groundMap.on(name, safeMapCallback(`overlay labels ${name}`, scheduleMapOverlayLabelLayout));
+    }
+    groundMap.on("mousemove", safeMapCallback("overlay labels hover", (event) => {
+        if (mapOverlayLabelTapReveal) return;
+        const p = event && event.point;
+        revealMapOverlayLabelsNear(p ? [p.x, p.y] : null, MAP_OVERLAY_LABEL_REVEAL_PX);
+    }));
+    groundMap.on("mouseout", safeMapCallback("overlay labels hover end", () => {
+        if (!mapOverlayLabelTapReveal) revealMapOverlayLabelsNear(null, 0);
+    }));
+    // A tap (touch has no hover) shows the hidden labels at that point for a few seconds.
+    groundMap.on("click", safeMapCallback("overlay labels tap", (event) => {
+        const p = event && event.point;
+        if (mapOverlayLabelTapReveal) { clearTimeout(mapOverlayLabelTapReveal); mapOverlayLabelTapReveal = null; }
+        revealMapOverlayLabelsNear(p ? [p.x, p.y] : null, MAP_OVERLAY_LABEL_TAP_REVEAL_PX);
+        if (mapOverlayLabelEntries.some(entry => entry.revealed)) {
+            mapOverlayLabelTapReveal = setTimeout(() => {
+                mapOverlayLabelTapReveal = null;
+                revealMapOverlayLabelsNear(null, 0);
+            }, MAP_OVERLAY_LABEL_TAP_REVEAL_MS);
+        }
+    }));
 }
 
 function syncMapOverlaysNow() {
@@ -6564,14 +6779,18 @@ function syncMapOverlaysNow() {
     if (typeof MarkerClass !== "function") return;
     for (const label of labels) {
         try {
-            // Beside the point (areas: above their top edge), never on the marker.
-            const area = label.kind === "area";
-            const marker = new MarkerClass({element: createMapOverlayLabelElement(label), anchor: area ? "bottom" : "left", offset: area ? [0, -4] : [12, 0]})
+            const el = createMapOverlayLabelElement(label);
+            // Beside the point (areas: above their top edge) until the layout places it.
+            const [w, h] = estimateMapOverlayLabelSize(label.text);
+            const first = mapOverlayLabelCandidates(label.kind, w, h)[0];
+            const marker = new MarkerClass({element: el, anchor: "top-left", offset: [Math.round(first[0]), Math.round(first[1])]})
                 .setLngLat([label.latLng[1], label.latLng[0]])
                 .addTo(groundMap);
-            mapOverlayLabelMarkers.push(marker);
+            mapOverlayLabelEntries.push({marker, el, label, priority: mapOverlayLabelPriority(label), hidden: false, revealed: false, crowded: false, size: null, point: null});
         } catch (e) {}
     }
+    installMapOverlayLabelHooks();
+    scheduleMapOverlayLabelLayout();
 }
 
 function publishMapOverlays() {
@@ -6639,22 +6858,31 @@ function rasterFallbackOverlaySvg(project, width, height) {
         if (p.dashed) el.setAttribute("stroke-dasharray", "8 6");
         svg.appendChild(el);
     }
-    for (const label of labels) {
+    const items = labels.map(label => {
         const [x, y] = project(label.latLng[0], label.latLng[1]);
+        const [w, h] = estimateMapOverlayLabelSize(label.text);
+        return {x, y, w, h, priority: mapOverlayLabelPriority(label), kind: label.kind};
+    });
+    // The static fallback has no hover: hidden labels are left out.
+    const layout = layoutMapOverlayLabels(items, mapOverlayLabelObstacles(project, labels));
+    labels.forEach((label, i) => {
+        const place = layout[i];
+        if (!place.visible) return;
+        const item = items[i];
         const text = document.createElementNS(ns, "text");
-        const area = label.kind === "area";
-        text.setAttribute("x", (area ? x : x + 12).toFixed(1));
-        text.setAttribute("y", (area ? y - 6 : y + 4).toFixed(1));
-        text.setAttribute("text-anchor", area ? "middle" : "start");
+        text.setAttribute("x", (item.x + place.dx + 6).toFixed(1));
+        text.setAttribute("y", (item.y + place.dy + item.h - 5).toFixed(1));
+        text.setAttribute("text-anchor", "start");
         text.setAttribute("fill", "#f8fafc");
         text.setAttribute("stroke", "#0f172a");
         text.setAttribute("stroke-width", "3");
         text.setAttribute("paint-order", "stroke");
         text.setAttribute("font-size", "11");
         text.setAttribute("font-weight", "700");
+        text.setAttribute("data-priority", String(item.priority));
         text.textContent = label.text;
         svg.appendChild(text);
-    }
+    });
     return svg;
 }
 

@@ -58,7 +58,7 @@ async function tileRoute(route){
 function mapPage(withLos){
  return page_html(`<div id="map-card"><h2>Map</h2>${withLos?fragment('los-card.html'):fragment('plan-legend.html')}<div id="ground-map"></div></div>`);
 }
-async function mapScene(name,withLos){
+async function mapScene(name,withLos,zoom=null){
  const page=await browser.newPage({viewport:{width:1280,height:860}});
  const errors=[];page.on('pageerror',e=>errors.push(String(e)));if(process.env.GS_DEBUG)page.on('console',m=>console.log('console:',m.text().slice(0,300)));
  await page.route('http://station.test/**',tileRoute);
@@ -66,26 +66,28 @@ async function mapScene(name,withLos){
  await page.addScriptTag({path:path.join(ui,'static/vendor/maplibre-gl/maplibre-gl.js')});
  await page.addScriptTag({path:path.join(ui,'static/ground_map.js')});
  const center=withLos?los.predicted_now:plan.landing;
- await page.evaluate(({center,plan,los,withLos})=>{
+ await page.evaluate(({center,plan,los,withLos,zoom})=>{
   window.__gs26_tile_cache_enabled=false;window.__gs26_tile_cache_disabled=true;
-  window.initGroundMap('http://station.test/tiles/{z}/{x}/{y}.png',center.lat_deg,center.lon_deg,withLos?14.6:13.6,18,'Rocket');
+  window.initGroundMap('http://station.test/tiles/{z}/{x}/{y}.png',center.lat_deg,center.lon_deg,zoom??(withLos?14.6:13.6),18,'Rocket');
   // The real track ends at the last fix; the viewer stands south-west of the pad.
   const fix=withLos?los.last_fix:plan.points[60];
   window.updateGroundMapMarkers(fix.lat_deg,fix.lon_deg,31.7515,-102.049);
   window.setGroundMapStations([{role:'gs',lat:31.7535,lon:-102.0505,live:true},{role:'rrls',lat:31.7552,lon:-102.0418,live:false}]);
   if(withLos)window.setGroundMapOverlays('los',[los.overlay]);
   window.setGroundMapOverlays('flight_plan',[plan.overlay]);
- },{center,plan,los,withLos});
+ },{center,plan,los,withLos,zoom});
  await page.waitForFunction(()=>{const m=window.__gs26_ground_map;const s=m?.getSource?.('gs26-map-overlays-source');return !!(s&&m.loaded&&m.isStyleLoaded());},null,{timeout:20000}).catch(()=>{});
  await page.waitForTimeout(2500);
  const result=await page.evaluate(()=>{
   const m=window.__gs26_ground_map;
   if(!m)return {error:window.__gs26_map_runtime_error||'no map',trace:JSON.stringify(window.__gs26_map_init_trace||null).slice(0,800),fallback:!!document.querySelector('#ground-map img')};
   const features=m.querySourceFeatures('gs26-map-overlays-source');
+  const placed=[...document.querySelectorAll('.gs26-map-overlay-label')].map(e=>{const r=e.getBoundingClientRect();return {text:e.textContent,state:e.dataset.declutter,visible:getComputedStyle(e).visibility==='visible',box:[r.left,r.top,r.right,r.bottom]};});
   return {overlays:(window.__gs26_map_overlays||[]).map(o=>o.kind),features:features.length,
-   labels:[...document.querySelectorAll('.gs26-map-overlay-label')].map(e=>e.textContent),
+   labels:placed.map(l=>l.text),placed,
    layers:m.getStyle().layers.map(l=>l.id)};
  });
+ const overlap=(a,b)=>a[0]<b[2]&&b[0]<a[2]&&a[1]<b[3]&&b[1]<a[3];
  try{
   assert.deepEqual(errors,[]);
   assert.deepEqual(result.overlays,withLos?['los_prediction','flight_plan']:['flight_plan']);
@@ -97,13 +99,38 @@ async function mapScene(name,withLos){
    assert.ok(result.labels.some(l=>/^Last fix/.test(l)));
    if(fragment('los-card.html'))assert.ok(await page.locator('[data-los-state="predicting"]').isVisible());
   }
-  console.log('PASS',name,JSON.stringify({features:result.features,labels:result.labels.length}));
- }catch(e){failures++;console.error('FAIL',name,e.message,JSON.stringify(result));}
- if(artifacts){fs.mkdirSync(artifacts,{recursive:true});await page.screenshot({path:path.join(artifacts,name+'.png')});}
+  // Decluttered: every label laid out, no two shown labels overlap, the pinned ones shown.
+  assert.ok(result.placed.every(l=>['placed','crowded','hidden'].includes(l.state)),JSON.stringify(result.placed.map(l=>l.state)));
+  const shown=result.placed.filter(l=>l.visible);
+  for(let i=0;i<shown.length;i++)for(let j=i+1;j<shown.length;j++)assert.ok(!overlap(shown[i].box,shown[j].box),`"${shown[i].text}" overlaps "${shown[j].text}"`);
+  for(const re of withLos?[/^Last fix/,/no signal: now$/,/no signal: landing$/,/^Predicted landing$/]:[/^Predicted landing$/,/3766 m AGL/])assert.ok(shown.some(l=>re.test(l.text)),`${re} shown`);
+  if(artifacts){fs.mkdirSync(artifacts,{recursive:true});await page.screenshot({path:path.join(artifacts,name+'.png')});}
+  // Hidden labels appear while the pointer is on their point, and after a tap.
+  const hidden=await page.evaluate(()=>{const r=document.getElementById('ground-map').getBoundingClientRect();
+   return mapOverlayLabelEntries.filter(e=>e.hidden&&e.point).map(e=>({text:e.label.text,x:r.left+e.point[0],y:r.top+e.point[1]}));});
+  // Zoomed out, the prediction labels crowd and the lower-priority ones fold away.
+  if(zoom!==null)assert.ok(hidden.length>0,'some labels are hidden when crowded');
+  if(hidden.length){
+   const target=hidden[0];
+   const state=()=>page.evaluate(t=>[...document.querySelectorAll('.gs26-map-overlay-label')].find(e=>e.textContent===t)?.dataset.declutter,target.text);
+   await page.mouse.move(target.x+2,target.y+1);await page.waitForTimeout(150);
+   assert.equal(await state(),'revealed','hover reveals '+target.text);
+   if(artifacts)await page.screenshot({path:path.join(artifacts,name+'-hover.png')});
+   await page.mouse.move(5,5);await page.waitForTimeout(150);
+   assert.equal(await state(),'hidden','leaving hides it again');
+   await page.mouse.click(target.x,target.y);await page.waitForTimeout(150);
+   assert.equal(await state(),'revealed','a tap reveals it');
+   await page.mouse.click(60,800);await page.waitForTimeout(150);
+   assert.equal(await state(),'hidden','a tap elsewhere hides it');
+  }
+  console.log('PASS',name,JSON.stringify({features:result.features,labels:result.labels.length,shown:shown.length,hidden:hidden.length}));
+ }catch(e){failures++;console.error('FAIL',name,e.message,JSON.stringify(result));
+  if(artifacts){fs.mkdirSync(artifacts,{recursive:true});await page.screenshot({path:path.join(artifacts,name+'.png')});}}
  await page.close();
 }
 await mapScene('map-tab-los-prediction',true);
 await mapScene('map-flight-plan-overlay',false);
+await mapScene('map-tab-los-prediction-zoomed-out',true,13.4);
 
 const sim=fragment('flight-sim.html');
 if(sim){

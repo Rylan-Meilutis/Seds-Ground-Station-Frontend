@@ -646,6 +646,14 @@ uncovered `#ef4444` 25 %, searcher tracks `#0ea5e9 #eab308 #ec4899 #14b8a6
   `search`; `[]` clears one). The merged list is
   `window.__gs26_map_overlays`, announced by the `gs26-map-overlays` window
   event. The 3D replay element takes the same array in `data-overlays`.
+- On the 2D map, labels never cover each other or the station, rocket and
+  overlay points: each takes the first free spot beside its point (right,
+  left, diagonals, one row up or down; areas above or below their top
+  vertex). `last_fix`, `predicted_position` and `landing` labels are always
+  shown; the others (apogee and searcher names first, then events, areas and
+  the overlay's own label) are hidden when no spot is free and appear while
+  the pointer is near their point or for 5 s after a tap on it. Zoom,
+  rotation and resizing lay them out again.
 
 `PlanRequest` (`POST /api/flight_plans/run`; every field optional,
 `defaults` shows them filled in):
