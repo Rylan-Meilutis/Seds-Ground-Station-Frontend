@@ -2623,6 +2623,43 @@ def _patch_generated_android_sources(project_dir: Path) -> None:
         raw = raw.replace("        settings.databaseEnabled = true\n", "")
         raw = _allow_station_media_frames(raw)
         rust_webview.write_text(raw, encoding="utf-8")
+    main_activity = rust_webview.with_name("MainActivity.kt")
+    if main_activity.exists():
+        raw = main_activity.read_text(encoding="utf-8")
+        main_activity.write_text(_forward_opened_files(raw), encoding="utf-8")
+
+
+ANDROID_MAIN_ACTIVITY_DECLARATION = "class MainActivity : WryActivity()\n"
+ANDROID_MAIN_ACTIVITY_OPENED_FILES = """class MainActivity : WryActivity() {
+    // Replay files opened from other apps (OpenedFileBridge, src/opened_file.rs).
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        if (savedInstanceState == null) {
+            com.ubseds.gs26.OpenedFileBridge.accept(this, intent)
+        }
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        com.ubseds.gs26.OpenedFileBridge.accept(this, intent)
+    }
+}
+"""
+
+
+def _forward_opened_files(raw: str) -> str:
+    """Hand ACTION_VIEW / ACTION_SEND intents to OpenedFileBridge.
+
+    dx generates `class MainActivity : WryActivity()` with no body; the
+    activity is singleTask (platform/android/AndroidManifest.xml), so a file
+    opened while the app runs arrives through onNewIntent.
+    """
+    if "OpenedFileBridge.accept" in raw:
+        return raw
+    if ANDROID_MAIN_ACTIVITY_DECLARATION not in raw:
+        raise RuntimeError("MainActivity.kt no longer has the generated declaration to extend")
+    return raw.replace(ANDROID_MAIN_ACTIVITY_DECLARATION, ANDROID_MAIN_ACTIVITY_OPENED_FILES, 1)
 
 
 ANDROID_MIXED_CONTENT_LINE = "        settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW\n"
