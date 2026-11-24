@@ -54,6 +54,8 @@ pub(crate) const COVERED: &[&str] = &[
     "flight-state/get-fill",
     "network-diagnostics/radio-tx-budget",
     "radio/modem",
+    // Opened with no station in offline_preview/tests.rs and local_station/tests.rs.
+    "replay-export/flight",
     "requests/gse-self-test-confirmation",
     "rrls/status",
     "rrls/status-relaying",
