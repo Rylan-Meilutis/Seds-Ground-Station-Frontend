@@ -46,6 +46,7 @@ static CHART_DRAW_FLUSH_SCHEDULED: AtomicBool = AtomicBool::new(false);
 /// The page was replaced (the webview reloaded its document): the canvas
 /// renderer must be installed into the new page, and draws queued for the old
 /// page's canvases, with their flush task, went with the old virtual dom.
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn reset_for_new_document() {
     CHART_CANVAS_RENDERER_INSTALLED.store(false, Ordering::SeqCst);
     if let Some(queue) = CHART_DRAW_QUEUE.get()

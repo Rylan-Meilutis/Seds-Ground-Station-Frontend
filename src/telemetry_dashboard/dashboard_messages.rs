@@ -614,6 +614,7 @@ impl BoardAbortSnapshot {
             _ => None,
         }
     }
+    #[cfg(test)]
     fn active_error_count(&self) -> usize {
         self.active_error_count_visible(&Default::default())
     }

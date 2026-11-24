@@ -734,7 +734,7 @@ mod tests {
     }
 
     fn store_fixture_base() -> serde_json::Value {
-        (serde_json::json!({
+        serde_json::json!({
             "always_on": true,
             "ring": {"enabled": true, "segments": 3, "bytes": 200u64 * 1024 * 1024, "budget_bytes": 51200u64 * 1024 * 1024, "effective_budget_bytes": 9000u64 * 1024 * 1024,
                      "segment_bytes": 64u64 * 1024 * 1024, "oldest_ms": 1_800_000_000_000i64, "newest_ms": 1_800_003_600_000i64,
@@ -755,7 +755,7 @@ mod tests {
             "is_admin": true,
             "board_sd_fetch": [{"capture": "recordings/events/launch/x", "launch_file": "DAQ_LAUNCH_0007.CSV", "from_ms": 1, "to_ms": 2,
                                 "source": "DAQ_1_000.CSV", "fetched": 2048, "phase": "fetching", "message": "2048 of about 6600000 bytes", "done": false}]
-        }))
+        })
     }
 
     #[test]

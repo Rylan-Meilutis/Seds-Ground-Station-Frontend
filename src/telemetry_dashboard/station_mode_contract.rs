@@ -191,6 +191,7 @@ impl Snapshot {
     pub fn option(&self, id: &str) -> Option<&OptionEntry> {
         self.options.iter().find(|o| o.id == id)
     }
+    #[cfg(test)]
     pub fn pair(&self, mode_id: &str, simulation: bool) -> Option<&OptionEntry> {
         self.target(mode_id, simulation, false)
     }

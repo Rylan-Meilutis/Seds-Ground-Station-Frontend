@@ -3,7 +3,6 @@
 //! `board_recovery::coordinator::station_recover`). The station decides; the
 //! button shows its reason and asks for a confirmation that says plainly that
 //! no board is reset.
-use super::ActionPolicyMsg;
 use dioxus::prelude::*;
 use serde::Deserialize;
 
@@ -22,7 +21,8 @@ pub struct StationRecoveryPolicy {
 }
 
 /// Listed only while the station reports its own Abort latch set.
-pub(super) fn listed(policy: &ActionPolicyMsg) -> bool {
+#[cfg(test)]
+pub(super) fn listed(policy: &super::ActionPolicyMsg) -> bool {
     policy.station_recovery.is_some()
 }
 
@@ -129,6 +129,7 @@ pub(super) fn RecoverStationControl(view: StationRecoveryPolicy) -> Element {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::telemetry_dashboard::ActionPolicyMsg;
 
     fn policy(value: serde_json::Value) -> ActionPolicyMsg {
         let mut base = serde_json::json!({"key_enabled":true,"software_buttons_enabled":true,"controls":[]});

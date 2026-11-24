@@ -37,6 +37,7 @@ pub(crate) static OWN: GlobalSignal<OwnView> = Signal::global(OwnView::default);
 static FOREGROUND_FIX: Mutex<Option<OwnFix>> = Mutex::new(None);
 static FOREGROUND_PERMISSION: Mutex<Permission> = Mutex::new(Permission::NotDetermined);
 
+#[cfg(not(target_os = "android"))]
 fn set_foreground(fix: Option<OwnFix>, permission: Permission) {
     if let Ok(mut slot) = FOREGROUND_PERMISSION.lock() {
         *slot = permission;
