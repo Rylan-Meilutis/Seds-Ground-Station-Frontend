@@ -55,6 +55,19 @@ struct RootView: View {
             link.setForeground(scenePhase == .active)
             updateLocation()
         }
+        // Recovery search: every fix, also with the wrist down while sharing.
+        // Background updates end as soon as this watch no longer records
+        // (the user stopped, or the phone reports the search ended).
+        .onAppear {
+            location.onFix = { [weak search, weak link, weak location] fix in
+                guard let search, let link, let location else { return }
+                guard search.recording(link) else {
+                    if location.background { location.stop() }
+                    return
+                }
+                search.record(fix, link: link)
+            }
+        }
         .onChange(of: selection, initial: true) {
             link.setPage(pageName(selection))
             updateLocation()
@@ -81,11 +94,18 @@ struct RootView: View {
     }
 
     /// Location and heading run only while the compass page is on screen,
-    /// or while this watch shares its recovery search track.
+    /// or while this watch shares its recovery search track. Sharing keeps
+    /// location running with the wrist down (background location updates,
+    /// started here while the app is in front); nothing else does.
     private func updateLocation() {
         let page = link.pages.first { $0.id == selection }
-        if scenePhase == .active, page?.pageKind == .compass || search.recording(link) {
-            location.start(recovery: link.settings?.power == .recovery)
+        let recovery = link.settings?.power == .recovery
+        if search.recording(link) {
+            if scenePhase == .active || location.background {
+                location.start(recovery: recovery, background: true)
+            }
+        } else if scenePhase == .active, page?.pageKind == .compass {
+            location.start(recovery: recovery)
         } else {
             location.stop()
         }

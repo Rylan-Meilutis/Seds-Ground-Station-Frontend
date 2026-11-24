@@ -52,6 +52,7 @@ import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import com.ubseds.gs26.wear.MainActivity
 import com.ubseds.gs26.wear.PhoneLink
+import com.ubseds.gs26.wear.SearchTrackService
 import com.ubseds.gs26.wear.WatchLocationEffect
 import com.ubseds.gs26.wear.hasLocationPermission
 import com.ubseds.gs26.wear.core.SearchInfo
@@ -93,12 +94,24 @@ fun WatchApp(link: PhoneLink) {
     // Recovery search: location runs while this watch shares its track.
     val search by link.search.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val searchRecording = search.recording(state.snapshot?.search)
+    val searchPermitted = hasLocationPermission(context)
     WatchLocationEffect(
-        active = search.recording(state.snapshot?.search),
+        active = searchRecording,
         recovery = true,
-        permitted = hasLocationPermission(context),
+        permitted = searchPermitted,
         holder = watchFix,
     )
+    // Keep recording with the wrist down or another app in front: a location
+    // foreground service, started from here (the app in front) only while
+    // this watch records; it also stops itself when recording ends.
+    LaunchedEffect(searchRecording, searchPermitted) {
+        if (searchRecording && searchPermitted) {
+            SearchTrackService.start(context)
+        } else if (!searchRecording) {
+            SearchTrackService.stop(context)
+        }
+    }
     LaunchedEffect(link) {
         while (true) {
             link.searchTick(watchFix.value)
@@ -308,6 +321,7 @@ private fun SearchSection(link: PhoneLink, info: SearchInfo?, search: SearchReco
         when {
             search.recording(info) -> {
                 Text("● SHARING TRACK", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AlertRed)
+                Text("Keeps recording in the background until you stop or the search ends.", fontSize = 10.sp, color = Dim, textAlign = TextAlign.Center)
                 Chip(onClick = { link.shareSearch(false) }, label = { Text("Stop sharing") }, colors = ChipDefaults.secondaryChipColors())
             }
             search.wantsToShare -> {

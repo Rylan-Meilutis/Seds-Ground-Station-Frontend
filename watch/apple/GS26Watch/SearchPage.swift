@@ -38,6 +38,24 @@ final class SearchModel: ObservableObject {
         save(next)
     }
 
+    private var lastRelay = Date.distantPast
+
+    /// One fix as Core Location delivers it, also with the wrist down while
+    /// sharing (the 2 s tick does not run then): the same recorder and
+    /// buffer as `tick`; the buffer goes to the phone at most every 10 s.
+    func record(_ fix: CLLocation, link: PhoneLink) {
+        var next = recorder
+        let info = link.phoneSnapshot?.search
+        next.apply(info)
+        next.record(lat: fix.coordinate.latitude, lon: fix.coordinate.longitude,
+                    accuracyM: fix.horizontalAccuracy, tMs: currentTimeMs(fix.timestamp), info: info)
+        if Date().timeIntervalSince(lastRelay) >= 10, let message = next.nextMessage() {
+            lastRelay = Date()
+            link.sendSearch(message)
+        }
+        save(next)
+    }
+
     func share(_ on: Bool, link: PhoneLink) {
         var next = recorder
         if on {
@@ -72,7 +90,7 @@ struct SearchPage: View {
                 }
                 if search.recording(link) {
                     Banner(text: "● SHARING TRACK", color: .red)
-                    Text("This watch sends its position to the station through your phone while the search is on.")
+                    Text("This watch sends its position to the station through your phone while the search is on. It keeps recording with the wrist down until you stop sharing or the search ends.")
                         .font(.footnote)
                     Button("Stop sharing", role: .destructive) { search.share(false, link: link) }
                 } else if search.recorder.wantsToShare {

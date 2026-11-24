@@ -3,7 +3,8 @@ import Foundation
 import WatchCore
 
 /// Watch position and heading, running only while the compass page is
-/// visible and the app is active.
+/// visible and the app is active, or while this watch shares its recovery
+/// search track (then also in the background: `start(recovery:background:)`).
 final class LocationService: NSObject, ObservableObject, CLLocationManagerDelegate {
     @Published private(set) var location: CLLocation? = nil
     /// Degrees from true north (see `didUpdateHeading`).
@@ -17,6 +18,10 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     // Created on the main thread, so delegate callbacks arrive on main.
     private let manager: CLLocationManager
     private var running = false
+    /// Recording a shared search track: updates continue with the wrist down.
+    private(set) var background = false
+    /// Every fix as it arrives (also in the background): the search recorder.
+    var onFix: ((CLLocation) -> Void)?
 
     override init() {
         let manager = CLLocationManager()
@@ -37,11 +42,19 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
 
     var denied: Bool { authorization == .denied || authorization == .restricted }
 
-    func start(recovery: Bool) {
-        manager.desiredAccuracy = recovery ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
-        manager.distanceFilter = recovery ? 2 : 5
+    /// `background`: keep updating with the wrist down (UIBackgroundModes
+    /// "location"). Only for a shared recovery search track, started from
+    /// the app in front; "When In Use" is enough, "Always" is never asked.
+    func start(recovery: Bool, background: Bool = false) {
+        manager.desiredAccuracy = recovery || background ? kCLLocationAccuracyBest : kCLLocationAccuracyNearestTenMeters
+        manager.distanceFilter = recovery || background ? 2 : 5
         if manager.authorizationStatus == .notDetermined {
             manager.requestWhenInUseAuthorization()
+        }
+        if background != self.background {
+            self.background = background
+            manager.allowsBackgroundLocationUpdates = background
+            if background { manager.activityType = .fitness }
         }
         guard !running else { return }
         running = true
@@ -53,6 +66,10 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     }
 
     func stop() {
+        if background {
+            background = false
+            manager.allowsBackgroundLocationUpdates = false
+        }
         guard running else { return }
         running = false
         manager.stopUpdatingLocation()
@@ -62,6 +79,9 @@ final class LocationService: NSObject, ObservableObject, CLLocationManagerDelega
     // MARK: CLLocationManagerDelegate
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        for fix in locations where fix.horizontalAccuracy >= 0 {
+            onFix?(fix)
+        }
         guard let last = locations.last, last.horizontalAccuracy >= 0 else { return }
         location = last
     }

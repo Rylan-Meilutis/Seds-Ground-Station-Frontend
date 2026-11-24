@@ -65,7 +65,11 @@ class PhoneLink private constructor(context: Context) :
     val search: StateFlow<SearchRecorder> = _search.asStateFlow()
     private var lastShareSentMs = 0L
 
-    /** Every 2 s while the app runs: follow the phone, record a fix, send the buffer. */
+    /**
+     * Every 2 s while the app runs, and on every fix from [SearchTrackService]
+     * while sharing in the background: follow the phone, record a fix, send
+     * the buffer.
+     */
     fun searchTick(fix: Location?) {
         val info = _state.value.snapshot?.search
         var next = _search.value.apply(info)
@@ -90,6 +94,9 @@ class PhoneLink private constructor(context: Context) :
         lastShareSentMs = System.currentTimeMillis()
         send(Search.shareMessage(on))
     }
+
+    /** Whether this watch records its search track now (its user's opt-in, the station's search and acceptance). */
+    fun searchRecording(): Boolean = _search.value.recording(_state.value.snapshot?.search)
 
     private fun saveSearch(next: SearchRecorder) {
         if (next == _search.value) return
@@ -152,9 +159,16 @@ class PhoneLink private constructor(context: Context) :
         }
     }
 
+    /** Users of the Data Layer listeners: the activity while started, [SearchTrackService] while it runs. */
+    private var users = 0
+
+    @Synchronized
     fun start() {
-        dataClient.addListener(this)
-        capabilityClient.addListener(this, Protocol.PHONE_CAPABILITY)
+        users += 1
+        if (users == 1) {
+            dataClient.addListener(this)
+            capabilityClient.addListener(this, Protocol.PHONE_CAPABILITY)
+        }
         scope.launch { readCurrentSnapshot() }
         scope.launch { readDirectProvision() }
         scope.launch { readMapItems() }
@@ -162,9 +176,14 @@ class PhoneLink private constructor(context: Context) :
         send(Protocol.helloMessage())
     }
 
+    @Synchronized
     fun stop() {
-        dataClient.removeListener(this)
-        capabilityClient.removeListener(this, Protocol.PHONE_CAPABILITY)
+        if (users == 0) return
+        users -= 1
+        if (users == 0) {
+            dataClient.removeListener(this)
+            capabilityClient.removeListener(this, Protocol.PHONE_CAPABILITY)
+        }
     }
 
     override fun onCapabilityChanged(info: CapabilityInfo) {
