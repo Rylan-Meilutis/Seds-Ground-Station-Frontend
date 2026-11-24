@@ -1016,6 +1016,8 @@ pub(super) fn ReplayFileExport(recording: String) -> Element {
                     let export_visual_config=file["view_config"].is_null()||file["layout"].is_null();
                     if file["view_config"].is_null(){file["view_config"]=super::recording_download::saved_json::<serde_json::Value>("/api/vehicle_visualization",owner.clone()).await?;}
                     if file["layout"].is_null(){file["layout"]=super::recording_download::saved_json::<serde_json::Value>("/api/layout",owner.clone()).await?;}
+                    // Optional, so the file names its boards when opened with no station.
+                    if file["boards"].is_null() && let Ok(boards)=super::recording_download::saved_json::<serde_json::Value>("/api/boards",owner.clone()).await {file["boards"]=boards["boards"].clone();}
                     file["mode"]=if file["layout"]["test_fire_mode"].as_bool()==Some(true){"test_fire"}else{"flight"}.into();
                     if file["valve_mappings"].is_null(){file["valve_mappings"]=saved_valve_mappings(&file["layout"]);}
                     // The station's vehicle as drawn now (the offline player validates it; absent draws the generic rocket).
