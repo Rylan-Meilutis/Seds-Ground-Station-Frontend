@@ -37,6 +37,11 @@ try {
  await open('Data Export',['Demo flight (this scenario)']);
  await open('3D replay');
  await open('Map');
+ // Firmware: read-only, the recorded builds and health; flashing needs a station.
+ await open('Firmware Update',['Flashing needs a station','Build demo-1.0','76 health reports']);
+ // Live-only panels say so in one sentence instead of an HTTP error.
+ await open('Mission Live',['Live cameras need a Ground Station.']);
+ assert(!/Export request failed|HTTP 404/.test(await page.locator('.gs26-local-dashboard').innerText()),'no HTTP errors on live-only panels');
  // The clock runs: playback moves the station on by itself.
  const before=await page.getByTestId('preview-state').innerText();
  await page.getByLabel('Speed').selectOption('50');
@@ -52,6 +57,9 @@ try {
  await page.getByLabel('Open replay file').setInputFiles(fixture('replay-bundle/flight.gsreplay'));
  await page.getByText('Offline replay — flight.gsreplay',{exact:true}).waitFor();
  await open('Dashboard');await open('Data');await open('Live diagrams');await open('Map');await open('3D replay');
+ await open('Firmware Update',['Board firmware does not report its build','Flight Computer (FC)']);
+ await open('Motor & flight');
+ assert(!/Export request failed|Not available offline/.test(await page.locator('.gs26-local-dashboard').innerText()),'the recorded review, not an error');
  // Abort is answered by the replay station: read-only, nothing sent.
  await page.getByRole('button',{name:'ABORT'}).first().click();
  const confirm=page.getByRole('dialog').getByRole('button',{name:/abort/i});
@@ -74,5 +82,5 @@ try {
  assert.equal(await page.evaluate(()=>JSON.stringify({...localStorage})),stored,'demo and replays do not change stored preferences');
  assert.deepEqual(requests,[],'no network requests');assert.deepEqual(ws.filter(u=>new URL(u).pathname!=='/_dioxus'),[],'no WebSocket');
  assert.deepEqual(errors,[]);
- console.log('PASS: demo and replay files run the live dashboard tabs on a local station (dashboard, data, diagrams, connection, checklists, exports, 3D replay, map, actions), the clock runs, commands are acknowledged locally, the bundle CSV export equals the station CSV, two widths, zero network, unchanged storage');
+ console.log('PASS: demo and replay files run the live dashboard tabs on a local station (dashboard, data, diagrams, connection, checklists, exports, 3D replay, map, actions, firmware, motor & flight), the clock runs, commands are acknowledged locally, the bundle CSV export equals the station CSV, two widths, zero network, unchanged storage');
 } catch(e) {if(shots)await (await browser.contexts()[0].pages())[0].screenshot({path:`${shots}/failure.png`}).catch(()=>{});throw e;} finally {await browser.close();}

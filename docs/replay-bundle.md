@@ -94,6 +94,9 @@ keys sorted (`serde_json` order), not necessarily the route's bytes;
 | `derived/overlays.json` | no | `GET /api/recordings/{id}/replay/overlays` | thrust overlay |
 | `derived/sd_sources.json` | no | `GET /api/recordings/{id}/sd/sources` (first page) | SD import list |
 | `derived/recordings.json` | no | `GET /api/recordings`, only this recording's entry (`active: false`) | recording pickers |
+| `derived/firmware.json` | no | `GET /api/recordings/{id}/firmware` | Firmware tab of a replay: boards heard, their recorded `BOARD_HEALTH` (uptime, resets, die temperature, faults) and the firmware build where the recording names it (firmware-simulation captures); hardware boards do not report their build, and `identity_note` says so |
+| `config/station/fill_targets.json`, `flight_setup.json`, `auto_zero.json`, `kg50_input.json`, `gse_config.json`, `launch_site.json`, `safety_about.json` | no | `GET /api/fill_targets`, `/api/flight_setup`, `/api/auto_zero`, `/api/calibration/kg50_input`, `/api/gse/config`, `/api/fc/launch-site`, `/api/safety/about` (station settings at export) | Settings → Ground Station of a replay, read-only (writes answer "Replay is read-only") |
+| `config/station/i18n_catalog_en.json` | no | `GET /api/i18n/catalog?lang=en` | the station's English wording overrides |
 | `derived/burn_reports/{id}.json` | no | `GET /api/burn_reports/{id}` for each related report | burn report detail |
 | `derived/fire_archive/{id}/thrust.json` | no | `GET /api/fire_archive/{id}/thrust` for each related fire | thrust curve |
 | `derived/alerts.json` | no | `GET /api/recordings/{id}/replay/alerts` | warnings list |

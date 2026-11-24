@@ -560,6 +560,9 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
 | GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import; offline from a bundle (every page) | view_data | M |
 | GET | `/api/recordings/{id}/sd/sources/{sha256}` | file | SD recording import; offline from a bundle made with `sd_files` | view_data | M |
+| GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import | view_data | M |
+| GET | `/api/recordings/{id}/firmware` | → `{recording, provenance, station, firmware_simulator, sedsnet, identity_note, boards[{sender_id, board_label, rows, first_ms, last_ms, firmware, firmware_source, health{reports, undecoded_reports, first_ms, last_ms, first_uptime_s, last_uptime_s, resets_observed, watchdog_missing_mask, last}}], updates[]}` (GroundStation26 `docs/backend/replay-bundle.md`, "Recorded firmware and board health") | Firmware tab offline (bundle `derived/firmware.json`) | view_data | K (the tab says no record) |
+| GET | `/api/recordings/{id}/sd/sources/{sha256}` | file | SD recording import | view_data | M |
 | POST | `/api/recordings/{id}/sd/imports` | `{manifest, filename}` → `{upload_id}` (`station_ui/sd-recording-upload.js`) | SD recording import | send_commands | M |
 | PUT | `/api/recordings/{id}/sd/imports/{token}` | CSV body | same | send_commands | M |
 | DELETE | `/api/recordings/{id}/sd/imports/{token}` | none (abort) | same | send_commands | M |
@@ -1615,6 +1618,7 @@ section 5. WebSocket upgrades are listed as `GET`.
 5.11 Firmware update
 
 - `GET /api/firmware/targets`
+- `GET /api/recordings/{id}/firmware`
 - `POST /api/firmware/flash/{board}`
 - `GET /api/firmware/updates/{id}`
 - `POST /api/firmware/updates/{id}/cancel`
