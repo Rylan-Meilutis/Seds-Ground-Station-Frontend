@@ -134,3 +134,18 @@ test('the map source receives the merged overlays and labels become markers',()=
  vm.runInContext('setGroundMapOverlays("flight_plan",[plan.overlay])',c);
  assert.equal(data.length,1,'an unchanged list is not redrawn');
 });
+
+test('the backend fixtures (plan overlay, simulated LOS overlay) normalise without losing elements',()=>{
+ const real=name=>JSON.parse(fs.readFileSync(path.join(__dirname,'fixtures/backend-contract',name),'utf8'));
+ const c=runtime();c.plan=real('flight-plans/plan.json');c.sim=real('los-prediction/simulate.json');
+ const [p,l]=JSON.parse(JSON.stringify(vm.runInContext('normalizeMapOverlays([plan.overlay,sim.overlay])',c)));
+ const count=o=>o.tracks.reduce((n,t)=>n+t.points.length,0);
+ assert.equal(p.tracks.length,c.plan.overlay.tracks.length);
+ assert.equal(count(p),c.plan.overlay.tracks.reduce((n,t)=>n+t.points.length,0));
+ assert.equal(p.markers.length,c.plan.overlay.markers.length);
+ assert.equal(p.areas.length,c.plan.overlay.areas.length);
+ assert.equal(l.kind,'los_prediction');
+ assert.deepEqual(l.markers.map(m=>m.kind),['last_fix','predicted_position','landing']);
+ const {labels}=JSON.parse(JSON.stringify(vm.runInContext('mapOverlayFeatureCollection(normalizeMapOverlays([sim.overlay]))',c)));
+ assert.ok(labels.every(x=>x.kind==='marker'&&/^Last fix/.test(x.text)||/Predicted: no signal/.test(x.text)),JSON.stringify(labels));
+});

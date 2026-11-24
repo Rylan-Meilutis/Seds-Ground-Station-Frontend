@@ -6309,11 +6309,12 @@ function mapOverlayElementLabel(overlay, element) {
     return own || overlay.label || "";
 }
 
-function mapOverlayCentroid(ring) {
-    let lat = 0;
-    let lon = 0;
-    for (const point of ring) { lat += point[0]; lon += point[1]; }
-    return [lat / ring.length, lon / ring.length];
+/// Where an area's label goes: its northernmost vertex, clear of the
+/// marker that usually sits at its centre.
+function mapOverlayAreaLabelPoint(ring) {
+    let top = ring[0];
+    for (const point of ring) if (point[0] > top[0]) top = point;
+    return [top[0], top[1]];
 }
 
 /// GeoJSON for the 2D map plus the labels to place.
@@ -6331,7 +6332,7 @@ function mapOverlayFeatureCollection(overlays) {
                 properties: {role: MAP_OVERLAY_ROLE_AREA, overlay: overlay.id, id: area.id, kind: area.kind, color: style.color, opacity: style.opacity, fillOpacity: style.fillOpacity, dashed: style.dashed},
             });
             const label = area.label || overlay.kind === "los_prediction" ? mapOverlayElementLabel(overlay, area) : "";
-            if (label) labels.push({latLng: mapOverlayCentroid(area.polygon), text: label, color: style.color, kind: "area", overlay: overlay.id});
+            if (label) labels.push({latLng: mapOverlayAreaLabelPoint(area.polygon), text: label, color: style.color, kind: "area", overlay: overlay.id});
         });
         let longest = null;
         overlay.tracks.forEach((track, index) => {
@@ -6349,7 +6350,9 @@ function mapOverlayFeatureCollection(overlays) {
             }
             if (!longest || track.points.length > longest.points.length) longest = track;
         });
-        if (longest && overlay.label && overlay.kind !== "search_coverage") {
+        // A LOS overlay's markers already carry its label.
+        const labelledByMarker = overlay.kind === "los_prediction" && overlay.markers.some(m => m.kind === "predicted_position");
+        if (longest && overlay.label && overlay.kind !== "search_coverage" && !labelledByMarker) {
             const mid = longest.points[Math.floor(longest.points.length / 2)];
             const color = overlay.kind === "los_prediction" ? MAP_OVERLAY_LOS_COLOR : (MAP_OVERLAY_PHASE_COLORS[longest.phase] || MAP_OVERLAY_PHASE_COLORS.unknown);
             labels.push({latLng: [mid[0], mid[1]], text: overlay.label, color, kind: "overlay", overlay: overlay.id});
@@ -6416,7 +6419,7 @@ function createMapOverlayLabelElement(label) {
     el.textContent = label.text;
     el.style.cssText = "pointer-events:none;white-space:nowrap;font:700 11px/1.2 system-ui,sans-serif;"
         + "padding:2px 6px;border-radius:6px;background:rgba(15,23,42,0.82);color:#f8fafc;"
-        + `border:1px solid ${label.color};transform:translateY(-16px);`;
+        + `border:1px solid ${label.color};`;
     return el;
 }
 
@@ -6444,7 +6447,9 @@ function syncMapOverlaysNow() {
     if (typeof MarkerClass !== "function") return;
     for (const label of labels) {
         try {
-            const marker = new MarkerClass({element: createMapOverlayLabelElement(label), anchor: "bottom"})
+            // Beside the point (areas: above their top edge), never on the marker.
+            const area = label.kind === "area";
+            const marker = new MarkerClass({element: createMapOverlayLabelElement(label), anchor: area ? "bottom" : "left", offset: area ? [0, -4] : [12, 0]})
                 .setLngLat([label.latLng[1], label.latLng[0]])
                 .addTo(groundMap);
             mapOverlayLabelMarkers.push(marker);
@@ -6520,9 +6525,10 @@ function rasterFallbackOverlaySvg(project, width, height) {
     for (const label of labels) {
         const [x, y] = project(label.latLng[0], label.latLng[1]);
         const text = document.createElementNS(ns, "text");
-        text.setAttribute("x", x.toFixed(1));
-        text.setAttribute("y", (y - 12).toFixed(1));
-        text.setAttribute("text-anchor", "middle");
+        const area = label.kind === "area";
+        text.setAttribute("x", (area ? x : x + 12).toFixed(1));
+        text.setAttribute("y", (area ? y - 6 : y + 4).toFixed(1));
+        text.setAttribute("text-anchor", area ? "middle" : "start");
         text.setAttribute("fill", "#f8fafc");
         text.setAttribute("stroke", "#0f172a");
         text.setAttribute("stroke-width", "3");

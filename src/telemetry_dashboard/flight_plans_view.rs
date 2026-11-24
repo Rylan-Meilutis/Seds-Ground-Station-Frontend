@@ -300,8 +300,8 @@ pub(super) fn FlightSimView(
                     label { style: label_style, "Kind"
                         select { value: "{f.kind}", style: "font:inherit;min-height:36px;", "data-field": "kind",
                             onchange: move |e| set_field(|f, v| f.kind = v, e.value()),
-                            option { value: "flight", "Flight (trajectory and motor)" }
-                            option { value: "burn", "Burn (motor curves only)" }
+                            option { value: "flight", selected: f.kind == "flight", "Flight (trajectory and motor)" }
+                            option { value: "burn", selected: f.kind == "burn", "Burn (motor curves only)" }
                         }
                     }
                     label { style: label_style, "Label"
@@ -311,7 +311,7 @@ pub(super) fn FlightSimView(
                     label { style: label_style, "Motor model"
                         select { value: "{f.motor_model}", style: "font:inherit;min-height:36px;", "data-field": "motor_model",
                             onchange: move |e| set_field(|f, v| f.motor_model = v, e.value()),
-                            for m in motor_models { option { value: "{m}", "{m}" } }
+                            for m in motor_models { option { value: "{m}", selected: m == f.motor_model, "{m}" } }
                         }
                     }
                 }
@@ -319,8 +319,8 @@ pub(super) fn FlightSimView(
                     label { style: label_style, "Size the fill by"
                         select { value: "{f.fill_mode}", style: "font:inherit;min-height:36px;", "data-field": "fill_mode",
                             onchange: move |e| set_field(|f, v| f.fill_mode = v, e.value()),
-                            option { value: "fill", "Fill mass" }
-                            option { value: "target", "Target apogee (the planner picks the fill)" }
+                            option { value: "fill", selected: f.fill_mode == "fill", "Fill mass" }
+                            option { value: "target", selected: f.fill_mode == "target", "Target apogee (the planner picks the fill)" }
                         }
                     }
                     if f.fill_mode == "target" {
@@ -348,9 +348,9 @@ pub(super) fn FlightSimView(
                         label { style: label_style, "Weather"
                             select { value: "{f.weather_source}", style: "font:inherit;min-height:36px;", "data-field": "weather_source",
                                 onchange: move |e| set_field(|f, v| f.weather_source = v, e.value()),
-                                option { value: "planner", "The apogee planner's current source" }
-                                option { value: "manual", "Manual entry" }
-                                option { value: "cached", "Last cached forecast" }
+                                option { value: "planner", selected: f.weather_source == "planner", "The apogee planner's current source" }
+                                option { value: "manual", selected: f.weather_source == "manual", "Manual entry" }
+                                option { value: "cached", selected: f.weather_source == "cached", "Last cached forecast" }
                             }
                         }
                     }
@@ -721,6 +721,22 @@ mod tests {
         assert!(html.contains("Predicted altitude above pad"));
         assert!(html.contains("2850–3240 m"));
         assert!(html.contains("Rail exit speed 26 m/s"));
+    }
+
+    /// Server-rendered fragments for tests/flight-predict-browser.mjs
+    /// (written only when GS_FLIGHT_PREDICT_PREVIEW_DIR is set).
+    #[test]
+    fn write_browser_preview_fragments() {
+        let Some(dir) = std::env::var_os("GS_FLIGHT_PREDICT_PREVIEW_DIR") else { return };
+        let dir = std::path::PathBuf::from(dir);
+        std::fs::write(dir.join("flight-sim.html"), render(true, Some(mock("plan.json")))).unwrap();
+        fn legend() -> Element {
+            rsx! { PlanMapLegend { theme: ThemeConfig::default() } }
+        }
+        let mut dom = VirtualDom::new(legend);
+        dom.in_scope(ScopeId::ROOT, || *SHOWN_PLAN.write() = Some(ShownPlan { id: "fp-1767225600000-1a2b3c4d".into(), label: "Predicted: SWEET V6 8.5 kg".into() }));
+        dom.rebuild_in_place();
+        std::fs::write(dir.join("plan-legend.html"), dioxus::ssr::render(&dom)).unwrap();
     }
 
     #[test]
