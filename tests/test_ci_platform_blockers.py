@@ -105,7 +105,8 @@ class HostedPlatformBlockers(unittest.TestCase):
                 "usr/share/applications/ubseds-groundstation.desktop",
                 "usr/share/pixmaps/ubseds-groundstation.png",
                 "usr/share/icons/hicolor/256x256/apps/ubseds-groundstation.png",
-                "usr/share/metainfo/com.ubseds.gs26.appdata.xml"]
+                "usr/share/metainfo/com.ubseds.gs26.appdata.xml",
+                "usr/share/mime/packages/ubseds-groundstation.xml"]
             for name in installed:
                 p = staged / name
                 p.parent.mkdir(parents=True, exist_ok=True)
@@ -136,4 +137,5 @@ class HostedPlatformBlockers(unittest.TestCase):
                  patch.object(builder, "run", side_effect=run):
                 builder.build_manual_linux_packages(root, None, False)
             self.assertIn("/usr/share/metainfo/com.ubseds.gs26.appdata.xml", observed)
+            self.assertIn("/usr/share/mime/packages/ubseds-groundstation.xml", observed)
             self.assertTrue((root / "dist" / f"{builder.APP_NAME}_x86_64.rpm").is_file())

@@ -1326,6 +1326,31 @@ def _write_linux_appstream_metadata(frontend_dir: Path, pkg_root: Path, desktop_
     metadata.write_bytes(ET.tostring(component, encoding="utf-8", xml_declaration=True) + b"\n")
 
 
+GSREPLAY_MEDIA_TYPE = "application/vnd.seds.gsreplay+zip"
+
+
+def _write_linux_mime_package(pkg_root: Path) -> None:
+    """shared-mime-info type for .gsreplay replay bundles (docs/replay-bundle.md).
+
+    Package triggers (dpkg, rpm) run update-mime-database for this directory.
+    """
+    xml = "\n".join([
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">',
+        f'  <mime-type type="{GSREPLAY_MEDIA_TYPE}">',
+        "    <comment>Ground Station replay</comment>",
+        '    <sub-class-of type="application/zip"/>',
+        '    <glob pattern="*.gsreplay"/>',
+        '    <generic-icon name="package-x-generic"/>',
+        "  </mime-type>",
+        "</mime-info>",
+        "",
+    ])
+    target = pkg_root / "usr" / "share" / "mime" / "packages" / f"{LINUX_PACKAGE_NAME}.xml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(xml, encoding="utf-8")
+
+
 def _stage_linux_app_payload(
         frontend_dir: Path,
         rust_target: Optional[str],
@@ -1392,14 +1417,17 @@ def _stage_linux_app_payload(
             "Type=Application",
             f"Name={WINDOWS_APP_NAME}",
             f"Comment={description}",
-            f"Exec={LINUX_PACKAGE_NAME}",
+            # %f: a replay opened from the file manager (src/opened_file.rs).
+            f"Exec={LINUX_PACKAGE_NAME} %f",
             f"Icon={LINUX_PACKAGE_NAME}",
             "Terminal=false",
             "Categories=Utility;",
+            f"MimeType={GSREPLAY_MEDIA_TYPE};",
             "",
         ]),
         encoding="utf-8",
     )
+    _write_linux_mime_package(pkg_root)
 
     pixmap_icon_src = frontend_dir / "icons" / "icon.png"
     sized_icon_src = frontend_dir / "icons" / "256x256.png"
@@ -1502,6 +1530,9 @@ def _stage_windows_app_payload(
     return temp_dir, stage_dir, staged_exe
 
 
+WINDOWS_GSREPLAY_PROGID = "UBSEDS.GroundStation.Replay"
+
+
 def _write_windows_nsis_script(
         script_path: Path,
         stage_dir: Path,
@@ -1558,6 +1589,16 @@ def _write_windows_nsis_script(
         f'"NoModify" 1',
         f'  WriteRegDWORD HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{WINDOWS_APP_NAME}" '
         f'"NoRepair" 1',
+        "",
+        # Replay bundles open in the app (docs/replay-bundle.md, src/opened_file.rs).
+        f'  WriteRegStr HKCU "Software\\Classes\\.gsreplay" "" "{WINDOWS_GSREPLAY_PROGID}"',
+        f'  WriteRegStr HKCU "Software\\Classes\\.gsreplay" "Content Type" "{GSREPLAY_MEDIA_TYPE}"',
+        f'  WriteRegStr HKCU "Software\\Classes\\{WINDOWS_GSREPLAY_PROGID}" "" "Ground Station replay"',
+        f'  WriteRegStr HKCU "Software\\Classes\\{WINDOWS_GSREPLAY_PROGID}\\DefaultIcon" "" '
+        f'"$INSTDIR\\{WINDOWS_APP_NAME}.exe,0"',
+        f'  WriteRegStr HKCU "Software\\Classes\\{WINDOWS_GSREPLAY_PROGID}\\shell\\open\\command" "" '
+        f'\'"$INSTDIR\\{WINDOWS_APP_NAME}.exe" "%1"\'',
+        '  System::Call \'shell32::SHChangeNotify(i 0x08000000, i 0, p 0, p 0)\'',
         "SectionEnd",
         "",
         'Section "Uninstall"',
@@ -1568,6 +1609,10 @@ def _write_windows_nsis_script(
         '  RMDir /r "$INSTDIR"',
         f'  DeleteRegKey HKCU "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{WINDOWS_APP_NAME}"',
         f'  DeleteRegKey HKCU "Software\\UBSEDS\\{WINDOWS_APP_NAME}"',
+        f'  DeleteRegKey HKCU "Software\\Classes\\{WINDOWS_GSREPLAY_PROGID}"',
+        '  DeleteRegValue HKCU "Software\\Classes\\.gsreplay" ""',
+        '  DeleteRegValue HKCU "Software\\Classes\\.gsreplay" "Content Type"',
+        '  DeleteRegKey /ifempty HKCU "Software\\Classes\\.gsreplay"',
         "SectionEnd",
     ])
     script_path.write_text(script, encoding="utf-8")
@@ -1864,6 +1909,7 @@ def build_manual_linux_packages(
                     f"/usr/share/pixmaps/{LINUX_PACKAGE_NAME}.png",
                     f"/usr/share/icons/hicolor/256x256/apps/{LINUX_PACKAGE_NAME}.png",
                     f"/usr/share/metainfo/{_linux_appstream_id(frontend_dir)}.appdata.xml",
+                    f"/usr/share/mime/packages/{LINUX_PACKAGE_NAME}.xml",
                     "",
                 ]),
                 encoding="utf-8",
