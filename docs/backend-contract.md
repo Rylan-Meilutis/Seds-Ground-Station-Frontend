@@ -554,6 +554,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory | vehicle replay | view_data | M |
 | GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export | view_data | M |
 | GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `records` (bool, default true: checklists and recovery history), `sd_files` (bool), `sd_files_max_mb` (≤64; original SD files of an SD-resolved recording) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
+| GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32), `video` (bool), `video_max_mb` (≤64), `voice` (bool), `voice_max_mb` (≤16); flags take `1`/`true` → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md), [recorded media](replay-bundle.md#recorded-media)) | Recordings panel → Download replay bundle (with the Camera video / Crew voice checkboxes) | view_data | M |
 | POST | `/api/recordings/import` | `.gsreplay` bytes (≤256 MiB) → 201 `{id, label, rows, alerts, start_ms, end_ms, source, csv_sha256}`; 409 `{error, id}` duplicate; 400/413/422 ([replay-bundle.md](replay-bundle.md#import-into-a-station)) | not yet in the UI | admin | M |
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
 | GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import; offline from a bundle (every page) | view_data | M |
@@ -1231,6 +1232,12 @@ that it is read-only); nothing leaves the device. The Data Export panel's
 checklist and recovery exports answer with small demo records in the
 station's shapes (`demo::record`), and the Checklists tab shows the same
 checklist document.
+
+Live camera and voice are a station's. On a local station the broadcast page
+says "Live camera needs a station." and "Live voice needs a station." and
+does not poll `/api/live_streams`. A replay bundle made with recorded media
+plays its camera segments and voice bursts there, in step with the playback
+clock ([replay-bundle.md](replay-bundle.md#recorded-media)).
 
 Cost when a station is connected: the WebSocket supervisor checks the
 selection once per connection and each HTTP helper once per request (a

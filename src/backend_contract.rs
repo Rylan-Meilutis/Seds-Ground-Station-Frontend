@@ -81,6 +81,9 @@ pub(crate) const COVERED: &[&str] = &[
     "recovery-search/track-duplicate",
     "replay-bundle/flight.manifest",
     "replay-trajectory/flight",
+    // Recorded camera video and crew voice (`?video=1&voice=1`): the index
+    // parses and media.gsreplay opens with every clip (local_station/media.rs).
+    "replay-bundle/media.index",
     // The station's exports of the bundled recording and of a report-cases
     // recording, answered offline and compared (local_station/tests.rs).
     "replay-bundle/exports/cases-calibration-history",

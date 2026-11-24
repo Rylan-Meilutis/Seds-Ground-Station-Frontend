@@ -8,7 +8,9 @@ station connected, on any device with nothing cached:
 - the vehicle geometry;
 - derived summaries;
 - the recording's CSV export;
-- optionally, map tiles.
+- optionally, map tiles;
+- optionally, recorded camera video and crew voice
+  ([Recorded media](#recorded-media)).
 
 Producers: GroundStation26 `GET /api/recordings/{id}/bundle`, available as
 **Download replay bundle** in the Recordings panel. Consumers: the UI's live
@@ -170,6 +172,87 @@ Readers show a clear "Predicted" label wherever `manifest.predicted` or
 `replay.predicted` is `true` (banner, transport bar, map, charts, 3D player)
 and never present the data as recorded. Only a boolean `true` marks a
 prediction.
+## Recorded media
+
+Recorded camera video and crew voice are opt-in, each with its own budget:
+
+| Query | Default | Maximum |
+| --- | --- | --- |
+| `video=1&video_max_mb=N` | 32 MiB | 64 MiB |
+| `voice=1&voice_max_mb=N` | 8 MiB | 16 MiB |
+
+Flags accept `1`, `true`, `on` or `yes` (this also applies to `tiles`). The
+Recordings panel offers both as checkboxes with a cap beside **Download
+replay bundle** (`bundle_media_options.rs`). With every option at its
+maximum a bundle stays under the reader's 192 MiB (64 MiB rows + 32 MiB tiles
++ 64 MiB video + 16 MiB voice).
+
+The station includes whole files that overlap the recording's time range. It
+does not trim them. Within each budget the smallest files go first. Entries:
+
+| Path | Content |
+| --- | --- |
+| `media/video/<stream>/<file>.mp4` | a MediaMTX camera segment (fragmented MP4, one minute), stored without compression |
+| `media/voice/<stream>/<start_ms>-<speaker>.wav` | one crew voice transmission (16 kHz mono PCM16 WAV); `stream` is `crew` or `radio` |
+| `media/index.json` | `{version: 1, clips: [...], video: summary, voice: summary}` |
+
+These entries have no `route`: no station route serves them to the UI. Each
+clip in `clips` (in start order) has:
+
+- `kind`: `video` or `voice`;
+- `stream` and `file`;
+- `path`: the entry;
+- `start_ms` and `end_ms`: Unix ms, the replay rows' own clock;
+- `bytes` and `media_type` (`video/mp4`, `audio/wav`);
+- `timing`: how the start and end were found.
+
+The manifest's `media` (present only when asked for) and the index carry
+the same summary per requested kind:
+
+- `requested`;
+- `recorded`: false when the station does not record this kind;
+- `candidates`: files overlapping the recording;
+- `included`, `bytes` and `budget_bytes`;
+- `complete`;
+- `skipped`: `[{stream, file, start_ms, end_ms, bytes, reason}]`;
+- `note`, when there is one.
+
+Camera timing: MediaMTX names segments by the station's local time. The
+station takes the one whole-quarter-hour UTC offset that puts the name less
+than 15 minutes before the file's last write, which is the segment's end
+(`timing: name_local_time_and_last_write`). A file whose last-write time does
+not fit (for example a copied file) is read as UTC and one minute long
+(`name_as_utc`). Voice bursts are named by their Unix start and their length
+gives the end (`name_unix_ms_and_length`).
+
+Crew voice is recorded only where the station opts in
+(`GS_VOICE_RECORDINGS_DIR`, GroundStation26 `backend/src/voice/recorder.rs`).
+Elsewhere `voice.recorded` is false and the replay says so.
+
+Playback (`local_station/media.rs`, `recorded_media_view.rs`):
+
+- `bundle::open` moves the clips out of the archive without copying them.
+- On a local station the broadcast page (Mission tab) says "Live camera
+  needs a station." and "Live voice needs a station." instead of polling
+  `/api/live_streams`.
+- Below that it shows one `<video>` per camera stream, with the segment that
+  covers the playback position, and one `<audio>` per voice burst on air,
+  with its speaker.
+- Every 250 ms the elements follow `LocalStation::playback`:
+  - the position in the clip is `position − start_ms`;
+  - play and pause follow the clock;
+  - the playback rate is the replay speed up to 16×. Faster than that,
+    elements are paused and seeked on each tick (scrubbing);
+  - an element is seeked when it drifts more than max(0.4 s, 0.25 s × speed),
+    and by 0.05 s when paused or scrubbing;
+  - video is muted above 1×, voice above 4×.
+- Clip bytes reach the elements as blob URLs in the browser. Native webviews
+  use the app's protocol path `local-media/<entry path>` (`main.rs`, with
+  byte ranges), which serves only the selected local station's clips. No
+  clip is fetched from a network.
+- The Cameras & Recordings and Voice Chat tabs stay hidden offline. They are
+  live station pages, and a local station grants neither camera nor voice
+  permission.
 
 ## Reading rules
 
@@ -338,6 +421,14 @@ mapping); a ten-minute capture with SD-resolved load cells at 50 Hz (30,000
 SD rows) adds about 30 MB unpacked, 3 to 4 MB packed. The replay export caps
 the provenance at 64 MiB and the bundle reader at 192 MiB unpacked.
 
+| Media fixture (`replay-bundle/media.gsreplay`: five 1 KB stand-in segments, one 0.2 s voice burst) | 601 | — | 119 KB (12 KB media) |
+| Ten-minute capture, two cameras at 2 Mbit/s (20 segments of 15 MB) and 30 three-second voice bursts | — | — | media entries 32.9 MB at the default caps (2 of 20 segments, all voice), 62.9 MB at the maximum (4 segments) |
+
+The media row comes from GroundStation26
+`recording_bundle::tests::realistic_media_bundle_size` (`--ignored
+--nocapture`). The caps hold only a few minutes of camera video at typical
+bit rates.
+
 The second row comes from GroundStation26
 `recording_bundle::tests::realistic_capture_bundle_size`
 (`cargo test -p groundstation_backend -- realistic_capture_bundle_size --ignored --nocapture`).
@@ -392,6 +483,22 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
     from bundle entries and from the demo.
 - UI `local_station/tests.rs` also serves the bundle as a station: the
   recording's routes, replay snapshot and windows, the store listing.
+- GroundStation26 `recording_bundle_media` tests: segment names and local
+  time, selection by overlap and smallest-first within the cap, the index and
+  summary, files still being written, voice recording off. `contract_fixtures`
+  writes `replay-bundle/media.gsreplay` and `media.index.json` from synthetic
+  files. `voice::recorder` tests check burst splitting, silence padding and
+  the WAV header.
+- UI `local_station/media.rs` and `recorded_media_view.rs`: the index
+  parses, the media bundle opens with every clip's bytes, the clip at a
+  position, and the clock math (offset, rate, drift tolerance, scrubbing,
+  muting). `main.rs` checks the native protocol's byte ranges.
+- UI `tests/recorded-media-browser.mjs` (same setup as the next test):
+  - the broadcast page says live camera and voice need a station;
+  - with `replay-bundle/media.gsreplay` open, the camera segment and the
+    voice burst play from `blob:` URLs at the paused replay position;
+  - the WAV decodes (0.2 s), and the burst leaves when playback passes it;
+  - no network.
 - UI `tests/offline-preview-browser.mjs`: opens the bundle in a fresh browser
   profile and drives the live dashboard's tabs on it, with zero network;
   downloads the CSV from Data Export and compares it with the station's.

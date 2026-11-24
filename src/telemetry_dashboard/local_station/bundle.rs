@@ -162,8 +162,10 @@ fn plans(files: &BTreeMap<String, Vec<u8>>) -> Vec<super::super::flight_plans::P
 }
 
 pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
-    let files = unzip(bytes)?;
+    let mut files = unzip(bytes)?;
     let manifest = verify(&files)?;
+    // Recorded clips move out of the archive (they are no station route's body).
+    let media = super::media::take(&mut files);
     let replay = files.get("replay.json").ok_or("The bundle has no replay.json.")?;
     let mut document: Value = serde_json::from_slice(replay).map_err(|e| format!("replay.json is not JSON: {e}"))?;
     // Configuration the replay document lacks comes from the bundle's own snapshot.
@@ -239,6 +241,10 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
         }
     }
     session.plans = plans(&files);
+    if let Some(media) = media {
+        session.notes.push(format!("Recorded media: {} clips, {} bytes.", media.clips.len(), media.bytes()));
+        session.media = Some(std::rc::Rc::new(media));
+    }
     session.manifest = Some(manifest);
     Ok(session)
 }

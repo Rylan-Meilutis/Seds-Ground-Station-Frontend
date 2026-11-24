@@ -401,6 +401,20 @@ body, #main {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// The first range of a `Range: bytes=a-b` header, inclusive and within `len`.
+fn byte_range(header: &str, len: usize) -> Option<(usize, usize)> {
+    let spec = header.trim().strip_prefix("bytes=")?.split(',').next()?.trim();
+    let (a, b) = spec.split_once('-')?;
+    let last = len.checked_sub(1)?;
+    let (start, end) = match (a.trim(), b.trim()) {
+        ("", suffix) => (len.saturating_sub(suffix.parse().ok()?), last),
+        (a, "") => (a.parse().ok()?, last),
+        (a, b) => (a.parse().ok()?, b.parse::<usize>().ok()?.min(last)),
+    };
+    (start <= end).then_some((start, end))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Handles `gs26://` requests by proxying tile image reads to the configured backend.
 fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'static, [u8]>> {
     /// Builds a protocol response while falling back to an empty 500 on builder failure.
@@ -438,6 +452,30 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         .split('/')
         .filter(|s| !s.is_empty())
         .collect();
+
+    // A replay bundle's recorded clips: /local-media/<bundle path>, only
+    // from the selected local station, with byte ranges for seeking.
+    if let Some(at) = segs.iter().position(|s| *s == "local-media") {
+        let key = segs[at + 1..].join("/");
+        return match telemetry_dashboard::station_link::native_local_media(&key).flatten() {
+            Some((mime, bytes)) => {
+                let range = request.headers().get("range").and_then(|v| v.to_str().ok()).and_then(|r| byte_range(r, bytes.len()));
+                let mut response = match range {
+                    Some((start, end)) => {
+                        let mut response = build_response(206, Some(&mime), bytes[start..=end].to_vec());
+                        if let Ok(value) = format!("bytes {start}-{end}/{}", bytes.len()).parse() {
+                            response.headers_mut().insert("Content-Range", value);
+                        }
+                        response
+                    }
+                    None => build_response(200, Some(&mime), bytes.as_ref().clone()),
+                };
+                response.headers_mut().insert("Accept-Ranges", dioxus_desktop::wry::http::HeaderValue::from_static("bytes"));
+                response
+            }
+            None => build_response(404, None, Vec::new()),
+        };
+    }
 
     // Accept either:
     // - /tiles/{z}/{x}/{y}.jpg
@@ -569,6 +607,18 @@ mod native_map_tests {
         if let Some(script) = head.find("<script") {
             assert!(charset < script, "inline assets must be decoded as UTF-8");
         }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn local_media_byte_ranges() {
+        assert_eq!(super::byte_range("bytes=0-", 10), Some((0, 9)));
+        assert_eq!(super::byte_range("bytes=2-4", 10), Some((2, 4)));
+        assert_eq!(super::byte_range("bytes=8-99", 10), Some((8, 9)));
+        assert_eq!(super::byte_range("bytes=-3", 10), Some((7, 9)));
+        assert_eq!(super::byte_range("bytes=12-", 10), None);
+        assert_eq!(super::byte_range("bytes=0-", 0), None);
+        assert_eq!(super::byte_range("items=0-1", 10), None);
     }
 
     #[test]

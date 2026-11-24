@@ -177,6 +177,10 @@ pub(crate) fn LiveStreamTab(
     let mut status = use_signal(|| "Loading broadcast…".to_string());
     let mut edit_mode = use_signal(|| manager_mode);
     use_future(move || authority.run(async move {
+        // A local station (demo, replay) has no live broadcast to poll.
+        if super::station_link::is_local() {
+            return;
+        }
         loop {
             match authority.get::<LiveStreamConfig>("/api/live_streams").await {
                 Ok(next) => {
@@ -192,6 +196,16 @@ pub(crate) fn LiveStreamTab(
     }));
     let cfg = config.read().clone().unwrap_or_default();
     let url = media_url(&cfg.program_url);
+    if super::station_link::is_local() {
+        // Live camera and voice are a station's; a replay shows what was recorded.
+        return rsx! {
+            div { class:"gs26-program-shell", "data-local-station":"true", style:"height:100%;min-height:0;overflow:auto;padding:8px 12px;box-sizing:border-box;color:{theme.text_primary};background:{theme.tab_shell_background};",
+                p { class:"gs-notice gs-notice--info", role:"status", "data-testid":"live-camera-needs-station", "Live camera needs a station." }
+                p { class:"gs-notice gs-notice--info", role:"status", "data-testid":"live-voice-needs-station", "Live voice needs a station." }
+                super::recorded_media_view::RecordedMedia {}
+            }
+        };
+    }
     if !authority.current(){return neutral_request_owner::retired_notice();}
     rsx! {
         style { {r#"

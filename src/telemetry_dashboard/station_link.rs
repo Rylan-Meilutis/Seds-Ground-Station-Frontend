@@ -43,6 +43,8 @@ pub(crate) struct LocalSelection(());
 impl LocalSelection {
     pub(crate) fn install(station: Rc<LocalStation>) -> Self {
         install_tiles(Some(station.session.tiles()));
+        #[cfg(not(target_arch = "wasm32"))]
+        install_native_media(station.session.media.as_deref());
         LOCAL.with(|slot| *slot.borrow_mut() = Some(station));
         super::persist::begin_scratch();
         #[cfg(target_arch = "wasm32")]
@@ -55,6 +57,8 @@ impl Drop for LocalSelection {
     fn drop(&mut self) {
         LOCAL.with(|slot| slot.borrow_mut().take());
         install_tiles(None);
+        #[cfg(not(target_arch = "wasm32"))]
+        install_native_media(None);
         super::persist::end_scratch();
         #[cfg(target_arch = "wasm32")]
         super::js_eval(BROWSER_SCRATCH_OFF);
@@ -117,6 +121,30 @@ fn install_tiles(tiles: Option<Tiles>) {
 pub(crate) fn native_local_tile(z: u32, x: u32, y: u32) -> Option<Option<Vec<u8>>> {
     let slot = NATIVE_TILES.lock().ok()?;
     slot.as_ref().map(|tiles| tiles.get(&format!("{z}/{x}/{y}")).cloned())
+}
+
+/// Recorded clips of the selected local station (bundle path -> media type
+/// and bytes). Native webviews play them through the app's own protocol
+/// handler (`main.rs`, `local-media/<path>`); the browser build uses blob
+/// URLs instead (`recorded_media_view`).
+#[cfg(not(target_arch = "wasm32"))]
+type NativeMedia = std::collections::HashMap<String, (String, std::sync::Arc<Vec<u8>>)>;
+#[cfg(not(target_arch = "wasm32"))]
+static NATIVE_MEDIA: std::sync::Mutex<Option<NativeMedia>> = std::sync::Mutex::new(None);
+
+#[cfg(not(target_arch = "wasm32"))]
+fn install_native_media(media: Option<&super::local_station::media::Media>) {
+    if let Ok(mut slot) = NATIVE_MEDIA.lock() {
+        *slot = media.map(|m| m.clips.iter().map(|c| (c.path.clone(), (c.media_type.clone(), c.body.clone()))).collect());
+    }
+}
+
+/// `Some(clip or None)` while a local station is selected: the clip at a
+/// bundle path, as (media type, bytes). Never a station request.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn native_local_media(path: &str) -> Option<Option<(String, std::sync::Arc<Vec<u8>>)>> {
+    let slot = NATIVE_MEDIA.lock().ok()?;
+    slot.as_ref().map(|media| media.get(path).cloned())
 }
 
 /// A local station's answer to one HTTP request.

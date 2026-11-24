@@ -12,6 +12,7 @@
 pub(crate) mod bundle;
 pub(crate) mod demo;
 pub(crate) mod exports;
+pub(crate) mod media;
 pub(crate) mod replay_file;
 pub(crate) mod station;
 pub(crate) use station::LocalStation;
@@ -148,6 +149,8 @@ pub(crate) struct Session {
     pub lists: BTreeMap<String, Value>,
     /// What a bundle supplies to answer the station's export routes ([`exports::answer`]).
     pub exports: Option<std::rc::Rc<exports::ExportInputs>>,
+    /// Recorded camera video and crew voice a bundle carries ([`media`]).
+    pub media: Option<std::rc::Rc<media::Media>>,
     index: BTreeMap<(String, String), Vec<usize>>,
 }
 
@@ -202,7 +205,7 @@ impl Session {
         LIVE_SESSIONS.with(|n| n.set(n.get() + 1));
         Self {
             source, title, mode, provenance, layout, boards, samples, states, alerts, calibration, recordings, replay_document, vehicle_geometry, notes, epoch_ms,
-            csv: None, manifest: None, predicted: None, plans: Vec::new(), terrain: None, trajectory: None, recovery_search: None, routes: BTreeMap::new(), lists: BTreeMap::new(), exports: None, index,
+            csv: None, manifest: None, predicted: None, plans: Vec::new(), terrain: None, trajectory: None, recovery_search: None, routes: BTreeMap::new(), lists: BTreeMap::new(), exports: None, media: None, index,
         }
     }
 
