@@ -500,7 +500,7 @@ The command vocabulary is backend-defined (`layout.actions_tab`,
 | POST | `/api/daq/dac/sweep` | sweep request → any | same | send_commands | M |
 | POST | `/api/daq/dac/sweep/cancel` | `{}` → any | same | send_commands | M |
 | GET | `/api/firmware-sim` | → simulator status | firmware simulator panel, DAC sim patch | view_data | H |
-| POST | `/api/firmware-sim/control` | control body → status | same | send_commands | M |
+| POST | `/api/firmware-sim/control` | control body → status (sections replace; `faults` and `patch` merge per key, so the UI sends the keys it edits, off as false/0) | same | send_commands | M |
 
 GroundStation26 detail: `docs/backend/board-resync.md`,
 `docs/backend/sd-network-download.md`, `docs/backend/sd-transfer.md`,
@@ -573,7 +573,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | PATCH | `/api/fire_archive/{id}` | patch → `Fire` | Fire archive | send_commands | M |
 | GET | `/api/fire_archive/{id}/thrust` | → `Curve` | Fire archive | view_data | M |
 | GET | `/api/apogee_planner` | → planner `Status` | Apogee planner | view_data | H |
-| PUT | `/api/apogee_planner/settings` | settings → `Status` | same | send_commands | M |
+| PUT | `/api/apogee_planner/settings` | settings → `Status` (merged into the stored settings; the UI sends back every field it was served, including ones it does not model; another `version` → 409) | same | send_commands | M |
 | POST | `/api/apogee_planner/compute` | `{}` → `Plan` | same | send_commands | M |
 | POST | `/api/apogee_planner/apply` | `{plan_id}` → `Applied` | same | send_commands | M |
 | POST | `/api/apogee_planner/weather/fetch` | `{}` → `Weather` | same | send_commands | M |
