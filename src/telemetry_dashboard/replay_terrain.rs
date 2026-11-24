@@ -28,12 +28,13 @@ const MAX_IMAGERY_ZOOM: u32 = 17;
 
 /// `[lat, lon]` of the replay's valid GPS fixes, in sample order.
 fn fixes(document: &Value) -> Vec<(f64, f64)> {
+    let at = super::vehicle_bindings::gps_indices();
     document["samples"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter(|s| matches!(s["data_type"].as_str(), Some("GPS_DATA" | "GPS" | "ROCKET_GPS")))
-        .filter_map(|s| Some((s["values"][0].as_f64()?, s["values"][1].as_f64()?)))
+        .filter(|s| s["data_type"].as_str().is_some_and(super::vehicle_bindings::is_gps_type))
+        .filter_map(|s| Some((s["values"][at.lat].as_f64()?, s["values"][at.lon].as_f64()?)))
         .filter(|(lat, lon)| lat.is_finite() && lon.is_finite() && lat.abs() <= 90.0 && lon.abs() <= 180.0 && (lat.abs() > 1e-4 || lon.abs() > 1e-4))
         .collect()
 }

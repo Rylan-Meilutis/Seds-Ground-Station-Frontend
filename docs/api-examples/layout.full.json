@@ -127,6 +127,22 @@
         "bg": "#431407",
         "fg": "#fed7aa"
       }
+    ],
+    "controls": [
+      {
+        "cmd": "ToggleChecklistInterlock",
+        "label": "Checklist enforcement"
+      }
+    ],
+    "fill_target_fluids": [
+      {
+        "id": "nitrogen",
+        "label": "Nitrogen"
+      },
+      {
+        "id": "nitrous",
+        "label": "Nitrous"
+      }
     ]
   },
   "data_tab": {
@@ -409,5 +425,25 @@
         "curve_exponent": 1.2
       }
     ]
-  }
+  },
+  "gps": {
+    "data_types": [
+      "GPS_DATA"
+    ],
+    "lat_index": 0,
+    "lon_index": 1,
+    "alt_index": 2
+  },
+  "watch_items": [
+    {
+      "id": "av_battery",
+      "channels": [
+        {
+          "data_type": "BATTERY_VOLTAGE",
+          "sender_id": "PB",
+          "index": 0
+        }
+      ]
+    }
+  ]
 }

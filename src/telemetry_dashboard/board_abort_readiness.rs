@@ -120,8 +120,9 @@ fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
                 if crate::auth::current_status().station_role.as_deref()==Some("rrls") {
                     p {role:"status",style:"grid-column:1/-1;","{super::station_mode::configuration_description(&mode)}"}
                 }
-                for (index,(name,label)) in [("TogglePlumbingDelayInterlock","Retraction minimum 45 seconds"),("ToggleChecklistInterlock","Checklist enforcement"),("ToggleSupplyInterlock","Nitrogen/nitrous one at a time"),("ToggleBoardStateProofInterlock","Board state checks")].into_iter().enumerate() {
+                for (index,(name,label)) in HITL_INTERLOCKS.into_iter().enumerate() {
                     {
+                        let label=interlock_label(name,label);
                         let policy=ACTION_POLICY_SIGNAL.read();
                         let control=policy.controls.iter().find(|control|control.cmd==name);
                         let current_known=control.and_then(|control|control.actuated);
@@ -146,6 +147,21 @@ fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
         }
     }}
 }
+/// The HITL interlock toggles in the order of the primary's mode
+/// configuration settings, with the names used when the layout gives none.
+const HITL_INTERLOCKS: [(&str, &str); 4] = [
+    ("TogglePlumbingDelayInterlock", "Retraction minimum 45 seconds"),
+    ("ToggleChecklistInterlock", "Checklist enforcement"),
+    ("ToggleSupplyInterlock", "Nitrogen/nitrous one at a time"),
+    ("ToggleBoardStateProofInterlock", "Board state checks"),
+];
+
+/// An interlock's name: the layout's `actions_tab.controls[]` label, else
+/// the built-in one.
+fn interlock_label(cmd: &str, built_in: &str) -> String {
+    super::vehicle_bindings::control_label(cmd).unwrap_or_else(|| built_in.to_owned())
+}
+
 /// Why a HITL interlock toggle cannot be requested now.
 fn interlock_reason(
     synchronized: bool,

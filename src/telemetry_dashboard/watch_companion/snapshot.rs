@@ -243,14 +243,15 @@ fn item_value(def: &registry::ItemDef, input: &Inputs<'_>, rocket: Option<&Targe
             None => unknown(def.label),
         },
         Source::Telemetry {
-            channels,
             quantity,
             precision,
             stale_after_ms,
+            ..
         } => {
+            let channels = registry::telemetry_channels(def).unwrap_or_default();
             let newest = channels
                 .iter()
-                .filter_map(|(dt, sender, index)| (input.telemetry)(dt, *sender, *index))
+                .filter_map(|(dt, sender, index)| (input.telemetry)(dt, sender.as_deref(), *index))
                 .filter(|(v, _)| v.is_finite())
                 .max_by_key(|(_, received)| *received);
             let Some((raw, received)) = newest else {

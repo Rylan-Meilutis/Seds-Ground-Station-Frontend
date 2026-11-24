@@ -294,6 +294,18 @@ pub const TARGETS: &[(&str, &str)] = &[
     ("rrls", "RRLS"),
 ];
 
+/// A telemetry item's channels `(data_type, sender, index)`: the layout's
+/// `watch_items` binding for its id, else the built-in ones; `None` for an
+/// item that is not telemetry.
+pub fn telemetry_channels(def: &ItemDef) -> Option<Vec<super::super::vehicle_bindings::Channel>> {
+    let Source::Telemetry { channels, .. } = def.source else {
+        return None;
+    };
+    super::super::vehicle_bindings::watch_channels(def.id).or_else(|| {
+        Some(channels.iter().map(|(dt, sender, index)| ((*dt).to_owned(), sender.map(str::to_owned), *index)).collect())
+    })
+}
+
 pub fn item(id: &str) -> Option<&'static ItemDef> {
     ITEMS.iter().find(|i| i.id == id)
 }

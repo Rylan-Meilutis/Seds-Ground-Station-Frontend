@@ -380,7 +380,7 @@ schema. Where the path is built at run time, the variable segment is shown as
 
 | Method | Path | Body / response | Used by | Permission | On failure |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/api/layout` | → `LayoutConfig` ([detail](backend-api.md#get-apilayout), examples [full](api-examples/layout.full.json) / [minimal](api-examples/layout.minimal.json)) | dashboard, mode switch, vehicle export | view_data | cached layout or error banner |
+| GET | `/api/layout` | → `LayoutConfig` ([detail](backend-api.md#get-apilayout), examples [full](api-examples/layout.full.json) / [minimal](api-examples/layout.minimal.json)); optional vehicle bindings `gps:{data_types[], lat_index, lon_index, alt_index}`, `watch_items:[{id, channels:[{data_type, sender_id?, index}]}]`, `actions_tab.controls:[{cmd, label}]`, `actions_tab.fill_target_fluids:[{id, label}]` (section 6.1) | dashboard, mode switch, vehicle export | view_data | cached layout or error banner |
 | GET | `/api/diagrams` | → `{diagrams:[topology], errors:[{file, error}]}` | Live diagrams tab ([live-diagrams.md](live-diagrams.md)) | view_data | H |
 | GET | `/api/vehicle_visualization` | → `VehicleVisualizationConfig` ([detail](backend-api.md#get-apivehicle_visualization), [example](api-examples/vehicle-visualization.json)) | Vehicle tab, replay export | view_data | H |
 | GET | `/api/map_config` | → `{max_native_zoom, max_display_zoom, default_center_lat, default_center_lon, default_zoom, map_title, tracked_asset_label}` ([detail](backend-api.md#get-apimap_config), [example](api-examples/map-config.json)) | Map tab, watch map sync, connect test | view_data | cached config; watch plans z15 |
@@ -511,7 +511,7 @@ GroundStation26 detail: `docs/backend/board-resync.md`,
 
 | Method | Path | Body / response | Used by | Permission | On failure |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/api/calibration_config` | → `{capture_target_samples, fit_modes[], sensors:[{id, label, data_type, channel, fit_color?, raw_label?, expected_label?, fit_modes?, formatter?}]}` ([detail](backend-api.md#get-apicalibration_config), [example](api-examples/calibration-config.json)) | Calibration page | can_view_calibration | cached / H |
+| GET | `/api/calibration_config` | → `{capture_target_samples, fit_modes[], sensors:[{id, label, data_type, channel, fit_color?, raw_label?, expected_label?, fit_modes?, formatter?, sender_id?}]}` ([detail](backend-api.md#get-apicalibration_config), [example](api-examples/calibration-config.json)) | Calibration page | can_view_calibration | cached / H |
 | GET | `/api/calibration` | → `CalibrationFile` ([detail](backend-api.md#get-apicalibration), [example](api-examples/calibration-file.json)) | Calibration page, Loadcells settings (MCP VREF), network health | can_view_calibration | M |
 | POST | `/api/calibration` | `{channel, calibration, revision, fitted_mcp_vref_v?}` → `CalibrationFile` ([detail](backend-api.md#post-apicalibration)); 409 stale revision or reference, 428 no revision, 422 no reference for a load cell | Calibration page | can_edit_calibration | stale: keep the draft, show the station's reason, offer Reload (confirmed); other: M |
 | GET | `/api/calibration/kg50_input` | → `Kg50BoardStatus` ([detail](backend-api.md#get-apicalibrationkg50_input)) | Data tab, Loadcells settings | view_data | H |
@@ -965,7 +965,12 @@ for another vehicle should only need to supply different data on these routes.
 | Actions: buttons, commands, labels, groups, colours | `/api/layout` `actions_tab`; enable/blink/reason from `/api/action_policy` |
 | State tab content, flight-phase naming version | `/api/layout` `state_tab`, `flight_phase_version`, `test_fire_mode` |
 | Battery sources and estimator thresholds | `/api/layout` `battery.{sources, estimator}` |
-| Calibration channels, fit modes, labels | `/api/calibration_config` |
+| Calibration channels, fit modes, labels, and the board each sensor is read from | `/api/calibration_config` (`sensors[].sender_id`; without it a load cell is read from `DAQ`, any other sensor from any sender) |
+| GPS fix data types and the latitude/longitude/altitude indices (map, vehicle view, replay track and terrain, watch rocket target) | `/api/layout` `gps` (without it `GPS_DATA`, `GPS`, `ROCKET_GPS` at 0/1/2) |
+| Watch item telemetry channels | `/api/layout` `watch_items` by item id (an item not listed keeps its built-in channels); GroundStation26 `/api/watch/status` reads the same list |
+| Names of controls that are not layout buttons (the HITL interlock toggles) | `/api/layout` `actions_tab.controls[].label` (built-in text without it) |
+| Fill-target fluids edited and their names | `/api/layout` `actions_tab.fill_target_fluids` (ids are `/api/fill_targets` keys; without it nitrogen and nitrous) |
+| Board recovery board set, order and reset-all phrase | `/api/board-recovery/status` `boards[].id` (the built-in seven only while it lists none) |
 | Vehicle model, stages, ground systems, animations, telemetry bindings | `/api/vehicle_visualization` |
 | Vehicle geometry | `GET /api/vehicle/geometry`, generated by the station from its OpenRocket design; see GroundStation26 `docs/vehicle-geometry.md` |
 | Live diagrams (topology, nodes, bindings) | `/api/diagrams` |
@@ -1016,14 +1021,14 @@ fallback to the current value.
 
 | # | Location | Hard-coded | Backend already supplies? | Severity | Recommended fix |
 | --- | --- | --- | --- | --- | --- |
-| B1 | `src/telemetry_dashboard/board_recovery_model.rs:23-31` (`BOARD_IDS`, `canonical_targets`), `:479`, `:786-790` | Board set `RF FC PB AB VB GB DAQ`; targets outside this set are refused; reset phrase built from it | Yes: `/api/board-recovery/status` `boards[].id` (ordered) | Blocks (board recovery refuses other board sets) | Derive the canonical list and phrase from `status.boards[].id`; keep the constant as fallback |
+| B1 | `src/telemetry_dashboard/board_recovery_model.rs` (`BOARD_IDS`, `canonical_targets`, `Status::board_ids`), `board_recovery_panel.rs`, `board_readback_display.rs` | Board set `RF FC PB AB VB GB DAQ`; targets outside this set were refused; reset phrase built from it | **Yes**: `/api/board-recovery/status` `boards[].id` (ordered) | Resolved | **Fixed**: `Status::board_ids()` is the station's `boards[].id` in its order (the constant only while it lists none); reset-all readiness, target order checks, the legacy `RESET STARTUP …` phrase, operation labels, the readback cache and the board rows follow it. Per-board recovery labels stay B2 |
 | B2 | `src/telemetry_dashboard/board_recovery_model.rs:3-18` | Recovery button labels per board (`AB`/`VB` "Recover to Idle", `FC` "Recover to Startup", others "Reset metadata") | No | Partial (other boards get no label) | New field `boards[].recovery_label` / `recovery_description` in `/api/board-recovery/status` |
 | B3 | `src/telemetry_dashboard/board_recovery_panel.rs:238`, `:512`, `:642` | `FC` startup warning; `RF FC PB` = "AV bay" boards whose queries pause | No | Partial | New field `boards[].group` (e.g. `"av_bay"`) and `boards[].startup_warning` |
 | B4 | `src/telemetry_dashboard/sequence_progress_model.rs:493-501` | Sequence output index → board/channel (`VB` 1,2,4; `AB` 2,4) | Partial: `/api/gse/status` carries outputs | Blocks for GSE sequence readback on another vehicle | New `outputs[].{board, channel}` in `/api/gse/status` |
 | B5 | `src/telemetry_dashboard/igniter_sense_panel.rs:74-76` | Igniter sense read from sender `AB` | No | Partial | Read `sender_id` from the layout channel or add `igniter_sense.sender_id` to `/api/igt` |
 | B6 | `src/telemetry_dashboard/plumbing_drive.rs:229-231` | Board query `{"board":"AB"}` after a plumbing query | No (`/api/actuator/plumbing/status` has no board field) | Partial | Add `board` to `/api/actuator/plumbing/status` and use it |
 | B7 | `src/telemetry_dashboard/network_health.rs:48`, `:589`, `:600` | `DAQ` is the only node with storage actions/diagnostics | Partial: topology nodes carry diagnostics | Partial | Advertise storage actions per node in `/api/network_topology` (e.g. `nodes[].actions[]`) |
-| B8 | `src/telemetry_dashboard/telemetry_runtime.rs:1890-1902` (`fresh_daq_calibration_value`/`_reading`), `calibration_tab.rs:367` | Calibration readings taken only from sender `DAQ` | **No**: `/api/calibration_config` `sensors[].channel` is the calibration-file channel key (`ch1`, `kg50`, `iadc`), not a sender id, and the layout names no sender for `KG1000`/`KG50` | Blocks calibration on a board not named DAQ | Open (re-checked against GroundStation26 `loadcell.rs` `CalibrationSensorSpec`): add `sensors[].sender_id` to `/api/calibration_config` and read it, keeping `DAQ` as fallback |
+| B8 | `src/telemetry_dashboard/calibration_tab.rs` (`CalibrationSensorSpec::reading_sender`), `telemetry_runtime.rs` (`fresh_calibration_value`/`_reading`) | Calibration readings taken only from sender `DAQ` | **Yes** (new): `/api/calibration_config` `sensors[].sender_id` | Resolved | **Fixed**: Live Raw, captures and the ADC temperature are read from the sensor's `sender_id` (fresh rows only, 2 s); without it a load cell is read from `DAQ` and any other sensor from any sender, as before. GroundStation26 names `DAQ` for `KG1000`/`KG50` |
 | B9 | `src/telemetry_dashboard/sd_board_download.rs:260` | Initial board selection `DAQ` | **Yes**: `/api/sd_download` `boards[]` | Resolved | **Fixed**: once the status lists `boards`, a selection the station does not offer moves to `boards[0]` (`board_selection`); `DAQ` is shown only until the list arrives |
 | B10 | `src/telemetry_dashboard/saved_replay.rs:25` | Rocket senders `FC RF PB FC_SD` for the "rocket"/"stand" replay tabs | No | Partial (replay tabs mis-sorted) | New `replay/context` field `rocket_senders[]` or reuse `/api/boards` with a `location` field |
 | B11 | `src/telemetry_dashboard/vehicle_tab.rs:664`, `:745` | GPS sender fallback `FC` | Partial: replay `source_sender_id` | Partial | Fall back to the vehicle-visualization GPS binding (see D3) |
@@ -1034,11 +1039,11 @@ fallback to the current value.
 | --- | --- | --- | --- | --- | --- |
 | D1 | `src/telemetry_dashboard/calibration_tab.rs:302-304`, `:2973`, `:2985`; `calibration_capture.rs:114-116` | Load-cell behaviour (mV units, input selector, thermal zero) only for `KG1000`/`KG50` | Partial: `sensors[].formatter`, `raw_label` | Partial | New `sensors[].kind` (`"load_cell"`) and `sensors[].raw_unit` in `/api/calibration_config` |
 | D2 | `src/telemetry_dashboard/data_tab.rs:240-252` | Fill-source ids `kg50`/`kg1000_absolute` mapped to `KG50`/`KG1000` subtabs | Partial: `/api/fill_targets` `fill_source` | Partial | Add `fill_sources:[{id, data_type, label}]` to `/api/fill_targets` |
-| D3 | `src/telemetry_dashboard/dashboard_component.rs:4651-4663`, `vehicle_replay.rs:134`, `vehicle_tab.rs:311-316`, `watch_companion/publisher.rs:151` | GPS data types `GPS`, `GPS_DATA`, `ROCKET_GPS` (lat=0, lon=1, alt=2) | No | Blocks map tracking for a vehicle using other names | New `gps:{data_type, sender_id?, lat_index, lon_index, alt_index}` in `/api/map_config` or `/api/vehicle_visualization` |
+| D3 | `src/telemetry_dashboard/vehicle_bindings.rs`; used by `dashboard_component.rs` (`row_to_gps*`), `vehicle_replay.rs`, `vehicle_tab.rs`, `replay_terrain.rs`, `flight_replay_panel.rs`, `watch_companion/publisher.rs` | GPS data types `GPS`, `GPS_DATA`, `ROCKET_GPS` (lat=0, lon=1, alt=2) | **Yes** (new): `/api/layout` `gps` | Resolved | **Fixed**: the layout's `gps.{data_types, lat_index, lon_index, alt_index}`; the built-in types and indices only without it. The local station's own computations (`local_station/maxima.rs`, `station.rs` flight phases, review exports) mirror GroundStation26's and keep its names; `igt.rs` decodes the station's `SIM_SAMPLE` suffixes |
 | D4 | `src/telemetry_dashboard/data_groups.rs:20-45` | Data-type families (Fill, Power, Flight) by name | No | Cosmetic (grouping only) | Optional `family` per channel in `/api/layout` `data_tab` |
 | D5 | `src/telemetry_dashboard/saved_replay.rs:261-277` | Replay tab filters by name fragments (`LOADCELL`, `KG1000`, `PRESSURE`, `VALVE`, ...) | No | Partial | Return `tab` per series in `/api/recordings/{id}/replay/context` |
 | D6 | `src/telemetry_dashboard/custom_dashboard.rs:33-216` (`defaults()`), `layout_defaults` | Personal dashboard default cards: `LOADCELL_50_WEIGHT_KG`, `LOADCELL_WEIGHT_KG`, `COMBUSTION_CHAMBER_PRESSURE`, `OX_TANK_PRESSURE`, battery cards, valve cards | **Yes**: `/api/layout` `data_tab` channels, labels, units | Resolved | **Fixed**: defaults keep only cards whose data type the layout's `data_tab` names, with `VALVE_STATE` labels from its channel names and units from formatter suffixes; a layout sharing none of the built-in types gets one card per data-tab tab. An untouched built-in dashboard adopts them when the layout arrives, and Restore defaults uses them. With no data tab the built-in list remains |
-| D7 | `src/telemetry_dashboard/watch_companion/registry.rs:120-240` | Watch items bound to `ASCENT_STATE`, `GPS_*`, `OX_TANK_PRESSURE`, `COMBUSTION_CHAMBER_PRESSURE`, `LOADCELL_WEIGHT_KG`, `LOADCELL_FILL_PERCENT`, `BATTERY_VOLTAGE`@`PB` | Partial: GS `/api/watch/status` mirrors the registry | Blocks watch items for another vehicle | New `watch_items[]` (id, label, channels, unit) in `/api/watch/actions` or a `/api/watch/items` route |
+| D7 | `src/telemetry_dashboard/watch_companion/registry.rs` (`telemetry_channels`), `snapshot.rs`, `publisher.rs` | Watch items bound to `ASCENT_STATE`, `GPS_*`, `OX_TANK_PRESSURE`, `COMBUSTION_CHAMBER_PRESSURE`, `LOADCELL_WEIGHT_KG`, `LOADCELL_FILL_PERCENT`, `BATTERY_VOLTAGE`@`PB` | **Yes** (new): `/api/layout` `watch_items` | Resolved | **Fixed**: an item listed in `watch_items` reads its channels (`data_type`, `sender_id?`, `index`); others keep the built-in ones. The item set, labels, units and pages stay in the registry (the watch apps render them by id). GroundStation26 `/api/watch/status` applies the same list |
 | D8 | `src/telemetry_dashboard/vehicle_tab.rs:975` (`saved_valve_mappings`) | `VALVE_STATE` index → label for portable replay files (Pilot, Normally-open, Dump, Igniter, Nitrogen, Nitrous, Plumbing) | **Yes**: the layout's `VALVE_STATE` blocks (`valves`/`items`, `valve_labels`) | Resolved | **Fixed**: when the layout has a `VALVE_STATE` block, `valve_mappings` carry exactly the valves it names (any index below 128), the table only filling missing labels; with no block the table is the mapping |
 | D9 | `src/telemetry_dashboard/types.rs:8-13` | Legacy rename `FUEL_TANK_PRESSURE` → `OX_TANK_PRESSURE` on ingress | n/a (mirrors backend) | Cosmetic | Keep; vehicle-neutral in effect (no-op for other names) |
 | D10 | `src/telemetry_dashboard/flight_review_view.rs:607-608` | Thrust chart series labelled `KG1000`/`KG50` | Partial: series come from `/api/flight_review/...` fields `kg1000_kg`, `kg50_kg` | Cosmetic | Add `series[].label` to the review response |
@@ -1052,12 +1057,12 @@ fallback to the current value.
 | C2 | `src/telemetry_dashboard/actions_tab.rs:36-43`, `src/auth.rs:361-364` | `Nitrogen`/`Nitrous` toggles send `NitrogenClose`/`NitrousClose`; permission alias | No | Partial | Optional `close_cmd` per action in `/api/layout` `actions_tab` |
 | C3 | `src/auth.rs:114-118`, `:353` | Local-only commands on RRLS: `ResetTClock`, `RadioModemCheck` | Partial: `/api/rrls/control` `takeover_commands` | Partial | Add `local_commands[]` to `/api/rrls/control` |
 | C4 | `src/telemetry_dashboard/dashboard_messages.rs:645` | Board abort disables `Launch`, `GroundStationLaunch`, `AdvanceFlightState`, `RewindFlightState` | Partial: `/api/action_policy` already disables them server-side | Partial | Rely on the policy only, or add `blocked_commands[]` to `BoardAbortSnapshot` |
-| C5 | `src/telemetry_dashboard/board_abort_readiness.rs:123` | Interlock list and labels (`TogglePlumbingDelayInterlock` "Retraction minimum 45 seconds", ...) | **No**: GroundStation26 `ActionControl` (`sequences.rs`) has no `label`, and no layout labels these four commands | Partial | Open (re-checked): add `label` to `action_policy.controls[]` (or list the interlocks in `/api/layout` `actions_tab`), then show it with the current text as fallback |
+| C5 | `src/telemetry_dashboard/board_abort_readiness.rs` (`HITL_INTERLOCKS`, `interlock_label`) | Interlock labels (`TogglePlumbingDelayInterlock` "Retraction minimum 45 seconds", ...) | **Yes** (new): `/api/layout` `actions_tab.controls[].label` | Resolved | **Fixed**: the label is the layout's `controls[]` entry for the command, the built-in text without one. The four commands and their order stay, since the order indexes the primary's mode configuration settings |
 | C6 | `src/telemetry_dashboard/watch_companion/actions.rs:19-25` | Launch/pyro command deny list | Yes: GS filters the watch catalog; `watch_safe` flag | Cosmetic (defence in depth) | Keep; document as safety rule |
 | C7 | `src/telemetry_dashboard/sequence_indicator.rs:36-63`, `sequence_progress_model.rs:30-50` | Sequence kinds and phase names (`NitrogenTest`, `Turbocharge`, `raising`, `settling`, ...) | Partial: `/api/gse/status` | Partial | Return `sequences[].{kind, label, phases[]}` in `/api/gse/status` |
 | C8 | `src/telemetry_dashboard/stream_rundown.rs:21-27`, `mission_phase.rs:78-110` | Detailed phase list (`PreFill`, `NitrogenFill`, `NitrousFill`, ...) for rundown profiles | Partial: `/api/layout` `flight_phase_version` | Partial | Add `phases[]` to `/api/live_streams` broadcast config |
 | C9 | `src/telemetry_dashboard/checklists.rs:300-303` | Auto-complete triggers `valve_self_test`, `nitrogen_test`, `fill_target` | No | Partial | Add `complete_on_options[]` to `GET /api/checklists` |
-| C10 | `src/telemetry_dashboard/layout.rs:701-706` | `FillTargetFluid` enum `nitrogen`/`nitrous` (unknown fluid fails to decode) | No | Blocks fill targets for other propellants | Make fluid a string with a label from `/api/fill_targets` |
+| C10 | `src/telemetry_dashboard/layout.rs` (`SummaryItem::fill_target_fluid`), `actions_tab.rs` (`fill_target_editors`), `dashboard_messages.rs` (`FillTargetsConfig::fluid`) | `FillTargetFluid` enum `nitrogen`/`nitrous` (unknown fluid failed to decode) | **Yes** (new): `/api/layout` `actions_tab.fill_target_fluids` | Partial (was Blocks) | **Fixed in part**: `fill_target_fluid` is any string, so a layout naming another propellant decodes; the fill-target editors are the layout's `fill_target_fluids` in its order and with its names. Left: the `/api/fill_targets` document and the GSE fill sequence carry exactly `nitrogen` and `nitrous` (GroundStation26 `FillTargetsConfig`), so another fluid id gets no editor until the station's fill targets become a keyed list |
 
 ### 7.4 Thresholds, geometry and wording
 
@@ -1089,9 +1094,14 @@ production code; coordinates and hosts in `src/` appear only in tests,
 placeholders (`layout_settings_tab.rs:1211`) and log-redaction examples.
 
 Small-safe fixes done: C1, D6, T4, N3, B9, D8, T2, T3 (with N2 and N6
-earlier). B8 and C5 were listed as small-safe but the backend does not supply
-the data (no calibration sender id, no interlock labels); each needs the
-optional backend field named in its row first.
+earlier). With new optional backend fields: B8 (`sensors[].sender_id`), C5
+(`actions_tab.controls`), D3 (`gps`), D7 (`watch_items`), C10 in part
+(`actions_tab.fill_target_fluids`); B1 uses the existing recovery
+`boards[].id`. The layout fields are read by `vehicle_bindings.rs` whenever a
+layout is applied, so they add no request; the demo layout names them
+(section 11) and replay files carry the station's layout. Each falls back to
+the built-in SEDS value, and the SEDS layouts name exactly those values
+(`vehicle_bindings::tests::the_seds_layout_names_the_built_in_values`).
 
 ---
 
@@ -1268,6 +1278,10 @@ that it is read-only); nothing leaves the device. The Data Export panel's
 checklist and recovery exports answer with small demo records in the
 station's shapes (`demo::record`), and the Checklists tab shows the same
 checklist document.
+
+The demo layout also names the optional vehicle bindings of section 6.1
+(`gps`, `watch_items`, `actions_tab.controls`,
+`actions_tab.fill_target_fluids`), bound to the demo's own channels.
 
 Live camera and voice are a station's. On a local station the broadcast page
 says "Live cameras need a Ground Station." and "Live voice needs a Ground Station." and

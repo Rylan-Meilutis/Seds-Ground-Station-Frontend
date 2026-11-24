@@ -131,16 +131,17 @@ impl Frame {
     }
     pub fn gps_for(&self, sender: &str) -> Option<(f64, f64, f64)> {
         let index = self.data.as_ref()?;
-        let row = ["GPS_DATA", "GPS", "ROCKET_GPS"]
-            .into_iter()
+        let row = super::vehicle_bindings::gps_types()
+            .iter()
             .filter_map(|kind| index.latest(kind, Some(sender), self.at_ms))
             .max_by_key(|row| (row.timestamp_ms, row.id))?;
         if row.timestamp_ms < 0 || self.at_ms.saturating_sub(row.timestamp_ms) > 5000 {
             return None;
         }
-        let lat = row.values.first().copied().flatten()? as f64;
-        let lon = row.values.get(1).copied().flatten()? as f64;
-        let alt = row.values.get(2).copied().flatten()? as f64;
+        let at = super::vehicle_bindings::gps_indices();
+        let lat = row.values.get(at.lat).copied().flatten()? as f64;
+        let lon = row.values.get(at.lon).copied().flatten()? as f64;
+        let alt = row.values.get(at.alt).copied().flatten()? as f64;
         (lat.is_finite()
             && lon.is_finite()
             && alt.is_finite()

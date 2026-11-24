@@ -813,6 +813,7 @@ fn TelemetryDashboardInner() -> Element {
                 && let Ok(()) = layout.validate()
             {
                 configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                vehicle_bindings::configure(&layout);
                 rebuild_chart_cache_from_visible_rows();
                 RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(false, Ordering::Relaxed);
                 layout_config.set(Some(layout));
@@ -841,6 +842,7 @@ fn TelemetryDashboardInner() -> Element {
                             return;
                         }
                         configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                        vehicle_bindings::configure(&layout);
                         rebuild_chart_cache_from_visible_rows();
                         RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD
                             .store(false, Ordering::Relaxed);
@@ -2496,6 +2498,7 @@ fn TelemetryDashboardInner() -> Element {
                         return;
                     }
                     configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                    vehicle_bindings::configure(&layout);
                     rebuild_chart_cache_from_visible_rows();
                     RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(false, Ordering::Relaxed);
                     layout_request_base.set(base.clone());
@@ -4665,24 +4668,25 @@ pub(crate) fn command_feedback_active(cmd: &str) -> bool {
             && now - last_ts <= COMMAND_VISUAL_FEEDBACK_MS)
 }
 
+/// A GPS row's `(lat, lon)`; the layout names the GPS types and indices
+/// ([`vehicle_bindings`]).
 fn row_to_gps(row: &TelemetryRow) -> Option<(f64, f64)> {
-    let is_gps_type = matches!(row.data_type.as_str(), "GPS" | "GPS_DATA" | "ROCKET_GPS");
-    if !is_gps_type {
+    if !vehicle_bindings::is_gps_type(&row.data_type) {
         return None;
     }
+    let at = vehicle_bindings::gps_indices();
     Some((
-        row.values.first().copied().flatten()? as f64,
-        row.values.get(1).copied().flatten()? as f64,
+        row.values.get(at.lat).copied().flatten()? as f64,
+        row.values.get(at.lon).copied().flatten()? as f64,
     ))
 }
 
 fn row_to_gps_altitude_m(row: &TelemetryRow) -> Option<f64> {
-    let is_gps_type = matches!(row.data_type.as_str(), "GPS" | "GPS_DATA" | "ROCKET_GPS");
-    if !is_gps_type {
+    if !vehicle_bindings::is_gps_type(&row.data_type) {
         return None;
     }
     row.values
-        .get(2)
+        .get(vehicle_bindings::gps_indices().alt)
         .copied()
         .flatten()
         .map(|value| value as f64)

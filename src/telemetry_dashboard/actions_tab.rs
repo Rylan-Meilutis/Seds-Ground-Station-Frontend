@@ -1691,8 +1691,9 @@ pub(super) fn MissionSettings(
                     h3 { style: "margin:0; color:{theme.text_primary};", "{translate_text(\"Fill Targets\")}" }
                     if let Some(cfg) = fill_targets.read().clone() {
                         div { style: "display:grid; grid-template-columns:repeat(auto-fit, minmax(min(100%, 220px), 1fr)); gap:10px;",
-                            FillTargetEditor { key: "nitrogen-{cfg.nitrogen.target_mass_kg:.2}-{cfg.nitrogen.target_pressure_psi:.1}", title: "Nitrogen", field: "nitrogen", target: cfg.nitrogen.clone(), theme: theme.clone(), fill_targets: fill_targets, fill_targets_status: fill_targets_status, enabled: fill_targets_editable }
-                            FillTargetEditor { key: "nitrous-{cfg.nitrous.target_mass_kg:.2}-{cfg.nitrous.target_pressure_psi:.1}", title: "Nitrous", field: "nitrous", target: cfg.nitrous.clone(), theme: theme.clone(), fill_targets: fill_targets, fill_targets_status: fill_targets_status, enabled: fill_targets_editable }
+                            for (field, title, target) in fill_target_editors(&layout, &cfg) {
+                                FillTargetEditor { key: "{field}-{target.target_mass_kg:.2}-{target.target_pressure_psi:.1}", title, field, target, theme: theme.clone(), fill_targets: fill_targets, fill_targets_status: fill_targets_status, enabled: fill_targets_editable }
+                            }
                         }
                         super::apogee_planner::AppliedPlanNote { theme: theme.clone(), nitrous_mass_kg: f64::from(cfg.nitrous.target_mass_kg), nitrous_psi: f64::from(cfg.nitrous.target_pressure_psi) }
                         button {
@@ -1781,10 +1782,8 @@ fn commit_fill_target_mass(
     let Some(mut next_cfg) = fill_targets.read().clone() else {
         return Err("Fill targets are not loaded yet.".to_string());
     };
-    match field {
-        "nitrogen" => next_cfg.nitrogen.target_mass_kg = normalized,
-        "nitrous" => next_cfg.nitrous.target_mass_kg = normalized,
-        _ => {}
+    if let Some(target) = next_cfg.fluid_mut(field) {
+        target.target_mass_kg = normalized;
     }
     fill_targets.set(Some(next_cfg));
     fill_targets_status.set("Unsaved fill target changes.".to_string());
@@ -1806,20 +1805,28 @@ fn commit_fill_target_pressure(
     let Some(mut next_cfg) = fill_targets.read().clone() else {
         return Err("Fill targets are not loaded yet.".to_string());
     };
-    match field {
-        "nitrogen" => next_cfg.nitrogen.target_pressure_psi = normalized,
-        "nitrous" => next_cfg.nitrous.target_pressure_psi = normalized,
-        _ => {}
+    if let Some(target) = next_cfg.fluid_mut(field) {
+        target.target_pressure_psi = normalized;
     }
     fill_targets.set(Some(next_cfg));
     fill_targets_status.set("Unsaved fill target changes.".to_string());
     Ok(format!("{normalized:.1}"))
 }
 
+/// `(field, title, targets)` of each fill-target editor: the layout's
+/// `fill_target_fluids` (built-in nitrogen and nitrous when it names none)
+/// that the station's fill-targets document carries.
+fn fill_target_editors(layout: &ActionsTabLayout, cfg: &FillTargetsConfig) -> Vec<(String, String, FluidFillTarget)> {
+    super::vehicle_bindings::fluids_of(&layout.fill_target_fluids)
+        .into_iter()
+        .filter_map(|(id, label)| cfg.fluid(&id).cloned().map(|target| (id, label, target)))
+        .collect()
+}
+
 #[component]
 fn FillTargetEditor(
-    title: &'static str,
-    field: &'static str,
+    title: String,
+    field: String,
     target: FluidFillTarget,
     theme: ThemeConfig,
     fill_targets: Signal<Option<FillTargetsConfig>>,
@@ -1834,9 +1841,11 @@ fn FillTargetEditor(
     let committed_pressure_value = format!("{:.1}", target.target_pressure_psi);
     let cursor = if enabled { "text" } else { "not-allowed" };
     let opacity = if enabled { "1.0" } else { "0.6" };
+    let (mass_title, mass_field) = (title.clone(), field.clone());
+    let (pressure_title, pressure_field) = (title.clone(), field.clone());
     rsx! {
         div { style: "padding:12px; border-radius:12px; border:1px solid {theme.border}; background:{theme.panel_background_alt}; display:flex; flex-direction:column; gap:10px; opacity:{opacity};",
-            div { style: "font-size:14px; font-weight:700; color:{theme.text_primary};", "{translate_text(title)}" }
+            div { style: "font-size:14px; font-weight:700; color:{theme.text_primary};", "{translate_text(&title)}" }
             div { style: "display:flex; flex-direction:column; gap:6px;",
                 label { style: "font-size:12px; color:{theme.text_muted}; text-transform:uppercase; letter-spacing:0.08em;", "{translate_text(\"Target mass (kg)\")}" }
                 input {
@@ -1859,8 +1868,8 @@ fn FillTargetEditor(
                         }
                         let current_draft = mass_draft.read().clone();
                         match commit_fill_target_mass(
-                            title,
-                            field,
+                            &mass_title,
+                            &mass_field,
                             current_draft.as_str(),
                             &mut fill_targets,
                             &mut fill_targets_status,
@@ -1896,8 +1905,8 @@ fn FillTargetEditor(
                         }
                         let current_draft = pressure_draft.read().clone();
                         match commit_fill_target_pressure(
-                            title,
-                            field,
+                            &pressure_title,
+                            &pressure_field,
                             current_draft.as_str(),
                             &mut fill_targets,
                             &mut fill_targets_status,
@@ -2126,3 +2135,55 @@ mod network_note_tests {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "action_sections_render_tests.rs"]
 mod section_render_tests;
+
+#[cfg(test)]
+mod fill_target_fluid_tests {
+    use super::*;
+
+    fn targets() -> FillTargetsConfig {
+        serde_json::from_value(serde_json::json!({"fill_source": "kg50", "version": 1,
+            "nitrogen": {"target_mass_kg": 0.5, "target_pressure_psi": 500.0},
+            "nitrous": {"target_mass_kg": 8.0, "target_pressure_psi": 750.0}}))
+        .unwrap()
+    }
+
+    fn titles(layout: &ActionsTabLayout) -> Vec<(String, String)> {
+        fill_target_editors(layout, &targets()).into_iter().map(|(field, title, _)| (field, title)).collect()
+    }
+
+    /// SEDS: the station's layout names nitrogen and nitrous, the editors
+    /// read as before; a layout naming none gets the same two.
+    #[test]
+    fn fill_target_editors_follow_the_layout_fluids() {
+        let file: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/backend-contract/replay-export/flight.json")).unwrap();
+        let seds: ActionsTabLayout = serde_json::from_value(file["layout"]["actions_tab"].clone()).unwrap();
+        let expected = vec![("nitrogen".to_string(), "Nitrogen".to_string()), ("nitrous".to_string(), "Nitrous".to_string())];
+        assert_eq!(titles(&seds), expected);
+        let bare: ActionsTabLayout = serde_json::from_value(serde_json::json!({"actions": []})).unwrap();
+        assert_eq!(titles(&bare), expected);
+        // Another station renames and reorders them; a fluid the fill-targets
+        // document does not carry gets no editor.
+        let other: ActionsTabLayout = serde_json::from_value(serde_json::json!({"actions": [], "fill_target_fluids": [
+            {"id": "nitrous", "label": "Oxidizer"}, {"id": "ethanol", "label": "Fuel"}, {"id": "nitrogen", "label": "Pressurant"}]})).unwrap();
+        assert_eq!(titles(&other), [("nitrous".to_string(), "Oxidizer".to_string()), ("nitrogen".to_string(), "Pressurant".to_string())]);
+        let (_, _, target) = &fill_target_editors(&other, &targets())[0];
+        assert_eq!(target.target_mass_kg, 8.0);
+    }
+
+    #[test]
+    fn a_layout_naming_another_propellant_still_decodes() {
+        let item: super::super::layout::SummaryItem = serde_json::from_value(serde_json::json!(
+            {"label": "LOX", "index": 0, "formatter": null, "fill_target_fluid": "lox", "fill_target_kind": "mass_kg"})).unwrap();
+        assert_eq!(item.fill_target_fluid.as_deref(), Some("lox"));
+    }
+
+    #[test]
+    fn edits_reach_the_named_fluid_only() {
+        let mut cfg = targets();
+        cfg.fluid_mut("nitrous").unwrap().target_mass_kg = 9.0;
+        assert_eq!(cfg.nitrous.target_mass_kg, 9.0);
+        assert_eq!(cfg.nitrogen.target_mass_kg, 0.5);
+        assert!(cfg.fluid_mut("ethanol").is_none());
+    }
+}

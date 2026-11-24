@@ -22,6 +22,11 @@ fn demo_routes_decode_with_the_live_dashboard_types() {
     let layout: LayoutConfig = decode(&station, "/api/layout");
     assert!(!layout.data_tab.tabs.is_empty());
     assert!(!layout.state_tab.states.is_empty());
+    // The vehicle bindings a station names in its layout are answered too.
+    assert_eq!(layout.gps.as_ref().map(|gps| gps.data_types.clone()), Some(vec!["GPS_DATA".to_string()]));
+    assert!(layout.watch_items.iter().any(|item| item.id == "loadcell_mass" && item.channels[0].data_type == "LOADCELL_50_WEIGHT_KG"));
+    assert!(layout.actions_tab.controls.iter().any(|c| c.cmd == "ToggleChecklistInterlock"));
+    assert_eq!(layout.actions_tab.fill_target_fluids.len(), 2);
     let boards: types::BoardStatusMsg = decode(&station, "/api/boards");
     assert_eq!(boards.boards.len(), 7);
     assert!(boards.boards.iter().all(|b| b.seen && b.age_ms.is_some_and(|a| a <= 1_000)), "every demo board is fresh");

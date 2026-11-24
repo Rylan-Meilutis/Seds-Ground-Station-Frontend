@@ -205,6 +205,7 @@ fn refresh_layout_after_runtime_mode(
                 }
 
                 configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                vehicle_bindings::configure(&layout);
                 rebuild_chart_cache_from_visible_rows();
                 RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(false, Ordering::Relaxed);
                 layout_config.set(Some(layout));

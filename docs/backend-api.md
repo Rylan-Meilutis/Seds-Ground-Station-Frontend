@@ -714,7 +714,10 @@ The backend reads this from `backend/config/calibration_config.json` by default,
 regressions. A sensor can override that list with its own `fit_modes`. The frontend must use these
 backend-provided modes rather than hard-coding regression choices. A sensor may also provide a
 `formatter` payload with the same shape used by the data tab so raw calibration values use the
-same backend-defined precision.
+same backend-defined precision. Optional `sender_id` names the board the sensor is read from
+(GroundStation26 sends `"DAQ"` for `KG1000` and `KG50`): Live Raw, captures and the ADC
+temperature then take only rows from that sender received within the last 2 s. Without it a
+load cell is read from `DAQ` and any other sensor from any sender.
 
 Supported regression mode ids are:
 
@@ -1217,7 +1220,8 @@ Generic layout behavior:
 - the Settings UI `Maintenance` tab also includes `Clear Current Data`, which clears current visible telemetry plus the persisted telemetry cache without forcing a reconnect or reseed.
 - the Settings UI `Maintenance` tab also shows rotating frontend debug logs. Operators choose an individual log artifact before using the platform-specific action: `Download Logs` on web, `Share Logs` on mobile, or `View Logs` on desktop.
 - frontend debug logs intentionally omit location coordinates, telemetry payload dumps, passwords, and auth tokens. They are meant to capture UI actions, runtime events, connection transitions, and similar debugging context.
-- state summary fill targets support explicit `fill_target_fluid` and `fill_target_kind` per item. Current legacy inference also exists for `OX_TANK_PRESSURE[0]` and `LOADCELL_WEIGHT_KG[0]`, and for those legacy cases the frontend chooses nitrogen vs nitrous target mass/pressure from the current flight state.
+- vehicle bindings (all optional; each absent one keeps the built-in SEDS value): `gps` `{data_types[], lat_index, lon_index, alt_index}` says which rows are GPS fixes (map, vehicle view, replay track and terrain, watch rocket target); `watch_items[] {id, channels:[{data_type, sender_id?, index}]}` rebinds watch items by id; `actions_tab.controls[] {cmd, label}` names controls that are not layout buttons (the HITL interlock toggles); `actions_tab.fill_target_fluids[] {id, label}` lists the `/api/fill_targets` fluids to edit, in order, with their names.
+- state summary fill targets support explicit `fill_target_fluid` (any fluid id string) and `fill_target_kind` per item. Current legacy inference also exists for `OX_TANK_PRESSURE[0]` and `LOADCELL_WEIGHT_KG[0]`, and for those legacy cases the frontend chooses nitrogen vs nitrous target mass/pressure from the current flight state.
 - the valve board's oxidiser tank PT is `OX_TANK_PRESSURE` (f32, psi). It was `FUEL_TANK_PRESSURE` before 2026-11; the backend serves every live, history, replay and export row, layout and calibration config under the new name, and the client also maps the old name when it loads its own saved state (telemetry cache, layout cache, custom dashboard cards, selected data tab, cached calibration layout) and on row ingress (`TelemetryRow::refresh_interned_ids`).
 - `LOADCELL_WEIGHT_KG` and `LOADCELL_FILL_PERCENT` should be published by the backend as real derived telemetry. The frontend no longer fabricates calibrated loadcell or fill-percent chart/label data from raw `KG1000`.
 - `LOADCELL_FILL_PERCENT[0]` is expected to use the active fill target for the current flight state. Current frontend/backend behavior is nitrogen target during `PreFill`, `FillTest`, and `NitrogenFill`, and nitrous target otherwise.

@@ -316,12 +316,8 @@ fn percent_component(value: &str) -> String {
     out
 }
 fn replay_types(cfg: &VehicleVisualizationConfig) -> Vec<String> {
-    let mut types = std::collections::BTreeSet::from([
-        "FLIGHT_STATE".to_owned(),
-        "GPS_DATA".to_owned(),
-        "GPS".to_owned(),
-        "ROCKET_GPS".to_owned(),
-    ]);
+    let mut types = std::collections::BTreeSet::from(["FLIGHT_STATE".to_owned()]);
+    types.extend(super::vehicle_bindings::gps_types());
     let mut add = |binding: &Option<VehicleTelemetryBinding>| {
         if let Some(binding) = binding {
             types.insert(binding.data_type.clone());

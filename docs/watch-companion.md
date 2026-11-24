@@ -44,7 +44,7 @@ Wear OS watch ──Wear Data Layer──┘                                    
 
 | Part | File |
 | --- | --- |
-| Registry of items/pages/targets | `src/telemetry_dashboard/watch_companion/registry.rs` |
+| Registry of items/pages/targets | `src/telemetry_dashboard/watch_companion/registry.rs`; a telemetry item's channels can be rebound by the station's layout (`watch_items`, `registry::telemetry_channels`) |
 | Settings model + validation | `.../watch_companion/settings.rs` |
 | Wire format | `.../watch_companion/protocol.rs` |
 | Geodesy (shared test vectors) | `.../watch_companion/geodesy.rs`, `watch/test-vectors.json` |

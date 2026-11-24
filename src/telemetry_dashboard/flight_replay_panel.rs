@@ -121,7 +121,7 @@ fn mount_script(root: &str, document: &Value, options: &Value) -> Result<String,
 /// Rows of the live store as the player takes them.
 fn live_rows(rows: impl IntoIterator<Item = super::types::TelemetryRow>) -> Vec<Value> {
     rows.into_iter()
-        .filter(|r| LIVE_TYPES.contains(&r.data_type.as_str()))
+        .filter(|r| LIVE_TYPES.contains(&r.data_type.as_str()) || super::vehicle_bindings::is_gps_type(&r.data_type))
         .map(|r| json!({"timestamp_ms": r.timestamp_ms, "data_type": r.data_type, "sender_id": r.sender_id, "values": r.values}))
         .collect()
 }
@@ -149,7 +149,10 @@ pub(super) fn FlightReplayPanel(recording: String) -> Element {
                 }
                 let mut fresh = Vec::new();
                 let mut marks = live_marks.read().clone();
-                for kind in LIVE_TYPES {
+                // Plus the GPS types the layout names, when they differ.
+                let gps = super::vehicle_bindings::gps_types();
+                let kinds = LIVE_TYPES.iter().copied().chain(gps.iter().map(String::as_str).filter(|t| !LIVE_TYPES.contains(t)));
+                for kind in kinds {
                     if let Some(row) = super::latest_telemetry_row(kind, None)
                         && marks.get(kind).is_none_or(|t| *t < row.timestamp_ms)
                     {

@@ -86,6 +86,7 @@ mod host_power_admin;
 mod recovery_marker;
 pub(crate) mod tclock;
 mod auto_vent_notice;
+pub(crate) mod vehicle_bindings;
 mod fc_estimator_notice;
 pub(crate) mod igt;
 mod igt_view;
@@ -1535,6 +1536,7 @@ fn refresh_layout_after_ws_reconnect(
                 }
 
                 configure_sender_split_data_types(&layout.data_tab.sender_split_data_types);
+                vehicle_bindings::configure(&layout);
                 rebuild_chart_cache_from_visible_rows();
                 RESTORED_TELEMETRY_CACHE_NEEDS_CHART_REBUILD.store(false, Ordering::Relaxed);
                 layout_config.set(Some(layout.clone()));

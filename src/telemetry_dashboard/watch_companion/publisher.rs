@@ -199,13 +199,14 @@ fn telemetry_sample(dt: &str, sender: Option<&str>, index: usize) -> Option<snap
 }
 
 fn rocket_from_telemetry() -> Option<(f64, f64, Option<f64>, i64)> {
-    ["GPS_DATA", "GPS", "ROCKET_GPS"]
+    let at = super::super::vehicle_bindings::gps_indices();
+    super::super::vehicle_bindings::gps_types()
         .iter()
         .filter_map(|dt| latest_telemetry_row(dt, None))
         .filter_map(|row| {
-            let lat = row.values.first().copied().flatten()? as f64;
-            let lon = row.values.get(1).copied().flatten()? as f64;
-            let alt = row.values.get(2).copied().flatten().map(f64::from);
+            let lat = row.values.get(at.lat).copied().flatten()? as f64;
+            let lon = row.values.get(at.lon).copied().flatten()? as f64;
+            let alt = row.values.get(at.alt).copied().flatten().map(f64::from);
             Some((lat, lon, alt, telemetry_row_received_ms(&row)))
         })
         .max_by_key(|(.., received)| *received)
@@ -214,13 +215,10 @@ fn rocket_from_telemetry() -> Option<(f64, f64, Option<f64>, i64)> {
 fn newest_telemetry_ms() -> Option<i64> {
     registry::ITEMS
         .iter()
-        .filter_map(|item| match item.source {
-            registry::Source::Telemetry { channels, .. } => Some(channels),
-            _ => None,
-        })
+        .filter_map(registry::telemetry_channels)
         .flatten()
         .filter_map(|(dt, sender, _)| {
-            latest_telemetry_row(dt, *sender).map(|row| telemetry_row_received_ms(&row))
+            latest_telemetry_row(&dt, sender.as_deref()).map(|row| telemetry_row_received_ms(&row))
         })
         .max()
 }

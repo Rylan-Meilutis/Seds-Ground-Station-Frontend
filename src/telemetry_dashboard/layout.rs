@@ -22,6 +22,49 @@ pub struct LayoutConfig {
     pub state_tab: StateTabLayout,
     #[serde(default)]
     pub battery: BatteryLayoutConfig,
+    /// Which rows are GPS fixes and where latitude, longitude and altitude
+    /// sit in them; omitted: [`super::vehicle_bindings`]' built-in types.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gps: Option<GpsLayout>,
+    /// Watch item channels by item id; an item not listed keeps its
+    /// built-in channels (`watch_companion::registry`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watch_items: Vec<WatchItemBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct GpsLayout {
+    /// Data types carrying a fix, in preference order.
+    pub data_types: Vec<String>,
+    #[serde(default)]
+    pub lat_index: usize,
+    #[serde(default = "default_gps_lon_index")]
+    pub lon_index: usize,
+    #[serde(default = "default_gps_alt_index")]
+    pub alt_index: usize,
+}
+
+fn default_gps_lon_index() -> usize {
+    1
+}
+
+fn default_gps_alt_index() -> usize {
+    2
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchItemBinding {
+    pub id: String,
+    pub channels: Vec<WatchChannel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WatchChannel {
+    pub data_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sender_id: Option<String>,
+    #[serde(default)]
+    pub index: usize,
 }
 
 fn phase_version_is_legacy(version: &u8) -> bool {
@@ -513,6 +556,25 @@ pub struct ActionsTabLayout {
     #[serde(default = "default_fill_targets_require_actions_enabled")]
     pub fill_targets_require_actions_enabled: bool,
     pub actions: Vec<ActionSpec>,
+    /// Names of controls that are not buttons here (the HITL interlocks).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub controls: Vec<ControlLabel>,
+    /// The fill-target fluids to edit, in order, with their names.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fill_target_fluids: Vec<FillTargetFluidSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlLabel {
+    pub cmd: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FillTargetFluidSpec {
+    /// The fluid's key in `/api/fill_targets`.
+    pub id: String,
+    pub label: String,
 }
 
 fn default_show_flight_setup() -> bool {
@@ -661,8 +723,9 @@ pub struct SummaryItem {
     pub label: String,
     pub index: usize,
     pub formatter: Option<ValueFormatter>,
+    /// A fluid id of `/api/fill_targets` (any propellant name decodes).
     #[serde(default)]
-    pub fill_target_fluid: Option<FillTargetFluid>,
+    pub fill_target_fluid: Option<String>,
     #[serde(default)]
     pub fill_target_kind: Option<FillTargetValueKind>,
 }
@@ -696,13 +759,6 @@ pub enum ValueFormatKind {
     #[default]
     Number,
     Integer,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FillTargetFluid {
-    Nitrogen,
-    Nitrous,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

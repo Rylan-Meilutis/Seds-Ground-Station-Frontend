@@ -166,7 +166,8 @@ pub(crate) fn layout() -> Value {
             {"label": "Nitrogen", "cmd": "Nitrogen", "border": "#60a5fa", "bg": "#0b1220", "fg": "#bfdbfe", "group": "Manual GSE valves"},
             {"label": "Nitrous", "cmd": "Nitrous", "border": "#60a5fa", "bg": "#0b1220", "fg": "#bfdbfe", "group": "Manual GSE valves"},
             {"label": "Abort", "cmd": "Abort", "border": "#ef4444", "bg": "#450a0a", "fg": "#fecaca", "group": "Flight controls"}
-        ]},
+        ], "controls": [{"cmd": "ToggleChecklistInterlock", "label": "Checklist enforcement"}],
+           "fill_target_fluids": [{"id": "nitrogen", "label": "Nitrogen"}, {"id": "nitrous", "label": "Nitrous"}]},
         "data_tab": {
             "sender_split_data_types": ["BATTERY_VOLTAGE"],
             "tabs": [
@@ -215,7 +216,15 @@ pub(crate) fn layout() -> Value {
                 {"title": "Flight", "widgets": flight},
                 {"title": "Batteries", "widgets": [batteries]}
             ]}
-        ]}
+        ]},
+        // The vehicle bindings a station names (vehicle_bindings): the demo's
+        // GPS rows, and the watch items its own channels feed.
+        "gps": {"data_types": ["GPS_DATA"], "lat_index": 0, "lon_index": 1, "alt_index": 2},
+        "watch_items": [
+            {"id": "tank_pressure", "channels": [{"data_type": "OX_TANK_PRESSURE", "sender_id": "VB", "index": 0}]},
+            {"id": "loadcell_mass", "channels": [{"data_type": "LOADCELL_50_WEIGHT_KG", "sender_id": "DAQ", "index": 0}]},
+            {"id": "av_battery", "channels": [{"data_type": "BATTERY_VOLTAGE", "sender_id": "PB", "index": 0}]}
+        ]
     })
 }
 

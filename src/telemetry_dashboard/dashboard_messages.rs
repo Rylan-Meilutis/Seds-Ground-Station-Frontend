@@ -242,6 +242,25 @@ pub(crate) struct FillTargetsConfig {
     pub nitrous: FluidFillTarget,
 }
 
+impl FillTargetsConfig {
+    /// The targets of fluid `id` (a layout `fill_target_fluids` id).
+    pub(crate) fn fluid(&self, id: &str) -> Option<&FluidFillTarget> {
+        match id {
+            "nitrogen" => Some(&self.nitrogen),
+            "nitrous" => Some(&self.nitrous),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn fluid_mut(&mut self, id: &str) -> Option<&mut FluidFillTarget> {
+        match id {
+            "nitrogen" => Some(&mut self.nitrogen),
+            "nitrous" => Some(&mut self.nitrous),
+            _ => None,
+        }
+    }
+}
+
 fn default_fill_source() -> String {
     "kg50".into()
 }
