@@ -308,8 +308,14 @@ pub fn station_app_name() -> &'static str {
     }
 }
 
+/// The station's own name from `GET /api/auth/session` `station_name`, else
+/// the role's default.
 pub fn station_name() -> String {
-    match current_status().station_role.as_deref() {
+    let status = current_status();
+    if let Some(name) = status.station_name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
+        return name.chars().take(64).collect();
+    }
+    match status.station_role.as_deref() {
         Some("rrls") => "RRLS".into(),
         _ => "GroundStation".into(),
     }
