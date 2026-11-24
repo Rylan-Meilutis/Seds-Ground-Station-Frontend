@@ -807,11 +807,9 @@ impl LocalStation {
     }
 
     fn missed(&self, path: &str) {
-        if !self.misses.borrow_mut().insert(path.to_owned()) {
-            return;
-        }
+        let first = self.misses.borrow_mut().insert(path.to_owned());
         #[cfg(target_arch = "wasm32")]
-        if let Some(window) = web_sys::window() {
+        if first && let Some(window) = web_sys::window() {
             let key = wasm_bindgen::JsValue::from_str("__gs26LocalMisses");
             let list = js_sys::Reflect::get(&window, &key).ok().and_then(|v| wasm_bindgen::JsCast::dyn_into::<js_sys::Array>(v).ok()).unwrap_or_else(|| {
                 let list = js_sys::Array::new();
@@ -820,6 +818,8 @@ impl LocalStation {
             });
             list.push(&path.into());
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = first;
     }
 
     /// Paths of the GET requests answered "Not available offline" so far.
