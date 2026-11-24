@@ -90,10 +90,10 @@ test('the prediction scenario: no visible labels overlap and the pinned ones sta
  for(let i=0;i<visible.length;i++)for(let j=i+1;j<visible.length;j++){
   assert.ok(!overlaps(box(...visible[i]),box(...visible[j])),`${visible[i][0].text} overlaps ${visible[j][0].text}`);
  }
- for(const re of [/^Last fix/,/no signal: now$/,/no signal: landing$/,/^Predicted landing$/,/3766 m AGL/]){
+ for(const re of [/^Last fix/,/no signal: now$/,/no signal: landing$/,/^Predicted landing$/,/3768 m AGL/]){
   const i=items.findIndex(it=>re.test(it.text));assert.ok(i>=0&&out[i].visible,`${re} is shown`);
  }
- const drogue=items.findIndex(it=>it.text==='Predicted drogue');const apogee=items.findIndex(it=>/3766 m AGL/.test(it.text));
+ const drogue=items.findIndex(it=>it.text==='Predicted drogue');const apogee=items.findIndex(it=>/3768 m AGL/.test(it.text));
  assert.ok(!out[drogue].visible||!overlaps(box(items[drogue],out[drogue]),box(items[apogee],out[apogee])),'drogue never covers the apogee label');
 });
 

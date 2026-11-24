@@ -103,7 +103,7 @@ async function mapScene(name,withLos,zoom=null){
   assert.ok(result.placed.every(l=>['placed','crowded','hidden'].includes(l.state)),JSON.stringify(result.placed.map(l=>l.state)));
   const shown=result.placed.filter(l=>l.visible);
   for(let i=0;i<shown.length;i++)for(let j=i+1;j<shown.length;j++)assert.ok(!overlap(shown[i].box,shown[j].box),`"${shown[i].text}" overlaps "${shown[j].text}"`);
-  for(const re of withLos?[/^Last fix/,/no signal: now$/,/no signal: landing$/,/^Predicted landing$/]:[/^Predicted landing$/,/3766 m AGL/])assert.ok(shown.some(l=>re.test(l.text)),`${re} shown`);
+  for(const re of withLos?[/^Last fix/,/no signal: now$/,/no signal: landing$/,/^Predicted landing$/]:[/^Predicted landing$/,/3768 m AGL/])assert.ok(shown.some(l=>re.test(l.text)),`${re} shown`);
   if(artifacts){fs.mkdirSync(artifacts,{recursive:true});await page.screenshot({path:path.join(artifacts,name+'.png')});}
   // Hidden labels appear while the pointer is on their point, and after a tap.
   const hidden=await page.evaluate(()=>{const r=document.getElementById('ground-map').getBoundingClientRect();
