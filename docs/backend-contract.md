@@ -576,9 +576,116 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | POST | `/api/apogee_planner/calibrate_flight` | `{actual_apogee_m}` → `Status` | same | send_commands | M |
 | POST | `/api/apogee_planner/ork` | OpenRocket file (octet-stream) → `Status` | same | send_commands | M |
 | DELETE | `/api/apogee_planner/ork` | none → `Status` | same | send_commands | M |
+| GET | `/api/flight_plans` | → `{plans: [PlanSummary], defaults: PlanRequest, limits: {max_samples, max_plans}}` ([5.8.1](#581-flight-plans-loss-of-signal-prediction-and-map-overlays)) | Settings → Mission → Flight simulation | view_data | M |
+| POST | `/api/flight_plans/run` | `PlanRequest` → plan document (any station mode; read-only computation) | same | send_commands | M (station's refusal shown) |
+| GET | `/api/flight_plans/{id}` | → plan document | same; Map tab "Show on map"; 3D replay comparison | view_data | M |
+| DELETE | `/api/flight_plans/{id}` | none → `{deleted: id}` | same | send_commands | M |
+| GET | `/api/flight_plans/{id}/csv` | `text/csv` attachment `<id>.csv` | same → Export CSV | view_data | M |
+| GET | `/api/flight_plans/{id}/json` | plan document as attachment `<id>.json` | same → Export JSON | view_data | M |
+| GET | `/api/flight_plans/{id}/bundle` | `.gsreplay` with `manifest.predicted: true` ([replay-bundle.md](replay-bundle.md#predicted-bundles-flight-plans)) | same → Play in replay (offline workspace) | view_data | M |
+| GET | `/api/los_prediction` | → `LosState` ([5.8.1](#581-flight-plans-loss-of-signal-prediction-and-map-overlays)), polled every 2 s on the Map tab | Map tab card and overlay; phone watch relay | view_data | K (no card; 404 polls every 30 s) |
+| PUT | `/api/los_prediction/settings` | `{enabled, timeout_s}` (2–60 s) → any | Settings → Mission → Loss-of-signal prediction | admin | M |
+| POST | `/api/los_prediction/simulate` | `{last_fix: {t_ms, lat_deg, lon_deg, alt_msl_m, ve_mps?, vn_mps?, vu_mps?}, phase, elapsed_s, site?}` → `LosState` with `state: "predicting"` | 3D replay → Simulate signal loss here (disabled offline) | view_data | M |
 
 See [recorded-vehicle-replay.md](recorded-vehicle-replay.md) and GroundStation26
 `docs/backend/data-capture.md`, `docs/backend/rolling-recording.md`.
+
+#### 5.8.1 Flight plans, loss-of-signal prediction and map overlays
+
+The station computes; the UI renders. Nothing below is computed in the UI
+except the bearing and distance from the viewer's own location. Mock
+documents of these shapes live in `tests/fixtures/flight-predict-mock/`
+until the backend's own fixtures replace them.
+
+**Flight phases** (plan points, tracks): `pad`, `boost`, `coast`, `drogue`,
+`main`, `landed`; `apogee` is a marker. Palette (every renderer): pad
+`#94a3b8`, boost `#f97316`, coast `#facc15`, apogee marker `#ffffff` with a
+dark outline, drogue `#38bdf8`, main `#22c55e`, landed `#a78bfa`, unknown
+`#64748b`. Predicted plan tracks use the same colours, dashed, 55 % opacity.
+LOS data is pink `#f472b6` (dashed path, hollow predicted-position ring,
+areas filled 15 % with a dashed outline). The plan landing ellipse is
+`#a78bfa`, dashed, 12 % fill. Search coverage: covered `#22c55e` 30 %,
+uncovered `#ef4444` 25 %, searcher tracks `#0ea5e9 #eab308 #ec4899 #14b8a6
+#f97316 #8b5cf6`.
+
+`MapOverlay` (drawn on the 2D map, the 3D map and the 3D replay):
+
+    {"id": "flight_plan:fp-1767225600000-1a2b3c4d", "kind": "flight_plan", "label": "Predicted: SWEET V6 8.5 kg", "predicted": true,
+     "tracks": [{"id": "boost", "phase": "boost", "label": "Powered ascent", "style": "predicted", "points": [[31.758, -102.046, 890.0]]}],
+     "markers": [{"id": "landing", "kind": "landing", "label": "Predicted landing", "lat_deg": 31.76, "lon_deg": -102.03, "alt_msl_m": 890.0}],
+     "areas": [{"id": "landing_ellipse", "kind": "landing_ellipse", "label": "95% landing area", "polygon": [[31.76, -102.03], [31.761, -102.031]]}]}
+
+- Points are `[lat_deg, lon_deg, alt_msl_m]` (altitude may be null).
+  Polygons are open rings of at most 72 points.
+- `kind`: `flight_plan`, `los_prediction` or `search_coverage`. Marker kinds:
+  `landing`, `apogee`, `event`, `predicted_position`, `last_fix`. Area kinds:
+  `landing_ellipse`, `position_uncertainty`, `search_swath`, `uncovered`.
+- The UI hands overlays to `window.setGroundMapOverlays(provider, overlays)`
+  (`static/ground_map.js`; providers `flight_plan`, `los`, `los_replay`,
+  `search`; `[]` clears one). The merged list is
+  `window.__gs26_map_overlays`, announced by the `gs26-map-overlays` window
+  event. The 3D replay element takes the same array in `data-overlays`.
+
+`PlanRequest` (`POST /api/flight_plans/run`; every field optional,
+`defaults` shows them filled in):
+
+    {"kind": "flight", "label": "8.5 kg nominal", "fill_kg": 8.5, "target_apogee_m": null, "supercharge_psi": 750, "tank_temp_c": null,
+     "motor_model": "physics",
+     "weather": {"source": "manual", "manual": {"surface_temp_c": 20, "surface_pressure_hpa": null, "wind_mps": 4, "wind_from_deg": 300, "gust_mps": 1,
+                 "wind_1km_mps": null, "wind_1km_from_deg": null, "wind_3km_mps": null, "wind_3km_from_deg": null}},
+     "launch": {"rail_length_m": 5.18, "tilt_deg": 2.0, "azimuth_deg": 0.0},
+     "site": {"lat_deg": 31.758, "lon_deg": -102.046, "alt_msl_m": 890.0},
+     "dispersion": {"samples": 50, "seed": 1}}
+
+`kind` is `flight` or `burn` (motor curves only, no trajectory or overlay).
+Give `fill_kg` or `target_apogee_m` (the planner's solver picks the fill).
+`weather.source` is `planner`, `manual` or `cached`. The UI sends `site: null`
+unless the operator overrides the site.
+
+`PlanSummary`: `{id, label, kind, created_ms, created_by, fill_kg, apogee_m,
+landing: {lat_deg, lon_deg, drift_m, bearing_deg} | null, dispersion_samples,
+warnings}` (`warnings` is a count).
+
+Plan document (`format` `gs26.flight_plan`, `version` 1, `predicted: true`):
+`id`, `label`, `kind`, `created_ms`, `created_by`, `station_mode`, `inputs`
+(the resolved request with the weather used), `vehicle_source`,
+`motor_model`, `site`, `summary` (`fill_kg`, `supercharge_psi`,
+`tank_temp_c`, `impulse_ns`, `burn_s`, `apogee_m`, `apogee_msl_m`,
+`time_to_apogee_s`, `max_speed_mps`, `max_mach`, `rail_exit_mps`,
+`landing_s`, `drift_m`, `drift_bearing_deg`), `events[]` (`kind` ∈
+`ignition`, `liftoff`, `rail_exit`, `burnout`, `apogee`, `drogue`, `main`,
+`landing`; `t_s` from ignition; `lat_deg`, `lon_deg`, `alt_msl_m`, `e_m`,
+`n_m`, `u_m`), `points[]` (`t_s`, `phase`, `e_m`, `n_m`, `u_m`, `lat_deg`,
+`lon_deg`, `alt_msl_m`, `ve_mps`, `vn_mps`, `vu_mps`, `attitude_q` (ENU, w x
+y z, null after apogee)), `thrust_curve {t_s[], thrust_n[]}`, `burn` (`t_s`,
+`thrust_n`, `chamber_psi`, `tank_psi`, `mdot_ox_kg_s`, `mdot_fuel_kg_s`,
+`of_ratio`, `n2o_kg`, `summary`; null for the `scaling` motor model),
+`landing {lat_deg, lon_deg, alt_msl_m, e_m, n_m, t_s}`, `dispersion` (null
+when `samples` is 0: `samples`, `seed`, `sigmas`, `apogee_m {mean, sd, p05,
+p95}`, `landing_ellipse {center_lat_deg, center_lon_deg, semi_major_m,
+semi_minor_m, major_bearing_deg, confidence, polygon}`, `landing_points`),
+`warnings[]` (text) and `overlay` (a `MapOverlay`).
+
+`LosState` (`GET /api/los_prediction`, and the simulate reply):
+
+    {"state": "predicting", "label": "Predicted: no signal", "advisory": true, "settings": {"enabled": true, "timeout_s": 5},
+     "last_fix": {"t_ms": 0, "lat_deg": 31.759, "lon_deg": -102.04, "alt_msl_m": 2500, "alt_agl_m": 1610, "ve_mps": 3.5, "vn_mps": -1.0, "vu_mps": -25.0, "source": "FC GPS"},
+     "signal_lost_ms": 0, "since_fix_s": 12.3, "phase": "drogue",
+     "predicted_now": {"lat_deg": 31.7591, "lon_deg": -102.039, "alt_msl_m": 2190, "alt_agl_m": 1300, "sigma_m": 25},
+     "landing": {"lat_deg": 31.76, "lon_deg": -102.03, "alt_msl_m": 890, "t_ms": 0, "in_s": 140, "semi_major_m": 220, "semi_minor_m": 90},
+     "station": {"lat_deg": 31.75, "lon_deg": -102.05}, "from_station": {"bearing_deg": 70.1, "distance_m": 1500},
+     "wind_source": "manual", "overlay": {"…": "MapOverlay, kind los_prediction"}, "comparison": null, "history": []}
+
+- `state`: `idle` (not in flight or disabled), `armed` (in flight with
+  signal), `predicting` (no rocket packet for `timeout_s` between launch and
+  Landed), `resolved` (signal or a GPS fix came back; `comparison` =
+  `{resolved_ms, resolved_by: "signal"|"gps_fix", predicted, actual, error_m,
+  since_fix_s}`). `history` holds the last 10 comparisons.
+- Every field except `state`, `label`, `advisory`, `settings` and `history`
+  may be null.
+- The Map tab shows the card and overlay while `predicting` or `resolved`.
+  Bearing and distance are from the viewer's own location; `from_station`
+  is the fallback when the viewer's position is unknown.
 
 ### 5.9 Station settings, modes, system and administration
 
@@ -671,8 +778,17 @@ Detail: [media-and-dashboard.md](media-and-dashboard.md),
 ### 5.13 Watch companion and watch direct link
 
 The phone side (in `src/`) uses `/api/watch/actions`, `/api/auth/watch-token`,
-`/api/account/client-settings/watch`, `/api/map_config`, `/api/antenna/status`
-and `/api/voice/ws`. The watches talk to the station directly only in direct
+`/api/account/client-settings/watch`, `/api/map_config`, `/api/antenna/status`,
+`/api/los_prediction` (to relay the predicted rocket position) and
+`/api/voice/ws`.
+
+While a loss-of-signal prediction is `predicting`, `targets` in
+`/api/watch/status` (and in the phone's snapshot) gains
+`{"id": "rocket_predicted", "label": "Predicted: no signal", "lat", "lon",
+"alt_m", "age_ms": <since the last fix>, "stale": false, "source":
+"Prediction", "fallback": false, "predicted": true}`. Every other target
+carries `"predicted": false`. Watches draw it distinctly and never as the
+real rocket ([watch-companion.md](watch-companion.md)). The watches talk to the station directly only in direct
 mode, with a watch token issued through the phone.
 
 | Method | Path | Body / response | Used by | Permission | On failure |
@@ -1002,6 +1118,14 @@ A station-made bundle (`GET /api/recordings/{id}/bundle`) completes
 `replay.json` with `boards`, `vehicle_geometry`, `layout` and `mode` itself, so
 a bundle fetched by any client (or by `curl`) is complete.
 
+Predicted data: a replay file or bundle with `"predicted": true` (in
+`replay.json` or `manifest.json`) is a flight plan played as a recording
+(`GET /api/flight_plans/{id}/bundle`). The workspace labels it "Predicted"
+in the banner, the transport bar, the map (dashed purple track) and the
+charts, and the 3D player's header says it is simulated. A recording
+bundle's `derived/flight_plans.json` offers plans to compare on the map and
+the altitude chart ([replay-bundle.md](replay-bundle.md#predicted-bundles-flight-plans)).
+
 ## 11. Demo mode: a local reference station
 
 With no station, the offline workspace starts in demo mode (banner "Demo
@@ -1241,6 +1365,16 @@ section 5. WebSocket upgrades are listed as `GET`.
 - `POST /api/apogee_planner/calibrate_flight`
 - `POST /api/apogee_planner/ork`
 - `DELETE /api/apogee_planner/ork`
+- `GET /api/flight_plans`
+- `POST /api/flight_plans/run`
+- `GET /api/flight_plans/{id}`
+- `DELETE /api/flight_plans/{id}`
+- `GET /api/flight_plans/{id}/csv`
+- `GET /api/flight_plans/{id}/json`
+- `GET /api/flight_plans/{id}/bundle`
+- `GET /api/los_prediction`
+- `PUT /api/los_prediction/settings`
+- `POST /api/los_prediction/simulate`
 
 5.9 Station settings, modes, system and administration
 

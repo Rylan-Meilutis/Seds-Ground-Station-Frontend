@@ -82,6 +82,8 @@ schemas are those in [backend-contract.md](backend-contract.md) and
 | `derived/flight_review.json` | no | `GET /api/flight_review/recording/{id}` | flight/motor summary figures |
 | `derived/apogee_planner.json` | no | `GET /api/apogee_planner` (state at export) | reference |
 | `derived/burn_reports.json`, `derived/fire_archive.json` | no | entries of `GET /api/burn_reports` / `GET /api/fire_archive` that name the recording | burn summary |
+| `derived/flight_plans.json` | no | `{"plans": [plan document, …]}`, the five most recent flight plans (`GET /api/flight_plans/{id}`) | comparing the recording with a prediction offline (map and altitude chart) |
+| `derived/flight_plan.json` | plan bundles only | `GET /api/flight_plans/{id}` | the plan itself: its landing area and markers on the map |
 | `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background |
 | `derived/flight_plan.json` | no | `GET /api/flight_plans/{id}` (plan bundles only) | flight replay: plan events, the Predicted label, the landing ellipse |
 | `derived/flight_plans.json` | no | `{"plans": [plan document, …]}`, the latest plans at export | flight replay: plan overlays on the recorded flight |
@@ -100,6 +102,25 @@ tiles cover the whole track.
 
 Models the UI ships itself (for example the GSE site model and the generic
 rocket) are not copied into bundles.
+
+## Predicted bundles (flight plans)
+
+`GET /api/flight_plans/{id}/bundle` is a normal version 1 bundle that plays a
+flight plan like a recording. It differs from a recording bundle in:
+
+- `manifest.json`: `"predicted": true`, `"source": {"flight_plan": "<id>", …}`
+  and `"label": "Predicted: …"`;
+- `replay.json`: `"predicted": true` and `"label": "Predicted: …"`. Its
+  synthesized FC rows are `GPS_DATA` `[lat, lon, alt_msl]`, `BAROMETER_DATA`
+  `[alt_agl, pressure_pa, temp_c]` and `FLIGHT_STATE` `[code]`, at 10 Hz in
+  ascent and 2 Hz in descent, with timestamps from `created_ms` (ignition);
+- `derived/flight_plan.json`: the plan document
+  ([backend-contract.md §5.8.1](backend-contract.md#581-flight-plans-loss-of-signal-prediction-and-map-overlays)).
+
+Readers show a clear "Predicted" label wherever `manifest.predicted` or
+`replay.predicted` is `true` (banner, transport bar, map, charts, 3D player)
+and never present the data as recorded. Only a boolean `true` marks a
+prediction.
 
 ## Reading rules
 
@@ -142,6 +163,9 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
   - checks the layout, geometry, diagrams, boards, track and summaries;
   - checks that the CSV export equals the station's CSV byte for byte;
   - checks that hash, version and format errors are refused.
+- UI `local_station/tests.rs`: a plan bundle opens labelled Predicted with its
+  plan; `derived/flight_plans.json` plans are offered for comparison.
+- UI `tests/offline-replay-predicted.test.mjs`: the 3D player's Predicted label.
 - UI `offline_preview/tests.rs`: renders every page from the bundle.
 - UI `tests/offline-preview-browser.mjs`: opens the bundle in a fresh browser
   profile.
