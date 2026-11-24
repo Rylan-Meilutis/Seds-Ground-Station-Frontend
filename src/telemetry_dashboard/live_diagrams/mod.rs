@@ -121,9 +121,13 @@ pub(crate) fn provenance_text() -> String {
 impl Inputs for LiveInputs {
     fn telemetry(&self, data_type: &str, sender: Option<&str>, index: usize) -> Option<Observed> {
         let row = super::latest_telemetry_row(data_type, sender)?;
-        let value = row.values.get(index).copied().flatten()?;
         let received = super::telemetry_row_received_ms(&row);
-        Some(Observed { value: Value::Num(value), age_ms: Some(self.now_wall_ms.saturating_sub(received).max(0)) })
+        let age_ms = Some(self.now_wall_ms.saturating_sub(received).max(0));
+        if let Some(state) = row.over_range_at(index) {
+            return Some(Observed { value: Value::OverRange(state), age_ms });
+        }
+        let value = row.values.get(index).copied().flatten()?;
+        Some(Observed { value: Value::Num(value), age_ms })
     }
     fn control(&self, cmd: &str) -> Option<ControlView> {
         let policy = super::ACTION_POLICY_SIGNAL.peek();

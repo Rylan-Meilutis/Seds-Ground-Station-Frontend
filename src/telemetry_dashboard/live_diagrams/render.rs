@@ -66,6 +66,7 @@ pub(crate) const CSS: &str = r#"
 .gs26-pid .pid-reading.stale .pid-reading-value, .gs26-pid .pid-reading.missing .pid-reading-value { fill:var(--pid-muted); font-weight:500; }
 .gs26-pid .pid-reading.warn .pid-reading-value { fill:var(--pid-warning-text); }
 .gs26-pid .pid-reading.assumed .pid-reading-value { font-style:italic; }
+.gs26-pid .pid-reading.over-range .pid-reading-value { fill:var(--pid-critical); font-weight:800; }
 .gs26-pid-wrap[data-program=true] .gs26-pid .pid-reading-value { font-size:21px; }
 .gs26-pid-wrap[data-program=true] .gs26-pid .pid-node-label { font-size:16px; }
 @media (prefers-reduced-motion: reduce) {
@@ -341,7 +342,7 @@ fn ReadingView(reading: Reading, state: super::derive::ReadingState) -> Element 
         Anchor::End => "end",
     };
     let mut class = String::from("pid-reading");
-    for (on, name) in [(state.stale, " stale"), (state.missing, " missing"), (state.warn, " warn"), (state.assumed, " assumed")] {
+    for (on, name) in [(state.stale, " stale"), (state.missing, " missing"), (state.warn, " warn"), (state.assumed, " assumed"), (state.over_range, " over-range")] {
         if on {
             class.push_str(name);
         }
@@ -354,7 +355,9 @@ fn ReadingView(reading: Reading, state: super::derive::ReadingState) -> Element 
     rsx! {
         g { class: class, "data-reading": reading.id.clone(),
             text { class: "pid-reading-label", x: "{reading.x}", y: "{reading.y + 11.0}", text_anchor: anchor, "{reading.label}" }
-            text { class: "pid-reading-value", x: "{reading.x}", y: "{reading.y + 30.0}", text_anchor: anchor, "{state.text}{warn}{suffix}" }
+            text { class: "pid-reading-value", x: "{reading.x}", y: "{reading.y + 30.0}", text_anchor: anchor, "{state.text}{warn}{suffix}"
+                if let Some(over) = crate::telemetry_dashboard::over_range::OverRange::from_text(&state.text).filter(|_| state.over_range) { title { "{over.title()}" } }
+            }
         }
     }
 }

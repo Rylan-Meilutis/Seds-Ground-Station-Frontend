@@ -965,7 +965,7 @@ mod tests {
     fn sender_scoped_chart_group_counts_as_live_telemetry() {
         let _guard = DATA_TAB_TEST_GUARD.lock().unwrap();
         reset_latest_telemetry(&[]);
-        reset_latest_telemetry(&[TelemetryRow {
+        reset_latest_telemetry(&[TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None,
             timestamp_ms: 1_700_000_050_000,
             received_timestamp_ms: 1_700_000_050_000,
@@ -1012,11 +1012,17 @@ mod tests {
 }
 
 fn summary_item_has_value(item: &DataSummaryItem) -> bool {
-    latest_telemetry_value(&item.data_type, item.sender_id.as_deref(), item.index).is_some()
+    // An over-range channel is telemetry too: it shows OVR, not "waiting".
+    super::latest_telemetry_reading(&item.data_type, item.sender_id.as_deref(), item.index)
+        != super::over_range::Reading::Missing
 }
 
 fn summary_item_value(item: &DataSummaryItem) -> String {
-    let value = latest_telemetry_value(&item.data_type, item.sender_id.as_deref(), item.index);
+    let reading = super::latest_telemetry_reading(&item.data_type, item.sender_id.as_deref(), item.index);
+    if let Some(state) = reading.over_range() {
+        return state.text().to_string();
+    }
+    let value = reading.value();
     if item.boolean_labels.is_some() {
         boolean_value_text(value, item.boolean_labels.as_ref())
     } else {
@@ -1263,8 +1269,9 @@ fn DataSummarySection(
             } else {
                 None
             };
-            let value =
-                if let Some(lbls) = channel_boolean_labels.as_ref().and_then(|list| list.get(i)) {
+            let value = if let Some(state) = row.over_range_at(i) {
+                    state.text().to_string()
+                } else if let Some(lbls) = channel_boolean_labels.as_ref().and_then(|list| list.get(i)) {
                     boolean_value_text(vals.get(i).copied().flatten(), Some(lbls))
                 } else if boolean_labels.is_some() {
                     boolean_value_text(vals.get(i).copied().flatten(), boolean_labels.as_ref())
@@ -2129,7 +2136,7 @@ fn SummaryCard(
     rsx! {
         div { style: "padding:10px; border-radius:12px; background:{theme.panel_background_alt}; border:1px solid {theme.border}; width:100%; min-width:0; box-sizing:border-box;",
             div { style: "font-size:12px; color:{color}; line-height:1.15; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{label}" }
-            div { style: "font-size:18px; color:{theme.text_primary}; line-height:1.1; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{value}" }
+            div { style: "font-size:18px; color:{theme.text_primary}; line-height:1.1; min-width:0; overflow-wrap:anywhere; word-break:break-word;", super::over_range::ValueText { text: value } }
             if let Some(t) = mm {
                 div { style: "font-size:11px; color:{theme.text_muted}; margin-top:4px; line-height:1.2; min-width:0; overflow-wrap:anywhere; word-break:break-word;", "{t}" }
             }

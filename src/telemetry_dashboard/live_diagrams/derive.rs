@@ -41,6 +41,8 @@ pub(crate) enum Value {
     Num(f32),
     Bool(bool),
     Text(String),
+    /// An ADC over-range telemetry channel: no valid number (shown as OVR).
+    OverRange(crate::telemetry_dashboard::over_range::OverRange),
 }
 
 impl Value {
@@ -48,14 +50,14 @@ impl Value {
         match self {
             Value::Num(v) => Some(*v >= 0.5),
             Value::Bool(b) => Some(*b),
-            Value::Text(_) => None,
+            Value::Text(_) | Value::OverRange(_) => None,
         }
     }
     pub fn number(&self) -> Option<f32> {
         match self {
             Value::Num(v) => Some(*v),
             Value::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-            Value::Text(_) => None,
+            Value::Text(_) | Value::OverRange(_) => None,
         }
     }
 }
@@ -270,6 +272,8 @@ pub(crate) struct ReadingState {
     pub warn: bool,
     pub assumed: bool,
     pub age_ms: Option<i64>,
+    /// The bound channel is ADC over range; `text` is the OVR text.
+    pub over_range: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -474,10 +478,24 @@ pub(crate) fn reading_state(reading: &super::topology::Reading, inputs: &dyn Inp
             warn: false,
             assumed: false,
             age_ms: None,
+            over_range: false,
         };
     };
+    if let Value::OverRange(state) = value {
+        // Never a number and never a stale number; no unit, no warn limits.
+        return ReadingState {
+            text: state.text().into(),
+            stale: resolved.stale,
+            missing: false,
+            warn: false,
+            assumed: false,
+            age_ms: resolved.age_ms,
+            over_range: true,
+        };
+    }
     let text = match (&value, reading.format) {
         (Value::Text(text), _) => text.clone(),
+        (Value::OverRange(state), _) => state.text().into(),
         (v, Format::Bool) | (v @ Value::Bool(_), _) => {
             let on = v.truthy().unwrap_or(false);
             if on {
@@ -505,6 +523,7 @@ pub(crate) fn reading_state(reading: &super::topology::Reading, inputs: &dyn Inp
         warn,
         assumed: resolved.assumed,
         age_ms: resolved.age_ms,
+        over_range: false,
     }
 }
 
@@ -522,6 +541,7 @@ pub(crate) mod tests {
         pub boards: HashMap<String, i64>,
         pub statuses: HashMap<String, String>,
         pub igt: bool,
+        pub over_range: HashMap<(String, usize), (crate::telemetry_dashboard::over_range::OverRange, i64)>,
     }
     impl Fake {
         pub fn set(&mut self, data_type: &str, index: usize, value: f32, age_ms: i64) -> &mut Self {
@@ -538,6 +558,9 @@ pub(crate) mod tests {
     }
     impl Inputs for Fake {
         fn telemetry(&self, data_type: &str, _sender: Option<&str>, index: usize) -> Option<Observed> {
+            if let Some((state, age)) = self.over_range.get(&(data_type.to_string(), index)) {
+                return Some(Observed { value: Value::OverRange(*state), age_ms: Some(*age) });
+            }
             self.telemetry
                 .get(&(data_type.to_string(), index))
                 .map(|(v, age)| Observed { value: Value::Num(*v), age_ms: Some(*age) })

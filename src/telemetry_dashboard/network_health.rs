@@ -131,6 +131,11 @@ fn daq_input_health(row: &NetworkBoardHealthEntry, connected: bool, elapsed: u64
         let more = if active.len() > 1 { format!(" (+{} more)", active.len() - 1) } else { String::new() };
         return Some((Health::Unhealthy, format!("{first}{more}")));
     }
+    let over: Vec<&str> = status.adc_channels.iter().filter(|c| c.over_range_now).map(|c| c.label.as_str()).collect();
+    if let Some(first) = over.first() {
+        let more = if over.len() > 1 { format!(" (+{} more)", over.len() - 1) } else { String::new() };
+        return Some((Health::Unhealthy, format!("ADC over range: {first}{more}")));
+    }
     match status.faults.iter().find(|f| f.latched) {
         Some(brief) => Some((Health::Healthy, format!("OK · brief: {}", brief.label))),
         None => Some((Health::Healthy, "OK".into())),
@@ -143,9 +148,82 @@ fn millivolts(mv: Option<u16>) -> String {
         None => "No reading".into(),
     }
 }
+/// How the +3V3A (VDDA) reading should look.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VddaLevel { Ok, Warn, Danger }
+
+/// VDDA outside 3.15–3.45 V warns; above 3.6 V (the STM32's absolute
+/// maximum) is danger. The highest reading of the interval drives the high
+/// checks so a brief spike is not hidden by a normal latest value.
+fn vdda_level(vdda: Option<f32>, vdda_max: Option<f32>) -> VddaLevel {
+    let high = vdda.into_iter().chain(vdda_max).fold(f32::NEG_INFINITY, f32::max);
+    if high > 3.6 {
+        VddaLevel::Danger
+    } else if high > 3.45 || vdda.is_some_and(|v| v < 3.15) {
+        VddaLevel::Warn
+    } else {
+        VddaLevel::Ok
+    }
+}
+
+/// The "+3V3A (VDDA)" line, or None when the backend does not report it.
+fn vdda_text(status: &DaqInputHealthStatus) -> Option<(String, VddaLevel)> {
+    let vdda = status.vdda_v.map(|v| v.0).filter(|v| v.is_finite());
+    let max = status.vdda_max_v.map(|v| v.0).filter(|v| v.is_finite());
+    if vdda.is_none() && max.is_none() {
+        return None;
+    }
+    let now = vdda.map_or_else(|| "No reading".to_string(), |v| format!("{v:.2} V"));
+    let text = match max {
+        Some(max) => format!("{now} (max {max:.2} V)"),
+        None => now,
+    };
+    Some((text, vdda_level(vdda, max)))
+}
+
+/// One over-range channel line of the DAQ panel.
+#[derive(Clone, Debug, PartialEq)]
+struct AdcChannelLine {
+    key: String,
+    label: String,
+    /// "Over range now" / "Over range (low) now" / "Recently over range".
+    state: &'static str,
+    now: bool,
+    counts: String,
+    episode: Option<String>,
+}
+
+/// Channels over range now first, then recent ones, each with its counts and
+/// the current episode's duration.
+fn adc_channel_lines(status: &DaqInputHealthStatus, now_ms: i64) -> Vec<AdcChannelLine> {
+    let mut channels: Vec<_> = status.adc_channels.iter().collect();
+    channels.sort_by_key(|c| (!c.over_range_now, c.bit));
+    channels
+        .into_iter()
+        .map(|c| AdcChannelLine {
+            key: c.key.clone(),
+            label: c.label.clone(),
+            state: match (c.over_range_now, c.low) {
+                (true, true) => "Over range (low) now",
+                (true, false) => "Over range now",
+                (false, _) if c.latched => "Latched: recently over range",
+                (false, _) => "Recently over range",
+            },
+            now: c.over_range_now,
+            counts: format!("{} in the last 60 s · {} since DAQ boot", c.count_recent, c.count_total),
+            episode: c
+                .first_over_range_ms
+                .filter(|_| c.over_range_now)
+                .map(|first| format!("Current episode: {}", duration(now_ms.saturating_sub(first).max(0) as u64))),
+        })
+        .collect()
+}
+
 #[component]
 fn DaqInputHealth(status: DaqInputHealthStatus, connected: bool, elapsed: u64, theme: ThemeConfig) -> Element {
     let fresh = daq_input_fresh(&status, connected, elapsed);
+    let adc_lines = adc_channel_lines(&status, super::current_wallclock_ms());
+    let vdda = vdda_text(&status);
     rsx! {
         section { "data-daq-input": if fresh { "fresh" } else { "stale" }, style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",
             h4 { style:"margin:0;", "DAQ input health" }
@@ -168,6 +246,22 @@ fn DaqInputHealth(status: DaqInputHealthStatus, connected: bool, elapsed: u64, t
                     }
                 }
             }
+            if !adc_lines.is_empty() {
+                h5 { style:"margin:12px 0 0;", "ADC over range" }
+                ul { "data-adc-over-range": "", style:"list-style:none;padding:0;margin:8px 0 0;display:grid;gap:8px;",
+                    for line in adc_lines {
+                        li { key:"{line.key}", "data-adc-channel":"{line.key}", "data-now": if line.now { "true" } else { "false" }, style:"min-width:0;",
+                            div { style:"display:flex;flex-wrap:wrap;justify-content:space-between;gap:8px;",
+                                span { "{line.label}" }
+                                span { role:"status", class: if line.now { "gs-badge gs-badge--danger" } else { "gs-badge gs-badge--warn" }, "{line.state}" }
+                            }
+                            p { style:"margin:4px 0 0;font-size:0.8rem;color:{theme.text_secondary};", "{line.counts}" }
+                            if let Some(episode) = line.episode { p { style:"margin:4px 0 0;font-size:0.8rem;color:{theme.text_secondary};", "{episode}" } }
+                        }
+                    }
+                }
+                p { style:"font-size:0.8rem;margin:4px 0 0;color:{theme.text_secondary};", "Over-range readings are not valid: they show as OVR on the data and charts." }
+            }
             dl { style:"display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;font-size:0.85rem;margin:12px 0 0;",
                 dt { "Supply (VMAIN)" } dd { style:"margin:0;", "{millivolts(status.vmain_mv)}" }
                 dt { "Lowest in last second" } dd { style:"margin:0;", "{millivolts(status.vmain_min_mv)}" }
@@ -179,6 +273,16 @@ fn DaqInputHealth(status: DaqInputHealthStatus, connected: bool, elapsed: u64, t
                 if status.kg50_p6 {
                     dt { "P6 leg difference (max)" } dd { style:"margin:0;", "{millivolts(status.p6_imbalance_max_mv)}" }
                     dt { "P6 leg mean" } dd { style:"margin:0;", "{millivolts(status.p6_common_mv)}" }
+                }
+                if let Some((text, level)) = vdda {
+                    dt { "+3V3A (VDDA)" }
+                    dd { style:"margin:0;", "data-vdda": match level { VddaLevel::Ok => "ok", VddaLevel::Warn => "warn", VddaLevel::Danger => "danger" },
+                        match level {
+                            VddaLevel::Ok => rsx! { "{text}" },
+                            VddaLevel::Warn => rsx! { span { class:"gs-badge gs-badge--warn", title:"VDDA outside 3.15–3.45 V: ADC readings may be off", "{text}" } },
+                            VddaLevel::Danger => rsx! { span { class:"gs-badge gs-badge--danger", title:"VDDA above 3.6 V: over the STM32 limit", "{text}" } },
+                        }
+                    }
                 }
             }
             p { style:"font-size:0.8rem;margin:8px 0 0;color:{theme.text_secondary};", "Warnings only: these checks never block a command." }
@@ -710,6 +814,85 @@ mod tests {
         let decoded: BoardDiagnostics = serde_json::from_str(r#"{"version":1,"received_age_ms":0,"uptime_ticks":0,"uptime_frequency_hz":1000,"reset_flags":0,"watchdog_missing_mask":0,"heap_live_bytes":null,"heap_peak_bytes":null,"heap_region_bytes":null,"allocation_failures":null,"admission_refusals":0,"can_rx_drops":null,"can_tx_rejected":null,"uart_rx_drops":null,"tx_queue_high_water":null,"sd_accepted_records":null,"sd_processed_records":null,"sd_rejected_records":null,"sd_flushed_records":null,"sd_write_errors":null,"sd_max_write_ms":null,"adc_overruns":null,"diagnostic_send_failures":0,"daq_input":{"received_age_ms":250,"faults":[{"key":"supply_low","label":"DAQ supply (VMAIN) low","active":true,"latched":true,"episodes":14,"advice":"Check the DAQ power/ground connector."}],"kg50_p6":true,"vmain_mv":11100,"vmain_min_mv":11030,"chamber_mv":null,"chamber_min_mv":null,"p6_imbalance_max_mv":4,"p6_common_mv":1137,"supply_low_mv":12500,"chamber_floor_mv":50}}"#).unwrap();
         let input = decoded.daq_input.unwrap();
         assert_eq!((input.faults[0].episodes, input.vmain_min_mv, input.supply_low_mv), (14, Some(11_030), 12_500));
+    }
+
+    fn render_daq_input(status: DaqInputHealthStatus) -> String {
+        let mut dom = VirtualDom::new_with_props(
+            |status: DaqInputHealthStatus| rsx! { DaqInputHealth { status, connected: true, elapsed: 0, theme: ThemeConfig::default() } },
+            status,
+        );
+        dom.rebuild_in_place();
+        dioxus::ssr::render(&dom)
+    }
+
+    fn v2_status() -> DaqInputHealthStatus {
+        serde_json::from_str(r#"{"received_age_ms":250,"faults":[{"key":"supply_low","label":"DAQ supply (VMAIN) low","active":false,"latched":false,"episodes":0,"advice":""}],"kg50_p6":false,"vmain_mv":12100,"vmain_min_mv":12050,"chamber_mv":null,"chamber_min_mv":null,"p6_imbalance_max_mv":null,"p6_common_mv":null,"supply_low_mv":11500,"chamber_floor_mv":50}"#).unwrap()
+    }
+
+    #[test]
+    fn v2_daq_input_status_renders_without_adc_or_vdda_lines() {
+        let status = v2_status();
+        assert!(status.adc_channels.is_empty() && status.vdda_v.is_none() && status.vdda_max_v.is_none());
+        let html = render_daq_input(status.clone());
+        assert!(!html.contains("ADC over range") && !html.contains("VDDA") && !html.contains("data-adc"), "{html}");
+        assert!(html.contains("Supply (VMAIN)") && html.contains("DAQ supply (VMAIN) low"));
+        let row = NetworkBoardHealthEntry {
+            sender_id: "DAQ".into(),
+            diagnostics: Some(BoardDiagnostics { daq_input: Some(status), ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(daq_input_health(&row, true, 0), Some((board_display::Health::Healthy, "OK".into())));
+    }
+
+    #[test]
+    fn daq_input_lists_over_range_channels_and_vdda() {
+        use crate::telemetry_dashboard::types::{DaqAdcChannelStatus, Volts};
+        let mut status: DaqInputHealthStatus = serde_json::from_str(r#"{"received_age_ms":250,"faults":[{"key":"vdda_high","label":"DAQ +3V3A (VDDA) high","active":false,"latched":true,"episodes":1,"advice":""}],"supply_low_mv":11500,"chamber_floor_mv":50,
+            "adc_channels":[
+              {"key":"kg50","label":"KG50 load cell","bit":2,"over_range_now":false,"low":false,"latched":true,"count_total":40,"count_recent":3,"first_over_range_ms":null,"last_over_range_ms":1000},
+              {"key":"kg1000","label":"KG1000 load cell","bit":0,"over_range_now":true,"low":true,"latched":true,"count_total":120,"count_recent":95,"first_over_range_ms":10000,"last_over_range_ms":74000}],
+            "vdda_v":3.31,"vdda_max_v":3.48}"#).unwrap();
+        let lines = adc_channel_lines(&status, 75_000);
+        assert_eq!(lines.iter().map(|l| l.key.as_str()).collect::<Vec<_>>(), ["kg1000", "kg50"], "over range now first");
+        assert_eq!(lines[0].state, "Over range (low) now");
+        assert_eq!(lines[0].counts, "95 in the last 60 s · 120 since DAQ boot");
+        assert_eq!(lines[0].episode.as_deref(), Some("Current episode: 1m 5s"));
+        assert_eq!(lines[1].state, "Latched: recently over range");
+        assert_eq!(lines[1].episode, None, "no current episode once it has ended");
+
+        assert_eq!(vdda_text(&status), Some(("3.31 V (max 3.48 V)".into(), VddaLevel::Warn)));
+        assert_eq!(vdda_level(Some(3.30), Some(3.31)), VddaLevel::Ok);
+        assert_eq!(vdda_level(Some(3.10), Some(3.20)), VddaLevel::Warn);
+        assert_eq!(vdda_level(Some(3.30), Some(3.61)), VddaLevel::Danger);
+        assert_eq!(vdda_level(Some(3.62), None), VddaLevel::Danger);
+        assert_eq!(vdda_level(None, Some(3.40)), VddaLevel::Ok);
+
+        let html = render_daq_input(status.clone());
+        assert!(html.contains("data-adc-channel=\"kg1000\""), "{html}");
+        assert!(html.contains("Over range (low) now") && html.contains("gs-badge--danger"));
+        assert!(html.contains("KG50 load cell") && html.contains("3 in the last 60 s · 40 since DAQ boot"));
+        assert!(html.contains("+3V3A (VDDA)") && html.contains("3.31 V (max 3.48 V)"));
+        assert!(html.contains("data-vdda=\"warn\""));
+        status.vdda_max_v = Some(Volts(3.65));
+        assert!(render_daq_input(status.clone()).contains("data-vdda=\"danger\""));
+        status.vdda_v = Some(Volts(3.30));
+        status.vdda_max_v = Some(Volts(3.32));
+        assert!(render_daq_input(status.clone()).contains("data-vdda=\"ok\""));
+
+        // The card's Inputs line names a channel over range now.
+        let row = NetworkBoardHealthEntry {
+            sender_id: "DAQ".into(),
+            diagnostics: Some(BoardDiagnostics { daq_input: Some(status.clone()), ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(daq_input_health(&row, true, 0), Some((board_display::Health::Unhealthy, "ADC over range: KG1000 load cell".into())));
+        status.adc_channels = vec![DaqAdcChannelStatus { key: "kg50".into(), label: "KG50".into(), latched: true, ..Default::default() }];
+        let row = NetworkBoardHealthEntry {
+            sender_id: "DAQ".into(),
+            diagnostics: Some(BoardDiagnostics { daq_input: Some(status), ..Default::default() }),
+            ..Default::default()
+        };
+        assert_eq!(daq_input_health(&row, true, 0).unwrap().0, board_display::Health::Healthy, "recent only: named in the panel, not red");
     }
 
     #[test]

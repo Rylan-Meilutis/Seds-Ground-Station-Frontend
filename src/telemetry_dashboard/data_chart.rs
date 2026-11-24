@@ -387,6 +387,8 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
                     right: chunk.right,
                     paths: vec![String::new(); series_count],
                     gap_paths: vec![String::new(); series_count],
+                    ovr_paths: vec![String::new(); series_count],
+                    ovr_band: String::new(),
                     signature: 0,
                     live: false,
                 });
@@ -400,6 +402,10 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
                 if let Some(gap_path) = chunk.gap_paths.first() {
                     entry.gap_paths[series_idx] = gap_path.clone();
                 }
+                if let Some(ovr_path) = chunk.ovr_paths.first() {
+                    entry.ovr_paths[series_idx] = ovr_path.clone();
+                }
+                entry.ovr_band.push_str(&chunk.ovr_band);
             }
         }
 
@@ -408,6 +414,7 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
             .filter_map(|mut chunk| {
                 if chunk.paths.iter().all(|path| path.is_empty())
                     && chunk.gap_paths.iter().all(|path| path.is_empty())
+                    && chunk.ovr_band.is_empty()
                 {
                     return None;
                 }
@@ -418,6 +425,8 @@ pub fn charts_cache_get_multi_series_per_series_with_grid(
                 chunk.right.to_bits().hash(&mut hasher);
                 chunk.paths.hash(&mut hasher);
                 chunk.gap_paths.hash(&mut hasher);
+                chunk.ovr_paths.hash(&mut hasher);
+                chunk.ovr_band.hash(&mut hasher);
                 chunk.signature = hasher.finish();
                 Some(chunk)
             })
@@ -824,7 +833,7 @@ mod tests {
     }
 
     fn sourced(data_type: &str, received: i64, source: i64, value: f32) -> TelemetryRow {
-        let mut row = TelemetryRow {
+        let mut row = TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: Some(source), timestamp_ms: received,
             received_timestamp_ms: received,
             data_type: data_type.into(), data_type_id: Default::default(),
@@ -898,7 +907,7 @@ mod tests {
         let rows: Vec<_> = (0..400)
             .map(|i| {
                 let timestamp_ms = 1_700_000_000_000 + i * 200;
-                TelemetryRow {
+                TelemetryRow { over_range: 0, over_range_low: 0,
                     source_timestamp_ms: None, timestamp_ms,
                     received_timestamp_ms: timestamp_ms,
                     data_type: "ACCEL_DATA".into(),
@@ -939,7 +948,7 @@ mod tests {
         charts_cache_clear_active();
 
         for i in 0..3 {
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: 1_700_000_000_000 + i * 40,
                 received_timestamp_ms: 1_700_000_000_000 + i * 40,
                 data_type: "KG1000".to_string(),
@@ -973,7 +982,7 @@ mod tests {
 
         for i in 0..3 {
             let timestamp_ms = 1_700_000_010_000 + i * 40;
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "OX_TANK_PRESSURE".to_string(),
@@ -982,7 +991,7 @@ mod tests {
                 sender_id_id: Default::default(),
                 values: vec![Some(100.0 + i as f32)],
             });
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "KG1000".to_string(),
@@ -991,7 +1000,7 @@ mod tests {
                 sender_id_id: Default::default(),
                 values: vec![Some(4.0 + i as f32)],
             });
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_WEIGHT_KG".to_string(),
@@ -1000,7 +1009,7 @@ mod tests {
                 sender_id_id: Default::default(),
                 values: vec![Some(8.0 + i as f32)],
             });
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "LOADCELL_FILL_PERCENT".to_string(),
@@ -1036,7 +1045,7 @@ mod tests {
     #[test]
     fn sparse_timestamp_jumps_do_not_allocate_intermediate_buckets() {
         let mut chart = super::CachedChart::new();
-        chart.ingest(&TelemetryRow {
+        chart.ingest(&TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: 1_700_000_000_000,
             received_timestamp_ms: 1_700_000_000_000,
             data_type: "GPS".to_string(),
@@ -1045,7 +1054,7 @@ mod tests {
             sender_id_id: Default::default(),
             values: vec![Some(1.0)],
         });
-        chart.ingest(&TelemetryRow {
+        chart.ingest(&TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: i64::MAX - 1_000,
             received_timestamp_ms: i64::MAX - 1_000,
             data_type: "GPS".to_string(),
@@ -1071,7 +1080,7 @@ mod tests {
 
         for i in 0..3 {
             let timestamp_ms = 1_700_000_020_000 + i * 40;
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
@@ -1080,7 +1089,7 @@ mod tests {
                 sender_id_id: Default::default(),
                 values: vec![Some(14.0 + i as f32 * 0.1)],
             });
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms,
                 received_timestamp_ms: timestamp_ms,
                 data_type: "BATTERY_VOLTAGE".to_string(),
@@ -1114,7 +1123,7 @@ mod tests {
         configure_sender_split_data_types(&["BATTERY_VOLTAGE".to_string()]);
 
         for i in 0..3 {
-            charts_cache_ingest_row(&TelemetryRow {
+            charts_cache_ingest_row(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: 1_700_000_030_000 + i * 40,
                 received_timestamp_ms: 1_700_000_030_000 + i * 40,
                 data_type: "BATTERY_VOLTAGE".to_string(),
@@ -1215,7 +1224,7 @@ mod tests {
         let mut chart = super::CachedChart::new();
         let base_ts = 1_700_000_040_000;
         for i in 0..36 {
-            chart.ingest(&TelemetryRow {
+            chart.ingest(&TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: base_ts + i * 1_000,
                 received_timestamp_ms: base_ts + i * 1_000,
                 data_type: "PRESSURE".to_string(),
@@ -1249,6 +1258,99 @@ mod tests {
         );
     }
 
+    fn ovr_row(ts: i64, value: Option<f32>, over_range: u32, over_range_low: u32) -> TelemetryRow {
+        TelemetryRow {
+            over_range,
+            over_range_low,
+            source_timestamp_ms: None,
+            timestamp_ms: ts,
+            received_timestamp_ms: ts,
+            data_type: "LOADCELL_WEIGHT_KG".to_string(),
+            data_type_id: Default::default(),
+            sender_id: "DAQ".to_string(),
+            sender_id_id: Default::default(),
+            values: vec![value],
+        }
+    }
+
+    fn move_count(path: &str) -> usize {
+        path.split_ascii_whitespace().filter(|t| *t == "M").count()
+    }
+
+    /// 10 Hz for 6 s; samples 20..30 are over range (high or low).
+    fn chart_with_over_range(low: bool, carried: Option<f32>) -> super::CachedChart {
+        let mut chart = super::CachedChart::new();
+        let base_ts = 1_700_000_040_000;
+        for i in 0..60 {
+            let ts = base_ts + i * 100;
+            if (20..30).contains(&i) {
+                chart.ingest(&ovr_row(ts, carried, 1, u32::from(low)));
+            } else {
+                chart.ingest(&ovr_row(ts, Some(100.0 + i as f32 * 0.1), 0, 0));
+            }
+        }
+        chart.build_if_needed(1200.0, 260.0);
+        chart
+    }
+
+    #[test]
+    fn over_range_samples_break_the_line_and_mark_the_top_edge() {
+        let chart = chart_with_over_range(false, None);
+        let combined = super::build_combined_canvas_paths(&chart.chunks);
+        assert_eq!(move_count(&combined[0]), 2, "a gap, not a bridge: {}", combined[0]);
+        let (marks, band) = super::build_combined_over_range(&chart.chunks);
+        assert!(!band.is_empty(), "the over-range span is shaded");
+        let top = format!("{:.2}", super::CHART_GRID_TOP);
+        assert!(marks[0].contains(&top), "high ticks sit on the top edge: {}", marks[0]);
+        // One merged span: one rectangle (one move) for the tick and band.
+        assert_eq!(move_count(&marks[0]), 1, "{}", marks[0]);
+        assert_eq!(move_count(&band), 1, "{band}");
+    }
+
+    #[test]
+    fn low_over_range_marks_the_bottom_edge() {
+        let chart = chart_with_over_range(true, None);
+        let (marks, _) = super::build_combined_over_range(&chart.chunks);
+        let bottom = format!("{:.2}", 260.0 - super::CHART_GRID_BOTTOM_PAD);
+        assert!(marks[0].contains(&bottom), "low ticks sit on the bottom edge: {}", marks[0]);
+        assert!(!marks[0].contains(&format!("{:.2} L", super::CHART_GRID_TOP)));
+    }
+
+    #[test]
+    fn over_range_values_never_pull_autoscale() {
+        // Even if an over-range row carried a number, it is not plotted.
+        let chart = chart_with_over_range(false, Some(1.0e6));
+        assert!(chart.raw_max < 200.0, "raw_max {}", chart.raw_max);
+        let combined = super::build_combined_canvas_paths(&chart.chunks);
+        assert_eq!(move_count(&combined[0]), 2);
+    }
+
+    #[test]
+    fn null_without_over_range_keeps_todays_bridged_line() {
+        let mut chart = super::CachedChart::new();
+        let base_ts = 1_700_000_040_000;
+        for i in 0..60 {
+            let value = (!(20..30).contains(&i)).then_some(100.0 + i as f32 * 0.1);
+            chart.ingest(&ovr_row(base_ts + i * 100, value, 0, 0));
+        }
+        chart.build_if_needed(1200.0, 260.0);
+        let combined = super::build_combined_canvas_paths(&chart.chunks);
+        assert_eq!(move_count(&combined[0]), 1, "{}", combined[0]);
+        let (marks, band) = super::build_combined_over_range(&chart.chunks);
+        assert!(band.is_empty() && marks.iter().all(String::is_empty));
+    }
+
+    #[test]
+    fn subset_and_multi_series_charts_carry_over_range_marks() {
+        let mut chart = chart_with_over_range(false, None);
+        let (chunks, _, _, _) = chart.build_subset(&[0], 1200.0, 260.0);
+        assert_eq!(move_count(&super::build_combined_canvas_paths(&chunks)[0]), 2);
+        assert!(!super::build_combined_over_range(&chunks).1.is_empty());
+        let (chunks, _, _) = chart.build_subset_per_series(&[0], 1200.0, 260.0);
+        assert_eq!(move_count(&super::build_combined_canvas_paths(&chunks)[0]), 2);
+        assert!(!super::build_combined_over_range(&chunks).0[0].is_empty());
+    }
+
     #[test]
     fn combined_canvas_paths_join_chunk_carry_segments_into_one_stroke() {
         let chunks = vec![
@@ -1259,6 +1361,8 @@ mod tests {
                 right: 120.0,
                 paths: vec!["M 9.50 5.00 L 19.50 5.00 ".to_string()],
                 gap_paths: vec![String::new()],
+                ovr_paths: vec![String::new()],
+                ovr_band: String::new(),
                 signature: 1,
                 live: false,
             },
@@ -1269,6 +1373,8 @@ mod tests {
                 right: 140.0,
                 paths: vec!["M -0.50 5.00 L 9.50 7.00 ".to_string()],
                 gap_paths: vec![String::new()],
+                ovr_paths: vec![String::new()],
+                ovr_band: String::new(),
                 signature: 2,
                 live: true,
             },
@@ -1293,7 +1399,12 @@ struct Bucket {
     last: Vec<f32>,
     min: Vec<f32>,
     max: Vec<f32>,
+    // ADC over range seen in this bucket: OVR_HIGH / OVR_LOW bits per channel.
+    ovr: Vec<u8>,
 }
+
+const OVR_HIGH: u8 = 1;
+const OVR_LOW: u8 = 2;
 
 impl Bucket {
     fn new(id: i64, channels: usize) -> Self {
@@ -1303,6 +1414,13 @@ impl Bucket {
             last: vec![0.0; channels],
             min: vec![0.0; channels],
             max: vec![0.0; channels],
+            ovr: vec![0; channels],
+        }
+    }
+
+    fn merge_ovr(&mut self, other: &Bucket) {
+        for (mine, theirs) in self.ovr.iter_mut().zip(&other.ovr) {
+            *mine |= *theirs;
         }
     }
 
@@ -1315,11 +1433,23 @@ impl Bucket {
         self.last.extend(std::iter::repeat_n(0.0, add));
         self.min.extend(std::iter::repeat_n(0.0, add));
         self.max.extend(std::iter::repeat_n(0.0, add));
+        self.ovr.extend(std::iter::repeat_n(0, add));
     }
 
-    fn update(&mut self, v: &[Option<f32>]) {
+    fn update(&mut self, v: &[Option<f32>], over_range: u32, over_range_low: u32) {
         self.ensure_channels(v.len());
+        for ch in 0..v.len() {
+            match super::over_range::OverRange::from_bits(over_range, over_range_low, ch) {
+                Some(super::over_range::OverRange::High) => self.ovr[ch] |= OVR_HIGH,
+                Some(super::over_range::OverRange::Low) => self.ovr[ch] |= OVR_LOW,
+                None => {}
+            }
+        }
         for (ch, val) in v.iter().enumerate() {
+            // An over-range value is not a reading, whatever the row carries.
+            if super::over_range::OverRange::from_bits(over_range, over_range_low, ch).is_some() {
+                continue;
+            }
             if let Some(x) = val {
                 if !x.is_finite() {
                     continue;
@@ -1501,7 +1631,7 @@ impl CachedChart {
         // find bucket
         if let Some(back) = self.buckets.back_mut() {
             if back.id == bid {
-                back.update(&r.values);
+                back.update(&r.values, r.over_range, r.over_range_low);
             } else {
                 // bid may be within last LIVE_BUCKETS_BACK; scan from back a tiny amount
                 for b in self
@@ -1511,7 +1641,7 @@ impl CachedChart {
                     .take(LIVE_BUCKETS_BACK as usize + 2)
                 {
                     if b.id == bid {
-                        b.update(&r.values);
+                        b.update(&r.values, r.over_range, r.over_range_low);
                         break;
                     }
                 }
@@ -1667,9 +1797,15 @@ impl CachedChart {
                 }
                 selected.sort_unstable();
                 selected.dedup();
+                // Over range anywhere in the group must survive decimation.
+                let mut group_ovr = Bucket::new(id, self.channel_count);
+                for bucket in &group {
+                    group_ovr.merge_ovr(bucket);
+                }
                 for index in selected {
                     let mut bucket = group[index].clone();
                     bucket.id = id;
+                    bucket.merge_ovr(&group_ovr);
                     out.push(bucket);
                 }
             }
@@ -1709,6 +1845,7 @@ impl CachedChart {
             }
 
             if let Some(agg) = current.as_mut() {
+                agg.merge_ovr(bucket);
                 for ch in 0..self.channel_count {
                     if !bucket.has[ch] {
                         continue;
@@ -1890,8 +2027,9 @@ impl CachedChart {
 
             let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
             let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            let mut ovr_marks = OvrMarks::new(self.channel_count, top, bottom);
             for b in &view_buckets[first..end] {
-                let has_any = b.has.iter().any(|v| *v);
+                let has_any = b.has.iter().any(|v| *v) || b.ovr.iter().any(|f| *f != 0);
                 if !has_any {
                     continue;
                 }
@@ -1900,8 +2038,23 @@ impl CachedChart {
                 let x = chunk_width * ((rel_bid as f32 + 0.5) / chunk_bucket_count as f32);
 
                 for ch in 0..self.channel_count {
+                    if b.ovr[ch] != 0 {
+                        let mut line = LineState {
+                            paths: &mut paths,
+                            segment_points: &mut segment_points,
+                            last_bucket_id_drawn: &mut last_bucket_id_drawn,
+                            last_point_drawn: &mut last_point_drawn,
+                            carry_last_bucket_id_drawn: &mut carry_last_bucket_id_drawn,
+                            carry_last_value_drawn: &mut carry_last_value_drawn,
+                        };
+                        line.break_for_over_range(ch, smooth_chunk);
+                        ovr_marks.mark(ch, rel_bid, chunk_bucket_count, chunk_width, b.ovr[ch]);
+                    }
                     if !b.has[ch] {
                         continue;
+                    }
+                    if b.ovr[ch] == 0 {
+                        ovr_marks.close(ch);
                     }
                     let v = b.last[ch];
                     let y = map_y(v);
@@ -1944,7 +2097,11 @@ impl CachedChart {
                 flush_smoothed_segment(&mut paths[ch], &segment_points[ch], smooth_chunk);
             }
 
-            if paths.iter().all(|p| p.is_empty()) && gap_paths.iter().all(|p| p.is_empty()) {
+            let (ovr_paths, ovr_band) = ovr_marks.finish();
+            if paths.iter().all(|p| p.is_empty())
+                && gap_paths.iter().all(|p| p.is_empty())
+                && ovr_band.is_empty()
+            {
                 continue;
             }
 
@@ -1952,6 +2109,8 @@ impl CachedChart {
             chunk_id.hash(&mut hasher);
             paths.hash(&mut hasher);
             gap_paths.hash(&mut hasher);
+            ovr_paths.hash(&mut hasher);
+            ovr_band.hash(&mut hasher);
 
             chunks.push(ChartRenderChunk {
                 id: chunk_id,
@@ -1960,6 +2119,8 @@ impl CachedChart {
                 right: chunk_end_x as f64,
                 paths,
                 gap_paths,
+                ovr_paths,
+                ovr_band,
                 signature: hasher.finish(),
                 live: chunk_id == last_chunk_id,
             });
@@ -2064,13 +2225,29 @@ impl CachedChart {
 
             let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
             let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            let mut ovr_marks = OvrMarks::new(valid_channels.len(), top, bottom);
             for b in &view_buckets[first..end] {
                 let rel_bid = b.id - chunk_start_bid;
                 let x = chunk_width * ((rel_bid as f32 + 0.5) / chunk_bucket_count as f32);
 
                 for (group_idx, &ch) in valid_channels.iter().enumerate() {
+                    if b.ovr[ch] != 0 {
+                        let mut line = LineState {
+                            paths: &mut paths,
+                            segment_points: &mut segment_points,
+                            last_bucket_id_drawn: &mut last_bucket_id_drawn,
+                            last_point_drawn: &mut last_point_drawn,
+                            carry_last_bucket_id_drawn: &mut carry_last_bucket_id_drawn,
+                            carry_last_value_drawn: &mut carry_last_value_drawn,
+                        };
+                        line.break_for_over_range(group_idx, smooth_chunk);
+                        ovr_marks.mark(group_idx, rel_bid, chunk_bucket_count, chunk_width, b.ovr[ch]);
+                    }
                     if !b.has[ch] {
                         continue;
+                    }
+                    if b.ovr[ch] == 0 {
+                        ovr_marks.close(group_idx);
                     }
                     let v = b.last[ch];
                     let y = map_y(v);
@@ -2118,7 +2295,11 @@ impl CachedChart {
                 );
             }
 
-            if paths.iter().all(|p| p.is_empty()) && gap_paths.iter().all(|p| p.is_empty()) {
+            let (ovr_paths, ovr_band) = ovr_marks.finish();
+            if paths.iter().all(|p| p.is_empty())
+                && gap_paths.iter().all(|p| p.is_empty())
+                && ovr_band.is_empty()
+            {
                 continue;
             }
 
@@ -2127,6 +2308,8 @@ impl CachedChart {
             valid_channels.hash(&mut hasher);
             paths.hash(&mut hasher);
             gap_paths.hash(&mut hasher);
+            ovr_paths.hash(&mut hasher);
+            ovr_band.hash(&mut hasher);
 
             chunks.push(ChartRenderChunk {
                 id: chunk_id,
@@ -2135,6 +2318,8 @@ impl CachedChart {
                 right: chunk_end_x as f64,
                 paths,
                 gap_paths,
+                ovr_paths,
+                ovr_band,
                 signature: hasher.finish(),
                 live: chunk_id == last_chunk_id,
             });
@@ -2290,13 +2475,29 @@ impl CachedChart {
 
             let first = view_buckets.partition_point(|b| b.id < chunk_start_bid);
             let end = view_buckets.partition_point(|b| b.id <= chunk_end_bid);
+            let mut ovr_marks = OvrMarks::new(valid_channels.len(), top, bottom);
             for b in &view_buckets[first..end] {
                 let rel_bid = b.id - chunk_start_bid;
                 let x = chunk_width * ((rel_bid as f32 + 0.5) / chunk_bucket_count as f32);
 
                 for (group_idx, &ch) in valid_channels.iter().enumerate() {
+                    if b.ovr[ch] != 0 {
+                        let mut line = LineState {
+                            paths: &mut paths,
+                            segment_points: &mut segment_points,
+                            last_bucket_id_drawn: &mut last_bucket_id_drawn,
+                            last_point_drawn: &mut last_point_drawn,
+                            carry_last_bucket_id_drawn: &mut carry_last_bucket_id_drawn,
+                            carry_last_value_drawn: &mut carry_last_value_drawn,
+                        };
+                        line.break_for_over_range(group_idx, smooth_chunk);
+                        ovr_marks.mark(group_idx, rel_bid, chunk_bucket_count, chunk_width, b.ovr[ch]);
+                    }
                     if !b.has[ch] {
                         continue;
+                    }
+                    if b.ovr[ch] == 0 {
+                        ovr_marks.close(group_idx);
                     }
                     let v = b.last[ch];
                     let (series_min, series_max) =
@@ -2348,7 +2549,11 @@ impl CachedChart {
                 );
             }
 
-            if paths.iter().all(|p| p.is_empty()) && gap_paths.iter().all(|p| p.is_empty()) {
+            let (ovr_paths, ovr_band) = ovr_marks.finish();
+            if paths.iter().all(|p| p.is_empty())
+                && gap_paths.iter().all(|p| p.is_empty())
+                && ovr_band.is_empty()
+            {
                 continue;
             }
 
@@ -2357,6 +2562,8 @@ impl CachedChart {
             valid_channels.hash(&mut hasher);
             paths.hash(&mut hasher);
             gap_paths.hash(&mut hasher);
+            ovr_paths.hash(&mut hasher);
+            ovr_band.hash(&mut hasher);
 
             chunks.push(ChartRenderChunk {
                 id: chunk_id,
@@ -2365,6 +2572,8 @@ impl CachedChart {
                 right: chunk_end_x as f64,
                 paths,
                 gap_paths,
+                ovr_paths,
+                ovr_band,
                 signature: hasher.finish(),
                 live: chunk_id == last_chunk_id,
             });
@@ -2661,8 +2870,127 @@ pub struct ChartRenderChunk {
     pub right: f64,
     pub paths: Vec<String>,
     pub gap_paths: Vec<String>,
+    /// Per series: filled ticks at the plot's top (high) or bottom (low)
+    /// edge where the channel was ADC over range. Chunk-local x.
+    pub ovr_paths: Vec<String>,
+    /// Shaded over-range spans across the plot height, any series.
+    pub ovr_band: String,
     pub signature: u64,
     pub live: bool,
+}
+
+/// The line drawing state of a chunk's series, so an over-range bucket can
+/// end the line: the plot must show a gap there, never bridge the last valid
+/// sample to the next one.
+struct LineState<'a> {
+    paths: &'a mut [String],
+    segment_points: &'a mut [Vec<(f32, f32)>],
+    last_bucket_id_drawn: &'a mut [Option<i64>],
+    last_point_drawn: &'a mut [Option<(f32, f32)>],
+    carry_last_bucket_id_drawn: &'a mut [Option<i64>],
+    carry_last_value_drawn: &'a mut [Option<f32>],
+}
+
+impl LineState<'_> {
+    fn break_for_over_range(&mut self, series: usize, smooth: bool) {
+        flush_smoothed_segment(&mut self.paths[series], &self.segment_points[series], smooth);
+        self.segment_points[series].clear();
+        self.last_bucket_id_drawn[series] = None;
+        self.last_point_drawn[series] = None;
+        self.carry_last_bucket_id_drawn[series] = None;
+        self.carry_last_value_drawn[series] = None;
+    }
+}
+
+const OVR_TICK_PX: f32 = 6.0;
+const OVR_MIN_WIDTH_PX: f32 = 2.0;
+
+/// Builds a chunk's over-range ticks (per series) and band, merging adjacent
+/// buckets into one span.
+struct OvrMarks {
+    top: f32,
+    bottom: f32,
+    ticks: Vec<String>,
+    open: Vec<Option<(f32, f32, u8)>>,
+    band: String,
+    band_open: Option<(f32, f32)>,
+}
+
+fn push_rect(path: &mut String, x0: f32, x1: f32, y0: f32, y1: f32) {
+    path.push_str(&format!(
+        "M {x0:.2} {y0:.2} L {x1:.2} {y0:.2} L {x1:.2} {y1:.2} L {x0:.2} {y1:.2} L {x0:.2} {y0:.2} "
+    ));
+}
+
+impl OvrMarks {
+    fn new(series: usize, top: f32, bottom: f32) -> Self {
+        Self { top, bottom, ticks: vec![String::new(); series], open: vec![None; series], band: String::new(), band_open: None }
+    }
+
+    fn mark(&mut self, series: usize, rel_bid: i64, bucket_count: i64, chunk_width: f32, flags: u8) {
+        let count = bucket_count.max(1) as f32;
+        let mut x0 = chunk_width * (rel_bid as f32 / count);
+        let mut x1 = chunk_width * ((rel_bid + 1) as f32 / count);
+        if x1 - x0 < OVR_MIN_WIDTH_PX {
+            let mid = (x0 + x1) * 0.5;
+            x0 = mid - OVR_MIN_WIDTH_PX * 0.5;
+            x1 = mid + OVR_MIN_WIDTH_PX * 0.5;
+        }
+        match &mut self.open[series] {
+            // Rows between over-range buckets leave empty buckets; the span
+            // stays open until the series draws a valid sample again.
+            Some((_, end, open_flags)) if *open_flags == flags => *end = end.max(x1),
+            open => {
+                let previous = open.replace((x0, x1, flags));
+                if let Some(span) = previous {
+                    self.flush_tick(series, span);
+                }
+            }
+        }
+        match &mut self.band_open {
+            Some((_, end)) => *end = end.max(x1),
+            open => {
+                if let Some((a, b)) = open.replace((x0, x1)) {
+                    push_rect(&mut self.band, a, b, self.top, self.bottom);
+                }
+            }
+        }
+    }
+
+    /// The series drew a valid sample: its over-range span (and the band,
+    /// once no series is over range) ends here.
+    fn close(&mut self, series: usize) {
+        if let Some(span) = self.open[series].take() {
+            self.flush_tick(series, span);
+        }
+        if self.open.iter().all(Option::is_none)
+            && let Some((a, b)) = self.band_open.take()
+        {
+            push_rect(&mut self.band, a, b, self.top, self.bottom);
+        }
+    }
+
+    fn flush_tick(&mut self, series: usize, (x0, x1, flags): (f32, f32, u8)) {
+        let (top, bottom) = (self.top, self.bottom);
+        if flags & OVR_HIGH != 0 {
+            push_rect(&mut self.ticks[series], x0, x1, top, top + OVR_TICK_PX);
+        }
+        if flags & OVR_LOW != 0 {
+            push_rect(&mut self.ticks[series], x0, x1, bottom - OVR_TICK_PX, bottom);
+        }
+    }
+
+    fn finish(mut self) -> (Vec<String>, String) {
+        for series in 0..self.open.len() {
+            if let Some(span) = self.open[series].take() {
+                self.flush_tick(series, span);
+            }
+        }
+        if let Some((a, b)) = self.band_open.take() {
+            push_rect(&mut self.band, a, b, self.top, self.bottom);
+        }
+        (self.ticks, self.band)
+    }
 }
 
 type ChartChunkList = Rc<Vec<ChartRenderChunk>>;
@@ -2676,6 +3004,8 @@ struct CanvasChartPayload<'a> {
     view_h: f64,
     chunks: &'a [ChartRenderChunk],
     combined_paths: Vec<String>,
+    ovr_marks: Vec<String>,
+    ovr_band: String,
     colors: Vec<&'static str>,
     grid_left: Option<f64>,
     grid_right: Option<f64>,
@@ -2795,6 +3125,24 @@ fn build_combined_canvas_paths(chunks: &[ChartRenderChunk]) -> Vec<String> {
     }
 
     combined_paths
+}
+
+/// Over-range ticks per series and the shaded band, in chart coordinates.
+fn build_combined_over_range(chunks: &[ChartRenderChunk]) -> (Vec<String>, String) {
+    let series_count = chunks.iter().map(|chunk| chunk.ovr_paths.len()).max().unwrap_or(0);
+    let mut marks = vec![String::new(); series_count];
+    let mut band = String::new();
+    for chunk in chunks {
+        for (series_index, path) in chunk.ovr_paths.iter().enumerate() {
+            if !path.trim().is_empty() {
+                append_translated_path(&mut marks[series_index], path, chunk.x, false);
+            }
+        }
+        if !chunk.ovr_band.trim().is_empty() {
+            append_translated_path(&mut band, &chunk.ovr_band, chunk.x, false);
+        }
+    }
+    (marks, band)
 }
 
 fn queue_chart_canvas_draw(canvas_id_json: String, payload_json: String) {
@@ -3182,6 +3530,36 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         }}
                         targetCtx.restore();
                       }};
+                      // ADC over range: a shaded band under the lines and a
+                      // tick in the series colour at the top (high) or
+                      // bottom (low) edge, over the gap in the line.
+                      const drawOverRange = (targetCtx, scaleX, scaleY, alignOffset, ticks) => {{
+                        if (ticks) {{
+                          if (!Array.isArray(data.ovr_marks)) return;
+                          for (let i = 0; i < data.ovr_marks.length; i += 1) {{
+                            const p = buildPath2d(null, "", data.ovr_marks[i]);
+                            if (!p) continue;
+                            targetCtx.save();
+                            targetCtx.translate(alignOffset, 0);
+                            targetCtx.scale(scaleX, scaleY);
+                            targetCtx.fillStyle = data.colors[i] || "#9ca3af";
+                            targetCtx.fill(p);
+                            targetCtx.lineWidth = 1.0;
+                            targetCtx.strokeStyle = "#f07c96";
+                            targetCtx.stroke(p);
+                            targetCtx.restore();
+                          }}
+                          return;
+                        }}
+                        const band = data.ovr_band ? buildPath2d(null, "", data.ovr_band) : null;
+                        if (!band) return;
+                        targetCtx.save();
+                        targetCtx.translate(alignOffset, 0);
+                        targetCtx.scale(scaleX, scaleY);
+                        targetCtx.fillStyle = "rgba(240, 124, 150, 0.16)";
+                        targetCtx.fill(band);
+                        targetCtx.restore();
+                      }};
                       const buildCombinedSeriesPath = (seriesIndex) => {{
                         const key = `c:${{data.signature}}:${{pxW}}:${{pxH}}:${{seriesIndex}}`;
                         if (cache.combinedPathCache && cache.combinedPathCache.has(key)) {{
@@ -3232,6 +3610,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                         const alignOffset = firstChunk
                           ? Math.round(firstChunk.x * scaleX) - (firstChunk.x * scaleX)
                           : 0;
+                        drawOverRange(ctx, scaleX, scaleY, alignOffset, false);
                         let drewCombined = false;
                         for (const i of seriesDrawOrder) {{
                           const combinedPath = buildCombinedSeriesPath(i);
@@ -3248,6 +3627,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                             drawChunkDirect(ctx, chunk, scaleX, scaleY, alignOffset);
                           }}
                         }}
+                        drawOverRange(ctx, scaleX, scaleY, alignOffset, true);
                         return;
                       }}
 
@@ -3314,6 +3694,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           }}
                         }}
                       }}
+                      drawOverRange(ctx, scaleX, scaleY, alignOffset, false);
                       let drewCombined = false;
                       for (const i of seriesDrawOrder) {{
                         const combinedPath = buildCombinedSeriesPath(i);
@@ -3330,6 +3711,7 @@ fn chart_canvas_renderer_bootstrap() -> &'static str {
                           drawChunkDirect(ctx, chunk, scaleX, scaleY, alignOffset);
                         }}
                       }}
+                      drawOverRange(ctx, scaleX, scaleY, alignOffset, true);
                       cache.pendingData = null;
                       chartCanvasCacheRoot.set(canvasId, cache);
                       el.__gs26RenderSignature = renderSignature;
@@ -3422,10 +3804,13 @@ pub fn ChartCanvas(
     }
     let render_signature = hasher.finish();
 
+    let (ovr_marks, ovr_band) = build_combined_over_range(chunks.as_slice());
     let payload = CanvasChartPayload {
         view_w,
         view_h,
         combined_paths: build_combined_canvas_paths(chunks.as_slice()),
+        ovr_marks,
+        ovr_band,
         colors: (0..8).map(series_color).collect(),
         grid_left,
         grid_right,

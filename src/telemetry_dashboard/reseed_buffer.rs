@@ -50,7 +50,7 @@ impl ReseedBuffer {
 mod tests {
     use super::*;
     fn row(index: i64, values: usize) -> TelemetryRow {
-        TelemetryRow {
+        TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: index,
             received_timestamp_ms: index,
             data_type: "LOADCELL".into(),

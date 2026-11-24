@@ -70,6 +70,9 @@ html, body { font-family: var(--gs-font); -webkit-text-size-adjust: 100%; text-s
 .gs-badge--warn { color: var(--gs-warn-text); background: var(--gs-warn-bg); border-color: var(--gs-warn-line); }
 .gs-badge--danger { color: var(--gs-danger-text); background: var(--gs-danger-bg); border-color: var(--gs-danger-line); }
 
+/* ADC over range: a DAQ value that is not valid. Text, never a number. */
+.gs-ovr { display: inline-block; padding: 0 6px; border: 1px solid var(--gs-danger-line); border-radius: 6px; background: var(--gs-danger-bg); color: var(--gs-danger-text); font-weight: 800; letter-spacing: .04em; cursor: help; }
+
 /* Form row: label above control on phones, beside it on wider screens. */
 .gs-form-row { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; align-items: center; min-width: 0; }
 .gs-form-row > label, .gs-form-row > .gs-form-label { font: 600 var(--gs-text-sm)/1.3 var(--gs-font); color: var(--gs-text-muted); }

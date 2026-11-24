@@ -145,3 +145,25 @@ fn dump_diagrams_for_screenshots() {
         }
     }
 }
+
+#[test]
+fn over_range_readings_show_ovr_never_a_number() {
+    use crate::telemetry_dashboard::over_range::OverRange;
+    let mut fake = Fake::default();
+    fake.set("LOADCELL_50_WEIGHT_KG", 0, 12.5, 100);
+    fake.over_range.insert(("LOADCELL_WEIGHT_KG".into(), 0), (OverRange::High, 100));
+    fake.over_range.insert(("COMBUSTION_CHAMBER_PRESSURE".into(), 0), (OverRange::Low, 100));
+    let html = render(topology::parse(topology::BUNDLED[3].1).unwrap(), &fake);
+    let kg1000 = element(&html, "data-reading=\"kg1000_kg\"");
+    assert!(kg1000.contains("over-range"), "{kg1000}");
+    // The scaled thrust reading is OVR too, not OVR × g or a number.
+    assert!(element(&html, "data-reading=\"thrust\"").contains("over-range"));
+    assert!(element(&html, "data-reading=\"chamber_pt\"").contains("over-range"));
+    assert!(html.contains("ADC over range: reading is not valid"));
+    assert!(html.contains("ADC over range (below −full scale): reading is not valid"));
+    assert!(html.contains("−OVR"));
+    assert!(!html.contains("OVR kg") && !html.contains("OVR N"), "no unit after OVR");
+    // A channel that is not over range keeps its number.
+    assert!(html.contains("12.50 kg"));
+    assert!(!element(&html, "data-reading=\"kg50_kg\"").contains("over-range"));
+}

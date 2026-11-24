@@ -430,6 +430,30 @@ If you are implementing the backend streaming path, use [`docs/backend-recent-st
 - Zero-point changes include a `Preserve regression when changing zero point` toggle so operators can choose whether the existing fit shape should shift with the new zero or be recalculated independently.
 - Calibration sensor definitions, channel ids, labels, colors, and allowed regression modes still come entirely from `/api/calibration_config`.
 
+## ADC Over Range
+
+The backend marks a DAQ value whose ADC channel saturated: bit `i` of a
+telemetry row's `over_range` means `values[i]` is over range (that value is
+`null`), and bit `i` of `over_range_low` means it was below −full scale. Rows
+derived from DAQ channels (load-cell weight and fill percent, chamber pressure,
+...) carry the bits of their source. Both fields are omitted when zero.
+
+- Every value display (Data tab cards, the personal dashboard, Calibration live
+  metrics, live diagrams) shows **OVR** (**−OVR** when low) in the danger style
+  (`.gs-ovr`) with the tooltip "ADC over range: reading is not valid" — never a
+  number and never the previous number. A `null` without the bit keeps the
+  usual no-data text. Shared helpers: `telemetry_dashboard/over_range.rs`
+  (`OverRange`, `Reading`, `ValueText`) and `latest_telemetry_reading`.
+- Charts break the line over an over-range span (no bridging), shade the span,
+  and draw a tick in the series colour at the top (high) or bottom (low) edge of
+  the plot. Over-range samples never move the autoscale.
+- A live capture on the Calibration page stops with an error if the channel goes
+  over range; the calibration is not changed.
+- Settings → board health, DAQ input health, lists the channels over range now
+  or within the last 10 minutes (now / latched, counts in the last 60 s and since
+  DAQ boot, current episode length) and the DAQ's +3V3A (VDDA): warning outside
+  3.15–3.45 V, danger above 3.6 V.
+
 ## Notes For Backend Authors
 
 - Route paths are hardcoded in the frontend. Matching them exactly is the easiest path to compatibility.

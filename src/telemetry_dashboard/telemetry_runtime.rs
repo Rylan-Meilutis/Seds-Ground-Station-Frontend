@@ -43,13 +43,17 @@ struct LatestTelemetrySample {
     data_type: TelemetryTextId,
     sender_id: TelemetryTextId,
     values: Arc<[Option<f32>]>,
+    // ADC over-range bits of the row (see `over_range`); an over-range
+    // value is null in `values` and must not show a stale number.
+    over_range: u32,
+    over_range_low: u32,
 }
 
 #[cfg(test)]
 mod backward_clock_latest_tests {
     use super::*;
     fn row(received: i64, value: f32) -> TelemetryRow {
-        let mut row = TelemetryRow { source_timestamp_ms: None, timestamp_ms:received, received_timestamp_ms:received,
+        let mut row = TelemetryRow { over_range: 0, over_range_low: 0, source_timestamp_ms: None, timestamp_ms:received, received_timestamp_ms:received,
             data_type:"KG1000".into(), sender_id:"DAQ".into(), data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(value)] };
         row.refresh_interned_ids(); row
     }
@@ -89,7 +93,7 @@ mod chart_placement_latest_tests {
         let received = 1_700_000_400_000;
         let rows: Vec<_> = (0..5)
             .map(|i| {
-                let mut row = TelemetryRow {
+                let mut row = TelemetryRow { over_range: 0, over_range_low: 0,
                     source_timestamp_ms: Some(received - 900 + i * 200), timestamp_ms: received,
                     received_timestamp_ms: received, data_type: "PLACEMENT_LATEST_TEST".into(),
                     sender_id: "FC".into(), data_type_id: Default::default(),
@@ -112,7 +116,7 @@ mod chart_placement_latest_tests {
 mod reseed_continuity_tests {
     use super::*;
     fn row(time: i64, value: f32) -> TelemetryRow {
-        let mut row = TelemetryRow {source_timestamp_ms: Some(time), timestamp_ms:time,
+        let mut row = TelemetryRow { over_range: 0, over_range_low: 0,source_timestamp_ms: Some(time), timestamp_ms:time,
             received_timestamp_ms:time, data_type:"KG1000".into(), sender_id:"DAQ".into(),
             data_type_id:Default::default(), sender_id_id:Default::default(), values:vec![Some(value)]};
         row.refresh_interned_ids(); row
@@ -623,7 +627,9 @@ fn rebuild_latest_preserving_live(
         candidate.is_none_or(|next| next.received_timestamp_ms < original.received_timestamp_ms
             || (next.received_timestamp_ms == original.received_timestamp_ms
                 && next.timestamp_ms == original.timestamp_ms && next.sender_id == original.sender_id
-                && next.values == original.values))
+                && next.values == original.values
+                && next.over_range == original.over_range
+                && next.over_range_low == original.over_range_low))
     };
     for (key, original) in live {
         if keep_original(&original, latest.get(&key)) { latest.insert(key, original); }
@@ -852,6 +858,8 @@ fn update_latest_telemetry_with_provenance(
                 data_type: data_type_id,
                 sender_id,
                 values: values.clone(),
+                over_range: row.over_range,
+                over_range_low: row.over_range_low,
             },
         );
     }
@@ -866,6 +874,8 @@ fn update_latest_telemetry_with_provenance(
                 data_type: data_type_id,
                 sender_id,
                 values,
+                over_range: row.over_range,
+                over_range_low: row.over_range_low,
             },
         );
     }
@@ -903,7 +913,7 @@ pub(crate) fn latest_telemetry_row(
             if let Ok(latest) = LATEST_TELEMETRY.lock() {
                 latest
                     .get(&LatestTelemetryKey::new(data_type_id, sender_id))
-                    .map(|sample| TelemetryRow {
+                    .map(|sample| TelemetryRow { over_range: sample.over_range, over_range_low: sample.over_range_low,
                         source_timestamp_ms: None, timestamp_ms: sample.timestamp_ms,
                         received_timestamp_ms: sample.received_timestamp_ms,
                         data_type: resolve_telemetry_text(sample.data_type).to_string(),
@@ -920,7 +930,7 @@ pub(crate) fn latest_telemetry_row(
             if let Ok(latest_by_type) = LATEST_TELEMETRY_BY_TYPE.lock() {
                 latest_by_type
                     .get(&data_type_id)
-                    .map(|sample| TelemetryRow {
+                    .map(|sample| TelemetryRow { over_range: sample.over_range, over_range_low: sample.over_range_low,
                         source_timestamp_ms: None, timestamp_ms: sample.timestamp_ms,
                         received_timestamp_ms: sample.received_timestamp_ms,
                         data_type: resolve_telemetry_text(sample.data_type).to_string(),
@@ -944,6 +954,35 @@ pub(crate) fn latest_telemetry_value(
 ) -> Option<f32> {
     latest_telemetry_value_direct(data_type, sender_id, index)
         .or_else(|| fallback_latest_telemetry_value(data_type, sender_id, index))
+}
+
+/// A single channel of the latest row as a view shows it: an over-range
+/// channel is [`Reading::OverRange`](over_range::Reading), never the
+/// previous number.
+pub(crate) fn latest_telemetry_reading(
+    data_type: &str,
+    sender_id: Option<&str>,
+    index: usize,
+) -> over_range::Reading {
+    use over_range::Reading;
+    let data_type_id = intern_telemetry_text(data_type);
+    let read = |sample: &LatestTelemetrySample| {
+        Reading::of(&sample.values, sample.over_range, sample.over_range_low, index)
+    };
+    let reading = match sender_id {
+        Some(sender_id) => {
+            let key = LatestTelemetryKey::new(data_type_id, intern_telemetry_text(sender_id));
+            LATEST_TELEMETRY.lock().ok().and_then(|latest| latest.get(&key).map(read))
+        }
+        None => LATEST_TELEMETRY_BY_TYPE
+            .lock()
+            .ok()
+            .and_then(|latest| latest.get(&data_type_id).map(read)),
+    };
+    match reading {
+        Some(reading @ Reading::OverRange(_)) => reading,
+        _ => latest_telemetry_value(data_type, sender_id, index).map_or(Reading::Missing, Reading::Value),
+    }
 }
 
 /// Uses the same ingress/store lifetime as Data; never samples component renders.
@@ -1043,7 +1082,7 @@ mod latest_telemetry_tests {
         board: &str,
         values: Vec<Option<f32>>,
     ) -> TelemetryRow {
-        TelemetryRow {
+        TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: ts,
             received_timestamp_ms: ts,
             data_type: kind.into(),
@@ -1214,8 +1253,43 @@ mod latest_telemetry_tests {
     }
 
     #[test]
+    fn latest_rows_and_ui_compaction_keep_over_range_bits() {
+        use crate::telemetry_dashboard::over_range::{OverRange, Reading};
+        let mut row = TelemetryRow { over_range: 0b10, over_range_low: 0b10,
+            source_timestamp_ms: None, timestamp_ms: 1_700_000_030_000,
+            received_timestamp_ms: 1_700_000_030_000,
+            data_type: "DAQ_SDADC_VOLTAGES".to_string(),
+            data_type_id: Default::default(),
+            sender_id: "DAQ".to_string(),
+            sender_id_id: Default::default(),
+            values: vec![Some(0.25), None],
+        };
+        row.refresh_interned_ids();
+        let mut latest = HashMap::new();
+        let mut by_type = HashMap::new();
+        update_latest_telemetry_locked(&mut latest, &mut by_type, &row);
+        let sample = &by_type[&row.interned_data_type_id()];
+        assert_eq!(Reading::of(&sample.values, sample.over_range, sample.over_range_low, 1),
+            Reading::OverRange(OverRange::Low));
+        assert_eq!(Reading::of(&sample.values, sample.over_range, sample.over_range_low, 0), Reading::Value(0.25));
+        // A later in-range row clears it: the bits follow the newest row.
+        let mut next = row.clone();
+        next.received_timestamp_ms += 100;
+        next.timestamp_ms += 100;
+        next.over_range = 0;
+        next.over_range_low = 0;
+        next.values = vec![Some(0.25), Some(-1.0)];
+        update_latest_telemetry_locked(&mut latest, &mut by_type, &next);
+        let sample = &by_type[&row.interned_data_type_id()];
+        assert_eq!(Reading::of(&sample.values, sample.over_range, sample.over_range_low, 1), Reading::Value(-1.0));
+        // The UI store's compaction, sorting and pruning keep whole rows.
+        let compacted = compact_rows_for_ui(vec![row.clone()]);
+        assert_eq!((compacted[0].over_range, compacted[0].over_range_low), (0b10, 0b10));
+    }
+
+    #[test]
     fn does_not_alias_raw_loadcell_samples_into_calibrated_labels() {
-        reset_latest_telemetry(&[TelemetryRow {
+        reset_latest_telemetry(&[TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: 1_700_000_030_000,
             received_timestamp_ms: 1_700_000_030_000,
             data_type: "KG1000".to_string(),
@@ -1255,7 +1329,7 @@ mod latest_telemetry_tests {
     #[test]
     fn drops_live_rows_that_arrive_too_late() {
         let now_ms = 1_700_000_100_000;
-        let row = TelemetryRow {
+        let row = TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
             received_timestamp_ms: now_ms - LIVE_TELEMETRY_MAX_AGE_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
@@ -1270,7 +1344,7 @@ mod latest_telemetry_tests {
     #[test]
     fn keeps_live_rows_with_small_clock_skew() {
         let now_ms = 1_700_000_100_000;
-        let row = TelemetryRow {
+        let row = TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             received_timestamp_ms: now_ms + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             data_type: "BATTERY_VOLTAGE".to_string(),
@@ -1289,7 +1363,7 @@ mod latest_telemetry_tests {
         let data_type = "BATTERY_VOLTAGE".to_string();
         let sender_id = "PB".to_string();
 
-        let first = TelemetryRow {
+        let first = TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: 1_700_000_000_000 + LIVE_TELEMETRY_MAX_FUTURE_SKEW_MS - 1,
             received_timestamp_ms: 1_700_000_000_000,
             data_type: data_type.clone(),
@@ -1300,7 +1374,7 @@ mod latest_telemetry_tests {
         };
         update_latest_telemetry_locked(&mut latest, &mut latest_by_type, &first);
 
-        let second = TelemetryRow {
+        let second = TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None, timestamp_ms: 1_700_000_000_100,
             received_timestamp_ms: 1_700_000_000_100,
             data_type,
@@ -1322,7 +1396,7 @@ mod latest_telemetry_tests {
     fn history_pruning_uses_received_time_instead_of_network_timestamp() {
         let newest_received_ms = 1_700_000_500_000;
         let mut rows = vec![
-            TelemetryRow {
+            TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: 1_699_000_000_000,
                 received_timestamp_ms: newest_received_ms - 1_000,
                 data_type: "GPS".to_string(),
@@ -1331,7 +1405,7 @@ mod latest_telemetry_tests {
                 sender_id_id: Default::default(),
                 values: vec![Some(1.0)],
             },
-            TelemetryRow {
+            TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: 1_700_000_490_000,
                 received_timestamp_ms: newest_received_ms,
                 data_type: "GPS".to_string(),
@@ -1396,7 +1470,7 @@ mod latest_telemetry_tests {
         let total_rows = 20_000usize;
         let start_ts = 1_700_000_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
-            .map(|i| TelemetryRow {
+            .map(|i| TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 17),
                 received_timestamp_ms: start_ts + (i as i64 * 17),
                 data_type: if i % 2 == 0 {
@@ -1453,7 +1527,7 @@ mod latest_telemetry_tests {
         let total_rows = 20_000usize;
         let start_ts = 1_700_100_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
-            .map(|i| TelemetryRow {
+            .map(|i| TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 20),
                 received_timestamp_ms: start_ts + (i as i64 * 20),
                 data_type: if i % 2 == 0 {
@@ -1512,7 +1586,7 @@ mod latest_telemetry_tests {
         let total_rows = 12_000usize;
         let start_ts = 1_700_200_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
-            .map(|i| TelemetryRow {
+            .map(|i| TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 20),
                 received_timestamp_ms: start_ts + (i as i64 * 20),
                 data_type: "BATTERY_VOLTAGE".to_string(),
@@ -1566,7 +1640,7 @@ mod latest_telemetry_tests {
         let total_rows = 20_000usize;
         let start_ts = 1_700_300_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
-            .map(|i| TelemetryRow {
+            .map(|i| TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 20),
                 received_timestamp_ms: start_ts + (i as i64 * 20),
                 data_type: if i % 2 == 0 {
@@ -1620,7 +1694,7 @@ mod latest_telemetry_tests {
         let total_rows = 20_000usize;
         let start_ts = 1_700_400_000_000i64;
         let mut rows: Vec<TelemetryRow> = (0..total_rows)
-            .map(|i| TelemetryRow {
+            .map(|i| TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None, timestamp_ms: start_ts + (i as i64 * 17),
                 received_timestamp_ms: start_ts + (i as i64 * 17),
                 data_type: if i % 2 == 0 {
@@ -1821,6 +1895,22 @@ pub(crate) fn fresh_daq_calibration_value(data_type: &str, now_ms: i64) -> Optio
     fresh_calibration_sample(row, now_ms)
 }
 
+/// Like [`fresh_daq_calibration_value`], but a fresh over-range row is
+/// reported as over range rather than as no reading.
+pub(crate) fn fresh_daq_calibration_reading(data_type: &str, now_ms: i64) -> over_range::Reading {
+    use over_range::Reading;
+    let key = LatestTelemetryKey::new(intern_telemetry_text(data_type), intern_telemetry_text("DAQ"));
+    let Ok(latest) = LATEST_TELEMETRY.lock() else { return Reading::Missing; };
+    let Some(row) = latest.get(&key) else { return Reading::Missing; };
+    let fresh = now_ms
+        .checked_sub(row.received_timestamp_ms)
+        .is_some_and(|age| (0..=2000).contains(&age));
+    match over_range::OverRange::from_bits(row.over_range, row.over_range_low, 0) {
+        Some(state) if fresh => Reading::OverRange(state),
+        _ => fresh_calibration_sample(row, now_ms).map_or(Reading::Missing, Reading::Value),
+    }
+}
+
 fn fresh_calibration_sample(row: &LatestTelemetrySample, now_ms: i64) -> Option<f32> {
     // Live ingestion stamps receipt using the client clock. Source timestamps
     // may be slightly ahead while network clocks converge; they must not make
@@ -1844,6 +1934,8 @@ mod calibration_freshness_tests {
             data_type: intern_telemetry_text("DAQ_ADC_TEMPERATURE"),
             sender_id: intern_telemetry_text("DAQ"),
             values: Arc::from(vec![value]),
+            over_range: 0,
+            over_range_low: 0,
         }
     }
 

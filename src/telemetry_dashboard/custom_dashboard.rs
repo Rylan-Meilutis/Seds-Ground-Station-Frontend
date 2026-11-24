@@ -1069,6 +1069,8 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
             .saturating_sub(r.received_timestamp_ms)
             .max(0)
     });
+    // A live over-range channel shows OVR, never a number (the value is null).
+    let over_range = if aggregate { None } else { row.as_ref().and_then(|r| r.over_range_at(card.index)) };
     let live_value = row
         .as_ref()
         .and_then(|r| r.values.get(card.index).copied().flatten())
@@ -1096,11 +1098,16 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
             }
         })
         .unwrap_or_else(|| "—".into());
+    let text = over_range.map_or(text, |state| state.text().to_string());
     // Reserve a stable numeric slot so changing digits do not move adjacent pins.
     // Keep full precision; unusually long values remain horizontally scrollable.
     let compact_number = value.map(|v| if card.display == "state" { text.clone() }
         else { format!("{v:.precision$}", precision=card.precision) }).unwrap_or_else(|| "—".into());
-    let compact_details = pinned_details(&card, value, age);
+    let compact_number = over_range.map_or(compact_number, |state| state.text().to_string());
+    let compact_details = match over_range {
+        Some(state) => pinned_details(&card, None, age).replacen("No sample", state.title(), 1),
+        None => pinned_details(&card, value, age),
+    };
     let compact_stale = age.is_none_or(|age|age>10000);
     let fraction = value
         .map(|v| ((v - card.min) / (card.max - card.min)).clamp(0.0, 1.0))
@@ -1117,9 +1124,9 @@ fn TelemetryCard(card: Card, #[props(default)] thrust: bool, #[props(default)] a
         strong {class:"gs26-card-label",style:if compact {"min-width:0;max-width:100%;overflow-wrap:anywhere;"}else{""},"{card.label}"}
         div {class:"gs26-card-value",style:if compact {"font-size:13px;display:inline-flex;flex-wrap:nowrap;align-items:baseline;gap:4px;min-width:0;max-width:100%;"} else {"font-size:24px;font-variant-numeric:tabular-nums;"},
             if compact {
-                span {class:"gs26-pinned-number",style:if card.display == "state" {"flex:0 1 auto;min-width:0;max-inline-size:18ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;"} else {"flex:0 0 10ch;inline-size:10ch;min-inline-size:10ch;max-inline-size:10ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;"},"{compact_number}"}
+                span {class:"gs26-pinned-number",style:if card.display == "state" {"flex:0 1 auto;min-width:0;max-inline-size:18ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;"} else {"flex:0 0 10ch;inline-size:10ch;min-inline-size:10ch;max-inline-size:10ch;overflow-x:auto;white-space:nowrap;font-variant-numeric:tabular-nums;"},super::over_range::ValueText {text:compact_number.clone()}}
                 if card.display != "state" && value.is_some() {span {class:"gs26-pinned-unit",style:"flex:0 0 auto;white-space:nowrap;","{card.unit}"}}
-            } else {"{text}"}
+            } else {super::over_range::ValueText {text:text.clone()}}
         }
         if !compact && value.is_some() && card.display=="bar" {progress {value:fraction as f64,max:1,style:"width:100%;height:20px;"}}
         if !compact && value.is_some() && card.display=="gauge" {div {role:"img","aria-label":text.clone(),style:"width:70px;height:70px;border-radius:50%;background:conic-gradient(#38bdf8 {fraction*360.0}deg,#334155 0);",div {style:"position:relative;top:12px;left:12px;width:46px;height:46px;border-radius:50%;background:#0f172a;"}}}

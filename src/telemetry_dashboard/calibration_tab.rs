@@ -1,7 +1,7 @@
 #![allow(clippy::redundant_locals)]
 
 use super::{
-    TELEMETRY_RENDER_EPOCH, UrlConfig, latest_telemetry_value,
+    TELEMETRY_RENDER_EPOCH, UrlConfig,
     layout::{ThemeConfig, ValueFormatter},
     persist, translate_text,
 };
@@ -305,12 +305,28 @@ fn is_load_cell(data_type: &str) -> bool {
 
 /// Live Raw must show only a current reading from the board being calibrated.
 /// Load cells accept only DAQ rows received within the last 2 s.
+#[cfg(test)]
 fn latest_raw(data_type: &str) -> Option<f32> {
     if is_load_cell(data_type) {
         super::fresh_daq_calibration_value(data_type, now_ms() as i64)
     } else {
-        latest_telemetry_value(data_type, None, 0)
+        super::latest_telemetry_value(data_type, None, 0)
     }
+}
+
+/// [`latest_raw`], but an ADC over-range reading is reported as such so the
+/// view shows OVR instead of a number or "no reading".
+fn latest_raw_reading(data_type: &str) -> super::over_range::Reading {
+    if is_load_cell(data_type) {
+        super::fresh_daq_calibration_reading(data_type, now_ms() as i64)
+    } else {
+        super::latest_telemetry_reading(data_type, None, 0)
+    }
+}
+
+/// A raw-derived metric's text: OVR while the raw reading is over range.
+fn ovr_or(over: Option<super::over_range::OverRange>, text: String) -> String {
+    over.map_or(text, |state| state.text().to_string())
 }
 
 async fn sleep_ms(millis: u64) {
@@ -350,6 +366,12 @@ where
         }
         let row = super::latest_telemetry_row(&data_type, load_cell.then_some("DAQ"));
         let next_raw = if let Some(row) = row {
+            if row.over_range_at(0).is_some() && now_ms() as i64 - super::telemetry_row_received_ms(&row) <= 2_000 {
+                return Err(format!(
+                    "Capture stopped after {}/{} samples: the {data_type} ADC channel is over range, so its reading is not valid. Calibration was not changed.",
+                    captured_samples.len(), target,
+                ));
+            }
             let raw = row.values.first().copied().flatten();
             match raw {
                 Some(raw) if observations.accept(
@@ -3268,7 +3290,9 @@ fn CalibrationLiveMetrics(
     channel_key: String,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
-    let raw = selected_sensor.as_ref().and_then(|sensor| latest_raw(&sensor.data_type));
+    let reading = selected_sensor.as_ref().map(|sensor| latest_raw_reading(&sensor.data_type));
+    let over = reading.and_then(|r| r.over_range());
+    let raw = reading.and_then(|r| r.value());
     let unit = selected_sensor
         .as_ref()
         .map(|sensor| {
@@ -3283,13 +3307,14 @@ fn CalibrationLiveMetrics(
     } else {
         fmt_fixed(raw, 12, raw_precision)
     };
+    let live_value = ovr_or(over, live_value);
     let value = calibration.as_ref().and_then(|cfg| {
         raw.and_then(|raw| thermal_raw(cfg, &channel_key, raw, fresh_temperature()))
             .and_then(|raw| eval_fit_key(cfg, &channel_key, raw))
     });
     rsx! {
         {metric_card(&theme, &live_label, live_value)}
-        {metric_card(&theme, "Calibrated Value", fmt_fixed(value, 12, 4))}
+        {metric_card(&theme, "Calibrated Value", ovr_or(over, fmt_fixed(value, 12, 4)))}
     }
 }
 
@@ -3302,9 +3327,9 @@ fn ThermalCompensationMetrics(
     dirty: bool,
 ) -> Element {
     let _ = *TELEMETRY_RENDER_EPOCH.read();
-    let raw_live = selected_sensor
-        .as_ref()
-        .and_then(|sensor| latest_raw(sensor.data_type.as_str()));
+    let reading = selected_sensor.as_ref().map(|sensor| latest_raw_reading(sensor.data_type.as_str()));
+    let over = reading.and_then(|r| r.over_range());
+    let raw_live = reading.and_then(|r| r.value());
     let temperature = fresh_temperature();
     let cfg = calibration.as_ref();
     let corrected_raw = cfg.and_then(|cfg| raw_live.and_then(|raw| thermal_raw(cfg, &channel_key, raw, temperature)));
@@ -3334,9 +3359,9 @@ fn ThermalCompensationMetrics(
                 {metric_card(&theme, "Reference temperature (°C)", fmt_fixed(thermal.map(|t| t.reference_c), 0, 2))}
                 {metric_card(&theme, "Thermal slope (V/°C)", thermal.map(|t| format!("{:+.6e}", t.raw_per_c)).unwrap_or_else(|| "—".into()))}
                 {metric_card(&theme, "Applied change (V)", raw_change.map(|v| format!("{:+.6e}", v)).unwrap_or_else(|| "—".into()))}
-                {metric_card(&theme, "Temperature-corrected reading (V)", fmt_fixed(corrected_raw, 0, 9))}
-                {metric_card(&theme, "Without temperature correction (kg)", fmt_fixed(before_thermal, 0, 4))}
-                {metric_card(&theme, "With temperature correction (kg)", fmt_fixed(calibrated_live, 0, 4))}
+                {metric_card(&theme, "Temperature-corrected reading (V)", ovr_or(over, fmt_fixed(corrected_raw, 0, 9)))}
+                {metric_card(&theme, "Without temperature correction (kg)", ovr_or(over, fmt_fixed(before_thermal, 0, 4)))}
+                {metric_card(&theme, "With temperature correction (kg)", ovr_or(over, fmt_fixed(calibrated_live, 0, 4)))}
                 {metric_card(&theme, "Temperature effect (kg)", weight_change.map(|v| format!("{:+.4}", v)).unwrap_or_else(|| "—".into()))}
             }
         }
@@ -3349,7 +3374,7 @@ fn metric_card(theme: &ThemeConfig, label: &str, value: String) -> Element {
             div { style: "font-size:11px; color:{theme.text_muted}; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.04em;", "{label}" }
             div {
                 style: "font-size:14px; color:{theme.text_primary}; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; display:inline-block; min-width:14ch; text-align:right; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; font-weight:700;",
-                "{value}"
+                super::over_range::ValueText { text: value }
             }
         }
     }
@@ -3795,7 +3820,7 @@ mod capture_safeguard_tests {
     }
 
     fn live_row(sender: &str, received_ms: i64, value: f32) -> super::super::TelemetryRow {
-        let mut row = super::super::TelemetryRow {
+        let mut row = super::super::TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: Some(received_ms), timestamp_ms: received_ms,
             received_timestamp_ms: received_ms, data_type: "KG1000".into(),
             sender_id: sender.into(), data_type_id: Default::default(),
@@ -3818,5 +3843,28 @@ mod capture_safeguard_tests {
         let now = now_ms() as i64;
         super::super::update_latest_telemetry_batch(&[live_row("DAQ", now, 0.0123457)]);
         assert_eq!(latest_raw("KG1000"), Some(0.0123457));
+    }
+
+    #[test]
+    fn live_raw_shows_ovr_for_a_fresh_over_range_daq_row() {
+        use super::super::over_range::{OverRange, Reading};
+        let now = now_ms() as i64;
+        let mut row = live_row("DAQ", now, 0.0);
+        row.data_type = "KG50".into();
+        row.values = vec![None];
+        row.over_range = 1;
+        row.over_range_low = 1;
+        row.refresh_interned_ids();
+        super::super::update_latest_telemetry_batch(&[row.clone()]);
+        assert_eq!(latest_raw_reading("KG50"), Reading::OverRange(OverRange::Low));
+        assert_eq!(latest_raw("KG50"), None, "never a number");
+        assert_eq!(ovr_or(Some(OverRange::Low), "-".into()), "−OVR");
+        assert_eq!(ovr_or(None, "-".into()), "-");
+        // An old over-range row is just no reading, like any stale row.
+        row.received_timestamp_ms = now - 5_000;
+        row.timestamp_ms = now - 5_000;
+        row.source_timestamp_ms = Some(now - 5_000);
+        super::super::update_latest_telemetry_batch(&[row]);
+        assert_eq!(latest_raw_reading("KG50"), Reading::Missing);
     }
 }

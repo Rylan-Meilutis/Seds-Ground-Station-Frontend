@@ -455,6 +455,59 @@ pub struct DaqInputHealthStatus {
     pub supply_low_mv: u16,
     #[serde(default)]
     pub chamber_floor_mv: u16,
+    /// DAQ ADC channels over range now or within the backend's recent window.
+    /// Older backends omit it.
+    #[serde(default)]
+    pub adc_channels: Vec<DaqAdcChannelStatus>,
+    /// The DAQ's measured +3V3A (STM32 VDDA from VREFINT), volts.
+    #[serde(default)]
+    pub vdda_v: Option<Volts>,
+    /// Highest VDDA in the last report interval, volts.
+    #[serde(default)]
+    pub vdda_max_v: Option<Volts>,
+}
+
+/// One DAQ ADC channel's over-range state (backend daq_input_health.rs).
+#[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
+pub struct DaqAdcChannelStatus {
+    pub key: String,
+    pub label: String,
+    #[serde(default)]
+    pub bit: u8,
+    #[serde(default)]
+    pub over_range_now: bool,
+    /// Below −full scale.
+    #[serde(default)]
+    pub low: bool,
+    #[serde(default)]
+    pub latched: bool,
+    #[serde(default)]
+    pub count_total: u64,
+    /// Over-range samples in the last 60 s.
+    #[serde(default)]
+    pub count_recent: u64,
+    /// Start of the current episode (UTC ms).
+    #[serde(default)]
+    pub first_over_range_ms: Option<i64>,
+    #[serde(default)]
+    pub last_over_range_ms: Option<i64>,
+}
+
+/// A voltage in a hashable status block: compared and hashed by bit pattern.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct Volts(pub f32);
+
+impl PartialEq for Volts {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.to_bits() == other.0.to_bits()
+    }
+}
+impl Eq for Volts {}
+impl std::hash::Hash for Volts {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.to_bits().hash(state);
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Eq, PartialEq, Default, Hash)]
@@ -546,6 +599,33 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_rows_decode_with_and_without_over_range_bits() {
+        use super::TelemetryRow;
+        use crate::telemetry_dashboard::over_range::{OverRange, Reading};
+        let old: TelemetryRow = serde_json::from_str(
+            r#"{"timestamp_ms":1,"data_type":"KG1000","sender_id":"DAQ","values":[0.5,null]}"#,
+        )
+        .unwrap();
+        assert_eq!((old.over_range, old.over_range_low), (0, 0));
+        assert_eq!(old.reading(0), Reading::Value(0.5));
+        assert_eq!(old.reading(1), Reading::Missing, "null without a flag stays no data");
+        // Zero bits are omitted again, so cached rows keep their old shape.
+        assert!(!serde_json::to_string(&old).unwrap().contains("over_range"));
+
+        let new: TelemetryRow = serde_json::from_str(
+            r#"{"timestamp_ms":1,"data_type":"LOADCELL_WEIGHT_KG","sender_id":"DAQ","values":[null,null,3.0],"over_range":3,"over_range_low":2}"#,
+        )
+        .unwrap();
+        assert_eq!(new.over_range_at(0), Some(OverRange::High));
+        assert_eq!(new.over_range_at(1), Some(OverRange::Low));
+        assert_eq!(new.over_range_at(2), None);
+        assert_eq!(new.reading(2), Reading::Value(3.0));
+        // The persisted telemetry cache round-trips the bits.
+        let cached: TelemetryRow = serde_json::from_str(&serde_json::to_string(&new).unwrap()).unwrap();
+        assert_eq!((cached.over_range, cached.over_range_low), (3, 2));
+    }
+
+    #[test]
     fn displays_camel_case_flight_states_with_spaces() {
         assert_eq!(display_flight_state("FillTest"), "Fill Test");
         assert_eq!(display_flight_state("PadIdle"), "Pad Idle");
@@ -575,9 +655,30 @@ pub struct TelemetryRow {
     #[serde(skip)]
     pub(crate) sender_id_id: TelemetryTextId,
     pub values: Vec<Option<f32>>,
+    /// Bit i set: `values[i]` is ADC over range (that value is null). The
+    /// backend omits the field when no channel is over range.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub over_range: u32,
+    /// Bit i set: that over-range value was below −full scale.
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    pub over_range_low: u32,
+}
+
+fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 impl TelemetryRow {
+    /// Channel `index` as a view shows it: over range, a value or missing.
+    #[cfg(test)]
+    pub(crate) fn reading(&self, index: usize) -> super::over_range::Reading {
+        super::over_range::Reading::of(&self.values, self.over_range, self.over_range_low, index)
+    }
+
+    pub(crate) fn over_range_at(&self, index: usize) -> Option<super::over_range::OverRange> {
+        super::over_range::OverRange::from_bits(self.over_range, self.over_range_low, index)
+    }
+
     /// Row ingress: every live, history, cached and replayed row passes here,
     /// so legacy type names are canonicalized before anything keys on them.
     pub fn refresh_interned_ids(&mut self) {

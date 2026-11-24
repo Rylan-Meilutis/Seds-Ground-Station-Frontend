@@ -154,7 +154,7 @@ mod history_clock_tests {
 
     #[test]
     fn old_future_display_seed_is_excluded_without_rewriting_raw_timestamps() {
-        let row = |timestamp_ms| TelemetryRow {
+        let row = |timestamp_ms| TelemetryRow { over_range: 0, over_range_low: 0,
             source_timestamp_ms: None,
             timestamp_ms,
             received_timestamp_ms: timestamp_ms,
@@ -177,7 +177,7 @@ mod history_clock_tests {
         let server_now = 1_700_000_000_000i64;
         let client_now = server_now + 86_400_000;
         let mut rows: Vec<TelemetryRow> = (0..=600)
-            .map(|second| TelemetryRow {
+            .map(|second| TelemetryRow { over_range: 0, over_range_low: 0,
                 source_timestamp_ms: None,
                 timestamp_ms: server_now - 600_000 + second * 1000,
                 received_timestamp_ms: 0,
