@@ -52,7 +52,7 @@ assert.equal(R.eventKindOf('Touchdown / Landed'),'landing');assert.equal(R.event
 console.log('PASS event/phase timeline from FLIGHT_STATE rows, review/plan/altitude fill-ins');
 
 // --- T-clock -------------------------------------------------------------------
-for(const [ms,text] of [[0,'T+ 00:00'],[3999,'T+ 00:03'],[65000,'T+ 01:05'],[3600000,'T+ 1:00:00'],[3723000,'T+ 1:02:03'],[90061000,'T+ 1:01:01:01'],[-1500,'T- 00:02'],[-600000,'T- 10:00'],[NaN,'T --:--'],[null,'T --:--']])assert.equal(R.formatTClock(ms),text,String(ms));
+for(const [ms,text] of [[0,'T+ 00:00'],[3999,'T+ 00:03'],[65000,'T+ 01:05'],[3600000,'T+ 1:00:00'],[3723000,'T+ 1:02:03'],[90061000,'T+ 1:01:01:01'],[-1500,'T- 00:01'],[-600000,'T- 10:00'],[NaN,'T --:--'],[null,'T --:--']])assert.equal(R.formatTClock(ms),text,String(ms));
 console.log('PASS T-clock formats');
 
 // --- Attitude from velocity ----------------------------------------------------

@@ -133,13 +133,35 @@ function flightTimeline(p,extras={},options={}){
  return {segments:segments.filter(s=>s.to>=s.from),events,t0,start,end,source:rows.length?'FLIGHT_STATE':'none'};
 }
 function phaseAt(timeline,t){const s=timeline.segments;for(let i=s.length-1;i>=0;i--)if(t>=s[i].from)return s[i].phase;return s[0]?.phase||'unknown';}
-// T-clock. TODO(integration): same output as the shared tclock.js formatTClock (fp-tclock);
-// this classic script cannot import the ES module, so it keeps this copy (a test checks parity once both are on one branch).
-function formatTClock(ms){
- if(!finite(ms))return 'T --:--';
- const negative=ms<0,total=negative?Math.ceil(-ms/1000):Math.floor(ms/1000),d=Math.floor(total/86400),h=Math.floor(total%86400/3600),m=Math.floor(total%3600/60),s=total%60,pad=v=>String(v).padStart(2,'0');
- const body=d?`${d}:${pad(h)}:${pad(m)}:${pad(s)}`:h?`${h}:${pad(m)}:${pad(s)}`:`${pad(m)}:${pad(s)}`;
- return (negative?'T- ':'T+ ')+body;
+// T-clock: station_ui/rendering/three/tclock.js inlined (this classic script cannot import
+// the ES module); tests/tclock-parity.test.mjs checks the two print the same.
+const TCLOCK_UNKNOWN_BODY = '--:--';
+const TCLOCK_UNKNOWN = 'T --:--';
+
+const pad2 = (n) => String(n).padStart(2, '0');
+
+// Clock digits for a magnitude in ms; TCLOCK_UNKNOWN_BODY when not finite.
+function tclockBody(magnitudeMs, fractionDigits = 0) {
+  if (typeof magnitudeMs !== 'number' || !Number.isFinite(magnitudeMs)) return TCLOCK_UNKNOWN_BODY;
+  const digits = Math.max(0, Math.min(3, Math.trunc(Number(fractionDigits)) || 0));
+  // BigInt keeps every digit exact (and out of exponent form) past 2^53.
+  const ms = BigInt(Math.floor(Math.abs(magnitudeMs)));
+  const totalS = ms / 1000n;
+  const days = totalS / 86400n, hours = totalS / 3600n % 24n;
+  const minutes = totalS / 60n % 60n, seconds = totalS % 60n;
+  let text = days > 0n ? `${days}:${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`
+    : hours > 0n ? `${hours}:${pad2(minutes)}:${pad2(seconds)}`
+    : `${pad2(minutes)}:${pad2(seconds)}`;
+  if (digits > 0) text += '.' + String(ms % 1000n / 10n ** BigInt(3 - digits)).padStart(digits, '0');
+  return text;
+}
+
+// Signed ms from T-0 (negative = before). `beforeT0` overrides the sign for a
+// countdown that should still read `T- 00:00` at zero.
+function formatTClock(msFromT0, { fractionDigits = 0, beforeT0 } = {}) {
+  if (typeof msFromT0 !== 'number' || !Number.isFinite(msFromT0)) return TCLOCK_UNKNOWN;
+  const before = typeof beforeT0 === 'boolean' ? beforeT0 : msFromT0 < 0;
+  return `T${before ? '-' : '+'} ${tclockBody(msFromT0, fractionDigits)}`;
 }
 const SPEEDS=[.1,.25,.5,1,2,4,10,20],AUTO_SLOW_SPEED=.25,AUTO_SLOW_WINDOW_MS=1500;
 // Replay time: play/pause, seek, step a frame or an event, jump to an event, speed,
