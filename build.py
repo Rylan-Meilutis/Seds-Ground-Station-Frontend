@@ -776,10 +776,10 @@ def remove_legacy_app_bundle(frontend_dir: Path) -> None:
     alt = dist / MACOS_ALT_APP_BUNDLE_NAME
     legacy = dist / LEGACY_APP_BUNDLE_NAME
     if preferred.exists() and alt.exists():
-        print(f"Removing alternate macOS app bundle: {alt}")
+        print(f"Removing alternate app bundle: {alt}")
         shutil.rmtree(alt)
     if preferred.exists() and legacy.exists():
-        print(f"Removing legacy macOS app bundle: {legacy}")
+        print(f"Removing legacy app bundle: {legacy}")
         shutil.rmtree(legacy)
 
 
@@ -3583,6 +3583,21 @@ def _pick_codesign_identity(frontend_dir: Path, regex: str, pick: str) -> str:
     return matches[0]
 
 
+def _macos_signing_identity(frontend_dir: Path) -> str:
+    """The Developer ID identity used for the app and DMG.
+
+    MACOS_SIGNING_IDENTITY names it exactly (the release workflow sets it from
+    the certificate it imported); it must be a valid identity in the keychain
+    search list. Otherwise CERT_REGEX/CERT_PICK choose, as before.
+    """
+    exact = os.environ.get("MACOS_SIGNING_IDENTITY", "").strip()
+    if exact:
+        return _pick_codesign_identity(frontend_dir, "^" + re.escape(exact) + "$", "newest")
+    cert_regex = os.environ.get("CERT_REGEX", r"^Developer ID Application:")
+    cert_pick = os.environ.get("CERT_PICK", "newest")
+    return _pick_codesign_identity(frontend_dir, cert_regex, cert_pick)
+
+
 def _macos_entitlements_path(frontend_dir: Path) -> Optional[Path]:
     ent = os.environ.get("MACOS_ENTITLEMENTS", "").strip()
     if not ent:
@@ -3611,9 +3626,7 @@ def sign_macos_app_and_dmg(
     if not app.exists():
         raise FileNotFoundError(f"App bundle not found: {app}")
 
-    cert_regex = os.environ.get("CERT_REGEX", r"^Developer ID Application:")
-    cert_pick = os.environ.get("CERT_PICK", "newest")
-    identity = _pick_codesign_identity(frontend_dir, cert_regex, cert_pick)
+    identity = _macos_signing_identity(frontend_dir)
     entitlements = _macos_entitlements_path(frontend_dir)
 
     print(f"Signing macOS app with identity: {identity}")
@@ -3684,7 +3697,10 @@ def verify_macos_distribution(frontend_dir: Path, target: Path) -> None:
 def _notarization_auth(frontend_dir: Path) -> list[str]:
     profile = os.environ.get("NOTARY_PROFILE", "").strip()
     if profile:
-        return ["--keychain-profile", profile]
+        # NOTARY_KEYCHAIN selects a keychain outside the search list, e.g. the
+        # release workflow's temporary keychain holding the stored profile.
+        keychain = os.environ.get("NOTARY_KEYCHAIN", "").strip()
+        return ["--keychain-profile", profile, *(["--keychain", keychain] if keychain else [])]
     apple_id = os.environ.get("NOTARY_APPLE_ID", "").strip()
     team_id = os.environ.get("NOTARY_TEAM_ID", "").strip()
     password = os.environ.get("NOTARY_PASSWORD", "").strip()
@@ -3756,6 +3772,19 @@ def finalize_release(frontend_dir: Path, platform_name: str, package_type: str, 
     # Physical iOS builds already package and verify their distribution IPA.
 
 
+def _notarytool_submission(output: str) -> dict[str, str]:
+    """id/status/message from `notarytool submit --output-format json`."""
+    for line in reversed(output.splitlines()):
+        line = line.strip()
+        if line.startswith("{"):
+            try:
+                data = json.loads(line)
+            except ValueError:
+                continue
+            return {key: str(data[key]) for key in ("id", "status", "message") if data.get(key) is not None}
+    return {}
+
+
 def notarize_macos(frontend_dir: Path) -> None:
     if platform.system() != "Darwin":
         print("Error: macOS notarization requires macOS.", file=sys.stderr)
@@ -3769,18 +3798,31 @@ def notarize_macos(frontend_dir: Path) -> None:
         raise FileNotFoundError(f"Notarization target not found: {target}")
 
     if target.suffix.lower() == ".dmg":
-        cert_regex = os.environ.get("CERT_REGEX", r"^Developer ID Application:")
-        cert_pick = os.environ.get("CERT_PICK", "newest")
-        identity = _pick_codesign_identity(frontend_dir, cert_regex, cert_pick)
+        identity = _macos_signing_identity(frontend_dir)
         sign_macos_dmg(frontend_dir, target, identity)
 
     auth_args = _notarization_auth(frontend_dir)
 
     print(f"Notarizing macOS artifact: {target.name}")
     try:
-        run(["xcrun", "notarytool", "submit", str(target), "--wait", *auth_args], cwd=frontend_dir)
+        output = run_capture(["xcrun", "notarytool", "submit", str(target), "--wait",
+                              "--output-format", "json", *auth_args], cwd=frontend_dir)
+        failure = None
     except subprocess.CalledProcessError as error:
-        raise RuntimeError(f"Notarization submission failed (exit {error.returncode}).") from None
+        output = (error.output or b"").decode("utf-8", errors="replace")
+        failure = error.returncode
+    print(output, end="" if output.endswith("\n") else "\n")
+    submission = _notarytool_submission(output)
+    receipt = os.environ.get("SEDS_GS_NOTARY_RECEIPT", "").strip()
+    if receipt:
+        Path(receipt).write_text(json.dumps({"artifact": target.name, **submission}, indent=2) + "\n", encoding="utf-8")
+    print(f"Notarization submission: id={submission.get('id') or '?'} status={submission.get('status') or '?'}")
+    if failure is not None or submission.get("status") != "Accepted":
+        if submission.get("id"):
+            # The developer log names each rejected binary and the reason.
+            subprocess.run(["xcrun", "notarytool", "log", submission["id"], *auth_args], cwd=frontend_dir, check=False)
+        raise RuntimeError(f"Notarization was not accepted (status {submission.get('status') or 'unknown'}"
+                           + (f", exit {failure}" if failure is not None else "") + ").")
     run(["xcrun", "stapler", "staple", str(target)], cwd=frontend_dir)
     verify_macos_distribution(frontend_dir, target)
 
@@ -6288,6 +6330,9 @@ def build_frontend(
                 raise FileNotFoundError("No iOS bundle in the requested profile; rebuild without existing artifacts")
             _ios_bundle_tools().validate_app(staged_app, rust_target or "aarch64-apple-ios")
             patch_plist(frontend_dir, staged_app, ios_target=rust_target or "aarch64-apple-ios")
+            # dx also copies its own bundle (GroundstationFrontend.app) into
+            # dist/; the watch embedding step needs exactly one staged app.
+            remove_legacy_app_bundle(frontend_dir)
 
     except FileNotFoundError as e:
         _print_missing_tool("Frontend build", e, frontend_dir)
@@ -6404,8 +6449,10 @@ def print_usage(exit_code: int = 1) -> None:
     print("  IOS_DISTRIBUTION_MOBILEPROVISION=...  # distribution IPA provisioning profile")
     print("  IOS_WATCH_DEVELOPMENT_MOBILEPROVISION=...   # Apple Watch app profile for watchos_deploy")
     print("  IOS_WATCH_DISTRIBUTION_MOBILEPROVISION=...  # profile for the embedded Apple Watch app (signed watchos)")
+    print("  MACOS_SIGNING_IDENTITY=...        # exact Developer ID identity (overrides CERT_REGEX/CERT_PICK)")
     print("  MACOS_ENTITLEMENTS=...            # entitlements for macOS codesign (default platform/macos/entitlements.plist)")
     print("  NOTARY_PROFILE=...                # optional if exactly one stored profile exists")
+    print("  NOTARY_KEYCHAIN=...               # keychain holding NOTARY_PROFILE, if not in the search list")
     print("  NOTARY_APPLE_ID=...               # notarytool Apple ID")
     print("  NOTARY_TEAM_ID=...                # notarytool team ID")
     print("  NOTARY_PASSWORD=...               # notarytool app-specific password")

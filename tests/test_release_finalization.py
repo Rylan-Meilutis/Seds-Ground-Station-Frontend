@@ -79,6 +79,71 @@ class FinalReleaseTests(unittest.TestCase):
             self.assertEqual(build._notarization_auth(ROOT), ['--keychain-profile', 'chosen'])
             run.assert_not_called()
 
+    def test_notary_profile_in_named_keychain(self):
+        with patch.dict(os.environ, {'NOTARY_PROFILE': 'chosen', 'NOTARY_KEYCHAIN': '/tmp/release.keychain-db'}, clear=True):
+            self.assertEqual(build._notarization_auth(ROOT),
+                             ['--keychain-profile', 'chosen', '--keychain', '/tmp/release.keychain-db'])
+
+    def test_exact_signing_identity_must_exist_and_wins_over_regex(self):
+        listing = ('  1) ' + 'A' * 40 + ' "Developer ID Application: Example (TEAM123456)"\n'
+                   '  2) ' + 'B' * 40 + ' "Developer ID Application: Other (OTHER12345)"\n')
+        with patch.object(build, 'run_capture', return_value=listing):
+            with patch.dict(os.environ, {'MACOS_SIGNING_IDENTITY': 'Developer ID Application: Other (OTHER12345)'}, clear=True):
+                self.assertEqual(build._macos_signing_identity(ROOT), 'Developer ID Application: Other (OTHER12345)')
+            with patch.dict(os.environ, {'MACOS_SIGNING_IDENTITY': 'Developer ID Application: Missing (X)'}, clear=True):
+                with self.assertRaises(RuntimeError): build._macos_signing_identity(ROOT)
+            with patch.dict(os.environ, {}, clear=True):
+                self.assertEqual(build._macos_signing_identity(ROOT), 'Developer ID Application: Example (TEAM123456)')
+
+    def notarize_fixture(self, output, error=None):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            dmg = root / 'UBSEDS GS.dmg'
+            dmg.write_text('dmg')
+            receipt = root / 'notarization.json'
+            commands = []
+            def capture(command, **kwargs):
+                commands.append(command)
+                if error is not None:
+                    raise subprocess.CalledProcessError(error, command, output=output.encode())
+                return output
+            with patch.object(build.platform, 'system', return_value='Darwin'), \
+                 patch.object(build, 'rebuild_macos_dmg', return_value=dmg), \
+                 patch.object(build, '_macos_signing_identity', return_value='Developer ID Application: X (T)'), \
+                 patch.object(build, 'sign_macos_dmg'), patch.object(build, 'run') as run, \
+                 patch.object(build, 'verify_macos_distribution') as verify, \
+                 patch.object(build.subprocess, 'run') as log, \
+                 patch.object(build, 'run_capture', side_effect=capture), \
+                 patch.dict(os.environ, {'NOTARY_PROFILE': 'p', 'SEDS_GS_NOTARY_RECEIPT': str(receipt)}, clear=True):
+                try:
+                    build.notarize_macos(root)
+                    outcome = None
+                except RuntimeError as failure:
+                    outcome = failure
+            return outcome, commands, json.loads(receipt.read_text()), run, verify, log
+
+    def test_notarization_receipt_records_accepted_submission_then_staples(self):
+        outcome, commands, receipt, run, verify, log = self.notarize_fixture(
+            '{"id":"1234-abcd","status":"Accepted","message":"Processing complete"}\n')
+        self.assertIsNone(outcome)
+        self.assertIn('--output-format', commands[0])
+        self.assertEqual(receipt, {'artifact': 'UBSEDS GS.dmg', 'id': '1234-abcd', 'status': 'Accepted', 'message': 'Processing complete'})
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0][:3], ['xcrun', 'stapler', 'staple'])
+        verify.assert_called_once()
+        log.assert_not_called()
+
+    def test_rejected_notarization_fetches_log_and_never_staples(self):
+        for output, error in [('{"id":"5678","status":"Invalid","message":"x"}', None),
+                              ('{"id":"5678","status":"Invalid","message":"x"}', 1)]:
+            with self.subTest(error=error):
+                outcome, _commands, receipt, run, verify, log = self.notarize_fixture(output, error)
+                self.assertIsInstance(outcome, RuntimeError)
+                self.assertEqual(receipt['status'], 'Invalid')
+                self.assertEqual(log.call_args.args[0][:4], ['xcrun', 'notarytool', 'log', '5678'])
+                run.assert_not_called()
+                verify.assert_not_called()
+
     def test_notary_sole_profile_is_detected_and_ambiguity_rejected(self):
         for profiles, success in [(['one'], True), ([], False), (['one', 'two'], False)]:
             with self.subTest(profiles=profiles), patch.dict(os.environ, {}, clear=True), patch.object(build.subprocess, 'run', return_value=Mock(stdout=json.dumps(profiles))):

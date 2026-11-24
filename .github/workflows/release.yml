@@ -1,0 +1,281 @@
+name: Release
+# Tag-triggered GitHub Release: Windows, Linux (x86_64 + arm64), Android and
+# macOS, built with the same scripts/ci/frontend.py bootstrap and build.py code
+# paths as the build-only CI (platforms.yml). This is the ONLY workflow that
+# uses production signing material, all of it from repository secrets; see
+# docs/releasing.md. Untrusted pull requests never run it.
+'on':
+  push:
+    tags:
+    - v*.*.*b*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to (re)build and publish, e.g. v0.3.1b36
+        required: true
+        type: string
+      skip_macos:
+        description: Publish without the macOS DMGs (e.g. Apple secrets not set yet)
+        required: false
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+env:
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+  CARGO_BUILD_JOBS: '2'
+  CARGO_INCREMENTAL: '0'
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      name: ${{ steps.version.outputs.name }}
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Tag matches Cargo.toml version and Dioxus.toml build
+      id: version
+      run: python scripts/ci/frontend.py release-version --tag "$RELEASE_TAG"
+    - run: python -m pip install PyYAML==6.0.3
+    - name: CI contracts
+      run: python -W error -m unittest discover -s tests -p 'test_ci*.py' -v
+  unsigned:
+    needs: version
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+        - target: linux
+          runner: ubuntu-24.04
+        - target: linux-arm64
+          runner: ubuntu-24.04-arm
+        - target: windows
+          runner: windows-2022
+    env:
+      CI_FRONTEND_TARGET: ${{ matrix.target }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ needs.version.outputs.tag }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Linux native libraries
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config build-essential libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libclang-dev cmake ninja-build patchelf file unzip zip fuse3 libfuse2t64 rpm makepkg libarchive-tools pacman-package-manager fakeroot flatpak desktop-file-utils appstream gnupg zstd
+    - name: Windows MSVC environment
+      if: runner.os == 'Windows'
+      uses: ilammy/msvc-dev-cmd@v1
+    - name: Pinned frontend tools, warnings fatal
+      run: python scripts/ci/frontend.py bootstrap
+    - name: Release build, warnings fatal
+      run: python scripts/ci/frontend.py release-build
+    - name: Stage release assets
+      run: python scripts/ci/frontend.py release-stage
+    - uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.target }}
+        path: release-assets/${{ matrix.target }}/
+        if-no-files-found: error
+        retention-days: 7
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: release-logs-${{ matrix.target }}
+        path: ci-results/
+        retention-days: 7
+  android:
+    needs: version
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        target:
+        - android
+        - android-armv7
+    env:
+      CI_FRONTEND_TARGET: ${{ matrix.target }}
+      ANDROID_EXPECTED_CERT_SHA256: ${{ vars.ANDROID_EXPECTED_CERT_SHA256 }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ needs.version.outputs.tag }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - uses: actions/setup-java@v4
+      with:
+        distribution: temurin
+        java-version: '17'
+    - uses: android-actions/setup-android@v3
+      with:
+        packages: platform-tools
+    - name: Android SDK and NDK
+      shell: bash
+      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"'
+    - name: Pinned frontend tools, warnings fatal
+      run: python scripts/ci/frontend.py bootstrap
+    - name: Production signing keystore from secrets
+      env:
+        ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'upload' }}
+      run: python scripts/ci/frontend.py release-android-signing
+    - name: Release build and production signing, warnings fatal
+      env:
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'upload' }}
+      run: python scripts/ci/frontend.py release-build
+    - name: Verify APK signature
+      run: python scripts/ci/frontend.py release-verify
+    - name: Stage release assets
+      run: python scripts/ci/frontend.py release-stage
+    - uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.target }}
+        path: release-assets/${{ matrix.target }}/
+        if-no-files-found: error
+        retention-days: 7
+    - name: Delete signing material
+      if: always()
+      run: python scripts/ci/frontend.py release-cleanup
+  macos:
+    needs: version
+    if: ${{ !inputs.skip_macos }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+        - target: macos
+          runner: macos-15
+        - target: macos-intel
+          runner: macos-15-intel
+    env:
+      CI_FRONTEND_TARGET: ${{ matrix.target }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ needs.version.outputs.tag }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - uses: actions/setup-node@v4
+      with:
+        node-version: '22'
+    - name: Xcode availability
+      run: xcodebuild -version
+    - name: Pinned frontend tools, warnings fatal
+      run: python scripts/ci/frontend.py bootstrap
+    - name: Developer ID keychain and notarization profile from secrets
+      env:
+        MACOS_DEVELOPER_ID_P12_B64: ${{ secrets.MACOS_DEVELOPER_ID_P12_B64 }}
+        MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+        MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+        APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
+        APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+        APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        APPLE_ID: ${{ secrets.APPLE_ID }}
+        APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      run: python scripts/ci/frontend.py release-macos-signing
+    - name: Release build, Developer ID signing and notarization, warnings fatal
+      run: python scripts/ci/frontend.py release-build
+    - name: Verify signature, notarization and Gatekeeper
+      run: python scripts/ci/frontend.py release-verify
+    - name: Stage release assets
+      run: python scripts/ci/frontend.py release-stage
+    - uses: actions/upload-artifact@v4
+      with:
+        name: release-${{ matrix.target }}
+        path: release-assets/${{ matrix.target }}/
+        if-no-files-found: error
+        retention-days: 7
+    - name: Delete signing material
+      if: always()
+      run: python scripts/ci/frontend.py release-cleanup
+  publish:
+    needs:
+    - version
+    - unsigned
+    - android
+    - macos
+    if: ${{ always() && needs.version.result == 'success' && needs.unsigned.result == 'success' && needs.android.result == 'success' && (needs.macos.result == 'success' || (inputs.skip_macos && needs.macos.result == 'skipped')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG: ${{ needs.version.outputs.tag }}
+      TITLE: ${{ needs.version.outputs.name }}
+      MACOS_INCLUDED: ${{ needs.macos.result == 'success' }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ needs.version.outputs.tag }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: release-*
+        path: release-assets
+        merge-multiple: true
+    - name: Check the asset set and write SHA256SUMS
+      shell: bash
+      run: |
+        targets=linux,linux-arm64,windows,android,android-armv7
+        if [ "$MACOS_INCLUDED" = "true" ]; then targets="$targets,macos,macos-intel"; fi
+        python scripts/ci/frontend.py release-checksums --assets release-assets --release-targets "$targets"
+    - name: Create or update the GitHub Release
+      shell: bash
+      run: |
+        set -euo pipefail
+        notes="docs/release-notes/$TAG.md"
+        if gh release view "$TAG" >/dev/null 2>&1; then
+          gh release edit "$TAG" --title "$TITLE"
+          if [ -f "$notes" ]; then gh release edit "$TAG" --notes-file "$notes"; fi
+          gh release upload "$TAG" release-assets/* --clobber
+          gh release edit "$TAG" --draft=false
+        else
+          if [ -f "$notes" ]; then notes_args=(--notes-file "$notes"); else notes_args=(--generate-notes); fi
+          # Draft first so nobody sees a release with half its assets.
+          gh release create "$TAG" --verify-tag --draft --title "$TITLE" "${notes_args[@]}"
+          gh release upload "$TAG" release-assets/*
+          gh release edit "$TAG" --draft=false
+        fi
+        {
+          echo "## Published $TITLE"
+          echo
+          echo '```'
+          cat release-assets/SHA256SUMS
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"

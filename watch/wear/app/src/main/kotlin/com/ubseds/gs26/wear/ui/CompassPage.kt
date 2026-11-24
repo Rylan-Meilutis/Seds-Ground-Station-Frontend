@@ -149,7 +149,7 @@ fun CompassPage(
             },
         contentAlignment = Alignment.Center,
     ) {
-        if (showMap && mapCenter != null) {
+        if (showMap) {
             val markers = targets.mapNotNull { t ->
                 Compass.position(t, watchPos)?.let {
                     MapMarker(t.id, it, t.id == targets[selected].id, t.stale, predicted = t.predicted)

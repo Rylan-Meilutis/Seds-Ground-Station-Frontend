@@ -165,3 +165,20 @@ Non-Android `dx` commands also capture their own bounded failure output through 
 ## Android release R8 rule notices
 
 Minified Android release builds print one R8 notice per keep rule without a member pattern. On the hosted runners all ten come from AGP's default rules and AndroidX consumer rules, and Gradle still exits 0 with a usable APK. The driver reports exactly that notice from exactly those generated paths under `external_android_r8_rule_notices` in the step receipt, for Android release builds only. Any other warning, including the same text from a rule file in this repository, remains fatal. Revisit this when AGP moves to the R8 major version that drops the implicit constructor keep.
+
+
+## Releases (production signing)
+
+`platforms.yml` and GitLab stay build-only: no secrets, `--no-sign`, and
+throwaway Android development keys. The only workflow that uses production
+signing material is the tag-triggered `.github/workflows/release.yml`.
+It runs `frontend.py release-*` on the same bootstrap and `build.py` paths,
+with `--final` for Android and macOS:
+
+- The Android keystore, Developer ID `.p12`, notary `.p8` and a temporary
+  keychain come from repository secrets.
+- They live only under `$RUNNER_TEMP/seds-release-signing`.
+- They are deleted by an `always()` cleanup step.
+- They are never uploaded.
+
+`tests/test_ci_release.py` enforces this. See `docs/releasing.md`.

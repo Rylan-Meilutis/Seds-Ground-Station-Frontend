@@ -1,7 +1,14 @@
-"""Build-only CI. Android uses ephemeral development signing, never production credentials."""
+"""Frontend CI driver.
+
+`bootstrap`/`build` are build-only CI: Android uses ephemeral development
+signing and never production credentials. The `release-*` actions run only in
+the tag-triggered release workflow (.github/workflows/release.yml), which is
+the one place production signing material (GitHub secrets) is used.
+"""
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
@@ -196,7 +203,9 @@ def ci_env():
                 "RUSTDOCFLAGS": "-D warnings", "CARGO_TERM_COLOR": "never", "NO_COLOR": "1"})
     # Never forward local deployment credentials into build-only jobs.
     for key in list(env):
-        if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY", "SEDS_GS_CI_ANDROID_")):
+        if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY", "ANDROID_UPLOAD_",
+                           "SEDS_GS_CI_ANDROID_", "SEDS_GS_RELEASE_", "SEDS_GS_NOTARY_", "MACOS_SIGNING_",
+                           "MACOS_DEVELOPER_ID_", "APPLE_NOTARY_", "APPLE_APP_SPECIFIC_")) or key in {"APPLE_ID", "APPLE_TEAM_ID"}:
             env.pop(key)
     bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
@@ -509,18 +518,514 @@ def run(name, profile):
     (ROOT / "ci-results/artifacts.json").write_text(json.dumps(manifest, indent=2) + "\n")
 
 
+# ---------------------------------------------------------------------------
+# Tag-triggered releases (.github/workflows/release.yml only).
+#
+# Same bootstrap and build.py code paths as build-only CI, but `--final` for
+# Android/macOS: build.py signs with the production identity exactly as it does
+# locally (_configure_android_signing / _finalize_android_release, and
+# sign_macos_app_and_dmg / notarize_macos). The signing material comes from
+# GitHub secrets, is written only under $RUNNER_TEMP, and is deleted by
+# `release-cleanup` in an always() step. Nothing here falls back to a
+# development key or an unsigned artifact.
+
+RELEASE_TARGETS = ("linux", "linux-arm64", "windows", "android", "android-armv7", "macos", "macos-intel")
+SIGNED_RELEASE_TARGETS = {"android": "android", "android-armv7": "android", "macos": "macos", "macos-intel": "macos"}
+RELEASE_TAG = re.compile(r"^v(\d+\.\d+\.\d+)b(\d+)$")
+# Published names match the earlier GitHub releases (GitHub turns spaces in
+# uploaded file names into dots), so existing links keep the same shape.
+RELEASE_ASSETS = {
+    "windows": {"UBSEDS GroundStation Installer.exe": "UBSEDS.GroundStation.Installer.exe"},
+    "linux": {
+        "UBSEDS GS_x86_64.AppImage": "UBSEDS.GS_x86_64.AppImage",
+        "UBSEDS GS_x86_64.flatpak": "UBSEDS.GS_x86_64.flatpak",
+        "UBSEDS GS_x86_64.pkg.tar.gz": "UBSEDS.GS_x86_64.pkg.tar.gz",
+        "UBSEDS GS_amd64.deb": "UBSEDS.GS_amd64.deb",
+        "UBSEDS GS_x86_64.rpm": "UBSEDS.GS_x86_64.rpm",
+    },
+    "linux-arm64": {
+        "UBSEDS GS_aarch64.AppImage": "UBSEDS.GS_aarch64.AppImage",
+        "UBSEDS GS_aarch64.flatpak": "UBSEDS.GS_aarch64.flatpak",
+        "UBSEDS GS_aarch64.pkg.tar.gz": "UBSEDS.GS_aarch64.pkg.tar.gz",
+        "UBSEDS GS_arm64.deb": "UBSEDS.GS_arm64.deb",
+        "UBSEDS GS_aarch64.rpm": "UBSEDS.GS_aarch64.rpm",
+    },
+    "android": {"SEDS GS.apk": "SEDS.GS.apk"},
+    "android-armv7": {"SEDS GS.apk": "SEDS.GS_armv7.apk"},
+    "macos": {"UBSEDS GS.dmg": "UBSEDS.GS.dmg"},
+    "macos-intel": {"UBSEDS GS.dmg": "UBSEDS.GS_x86_64.dmg"},
+}
+SIGNING_MATERIAL_SUFFIXES = (".jks", ".keystore", ".p12", ".pfx", ".p8", ".pem", ".key",
+                             ".keychain", ".keychain-db", ".mobileprovision", ".provisionprofile")
+# Signing variables release_env() passes into build.py, per signed platform.
+RELEASE_SIGNING_ENV = {
+    "android": ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_PASSWORD",
+                "ANDROID_KEY_ALIAS", "ANDROID_KEYSTORE_TYPE"),
+    "macos": ("MACOS_SIGNING_IDENTITY", "NOTARY_PROFILE", "NOTARY_KEYCHAIN"),
+}
+ANDROID_RELEASE_SECRETS = ("ANDROID_UPLOAD_KEYSTORE_B64", "ANDROID_KEYSTORE_PASSWORD")
+MACOS_CERT_SECRETS = ("MACOS_DEVELOPER_ID_P12_B64", "MACOS_DEVELOPER_ID_P12_PASSWORD")
+NOTARY_API_SECRETS = ("APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID")
+NOTARY_APPLE_ID_SECRETS = ("APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID")
+NOTARY_PROFILE_NAME = "seds-gs-release"
+KEYCHAIN_NAME = "release.keychain-db"
+
+
+def release_version(tag):
+    """The tag must name exactly Cargo.toml's version and Dioxus.toml's build."""
+    match = RELEASE_TAG.fullmatch(tag or "")
+    if not match:
+        raise RuntimeError(f"Release tag must look like v<major>.<minor>.<patch>b<build> (e.g. v0.3.1b36), got {tag!r}")
+    version = tomllib.loads((ROOT / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
+    build = str(tomllib.loads((ROOT / "Dioxus.toml").read_text(encoding="utf-8"))["application"]["build"])
+    if (match.group(1), match.group(2)) != (version, build):
+        raise RuntimeError(f"Tag {tag} does not match Cargo.toml version {version} and Dioxus.toml build {build}; "
+                           f"expected v{version}b{build}")
+    major, minor, patch = map(int, version.split("."))
+    return {"tag": tag, "version": version, "build": build, "name": f"Version {version} Build {build}",
+            "version_code": major * 10_000_000 + minor * 100_000 + patch * 1_000 + int(build)}
+
+
+def release_command(name):
+    if name not in RELEASE_TARGETS:
+        raise ValueError(f"{name} is not a release target")
+    signing = ["--final"] if name in SIGNED_RELEASE_TARGETS else ["--no-sign"]
+    return [sys.executable, "build.py", "--target", name, "--release", *signing]
+
+
+def release_signing_dir(create=False):
+    """Job-local signing directory under $RUNNER_TEMP, never inside the checkout."""
+    temp = os.environ.get("RUNNER_TEMP", "").strip()
+    if not temp:
+        raise RuntimeError("Release signing needs RUNNER_TEMP (the GitHub Actions job temp directory)")
+    directory = Path(temp).resolve() / "seds-release-signing"
+    if directory == ROOT or ROOT in directory.parents:
+        raise RuntimeError("Release signing directory must be outside the checkout")
+    if create:
+        directory.mkdir(mode=0o700)
+        directory.chmod(0o700)
+    return directory
+
+
+def private_write(path, data):
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as stream:
+        stream.write(data)
+
+
+def decode_secret(name):
+    raw = "".join(os.environ.get(name, "").split())
+    try:
+        data = base64.b64decode(raw, validate=True)
+    except ValueError:
+        raise RuntimeError(f"Secret {name} is not valid base64") from None
+    if not data:
+        raise RuntimeError(f"Secret {name} is empty")
+    return data
+
+
+def require_secrets(names, what):
+    missing = [name for name in names if not os.environ.get(name, "").strip()]
+    if missing:
+        raise RuntimeError(f"{what}: missing GitHub secret(s) {', '.join(missing)}. Add them as described in "
+                           "docs/releasing.md. A release is never signed with a development key or shipped unsigned.")
+
+
+def github_file(variable, values):
+    """Append name=value lines to $GITHUB_ENV / $GITHUB_OUTPUT (when set)."""
+    path = os.environ.get(variable, "").strip()
+    for key, value in values.items():
+        if "\n" in str(value) or "\r" in str(value):
+            raise RuntimeError(f"Refusing multi-line {variable} value for {key}")
+    if path:
+        with open(path, "a", encoding="utf-8") as stream:
+            for key, value in values.items():
+                stream.write(f"{key}={value}\n")
+
+
+def job_summary(lines):
+    text = "\n".join(lines) + "\n"
+    print(text, end="")
+    path = os.environ.get("GITHUB_STEP_SUMMARY", "").strip()
+    if path:
+        with open(path, "a", encoding="utf-8") as stream:
+            stream.write(text)
+
+
+def quiet_run(argv, label, *, env=None, capture=False):
+    """Run a signing command without echoing or recording its argv (it may
+    carry a secret). Output is printed only on failure, or returned."""
+    result = subprocess.run(argv, env=env, capture_output=True)
+    if result.returncode:
+        detail = (result.stdout + result.stderr).decode("utf-8", errors="replace")
+        raise RuntimeError(f"{label} failed (exit {result.returncode}):\n{detail}")
+    return result.stdout if capture else None
+
+
+def prepare_android_release_signing():
+    require_secrets(ANDROID_RELEASE_SECRETS, "Production Android signing")
+    alias = os.environ.get("ANDROID_KEY_ALIAS", "").strip() or "upload"
+    directory = release_signing_dir(create=True)
+    keystore = directory / "upload.jks"
+    private_write(keystore, decode_secret("ANDROID_UPLOAD_KEYSTORE_B64"))
+    # Passwords reach keytool through its environment, never its argv.
+    env = dict(os.environ, SEDS_GS_STOREPASS=os.environ["ANDROID_KEYSTORE_PASSWORD"].strip())
+    der = quiet_run(["keytool", "-exportcert", "-keystore", str(keystore), "-alias", alias,
+                     "-storepass:env", "SEDS_GS_STOREPASS"], f"Reading alias {alias!r} from the production keystore",
+                    env=env, capture=True)
+    if not der:
+        raise RuntimeError(f"Production keystore has no certificate for alias {alias!r}")
+    fingerprint = hashlib.sha256(der).hexdigest()
+    github_file("GITHUB_ENV", {"ANDROID_KEYSTORE_PATH": str(keystore),
+                               "SEDS_GS_RELEASE_ANDROID_CERT_SHA256": fingerprint})
+    job_summary([f"Android production keystore loaded (alias `{alias}`), certificate SHA-256 `{colon_hex(fingerprint)}`."])
+
+
+def colon_hex(digest):
+    digest = digest.upper()
+    return ":".join(digest[i:i + 2] for i in range(0, len(digest), 2))
+
+
+def normalized_digest(value):
+    return re.sub(r"[^0-9a-f]", "", (value or "").lower())
+
+
+def security_keychains():
+    out = quiet_run(["security", "list-keychains", "-d", "user"], "Listing keychains", capture=True)
+    return [line.strip().strip('"') for line in out.decode("utf-8", errors="replace").splitlines() if line.strip()]
+
+
+def codesigning_identities(keychain):
+    out = quiet_run(["security", "find-identity", "-v", "-p", "codesigning", str(keychain)],
+                    "Listing code signing identities", capture=True).decode("utf-8", errors="replace")
+    return re.findall(r'^\s*\d+\)\s+[0-9A-F]{40}\s+"([^"]+)"\s*$', out, re.MULTILINE)
+
+
+def notary_mode():
+    api = [name for name in NOTARY_API_SECRETS if os.environ.get(name, "").strip()]
+    apple_id = [name for name in NOTARY_APPLE_ID_SECRETS if os.environ.get(name, "").strip()]
+    if len(api) == len(NOTARY_API_SECRETS):
+        return "api-key"
+    if api:
+        require_secrets(NOTARY_API_SECRETS, "Notarization with an App Store Connect API key")
+    if len(apple_id) == len(NOTARY_APPLE_ID_SECRETS):
+        return "apple-id"
+    if apple_id:
+        require_secrets(NOTARY_APPLE_ID_SECRETS, "Notarization with an Apple ID")
+    raise RuntimeError("Apple notarization: missing GitHub secrets. Set APPLE_NOTARY_KEY_P8_B64, "
+                       "APPLE_NOTARY_KEY_ID and APPLE_NOTARY_ISSUER_ID (preferred), or APPLE_ID, "
+                       "APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID; see docs/releasing.md. "
+                       "A DMG is never released without notarization.")
+
+
+def prepare_macos_release_signing():
+    require_secrets(MACOS_CERT_SECRETS, "Developer ID signing")
+    mode = notary_mode()
+    directory = release_signing_dir(create=True)
+    keychain = directory / KEYCHAIN_NAME
+    password = secrets.token_urlsafe(32)
+    print(f"::add-mask::{password}", flush=True)
+    quiet_run(["security", "create-keychain", "-p", password, str(keychain)], "Creating the temporary keychain")
+    quiet_run(["security", "set-keychain-settings", "-lut", "21600", str(keychain)], "Setting the keychain timeout")
+    quiet_run(["security", "unlock-keychain", "-p", password, str(keychain)], "Unlocking the temporary keychain")
+    p12 = directory / "developer-id.p12"
+    private_write(p12, decode_secret("MACOS_DEVELOPER_ID_P12_B64"))
+    try:
+        quiet_run(["security", "import", str(p12), "-k", str(keychain), "-f", "pkcs12",
+                   "-P", os.environ["MACOS_DEVELOPER_ID_P12_PASSWORD"],
+                   "-T", "/usr/bin/codesign", "-T", "/usr/bin/security"], "Importing the Developer ID certificate")
+    finally:
+        p12.unlink(missing_ok=True)
+    quiet_run(["security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s",
+               "-k", password, str(keychain)], "Allowing codesign to use the key")
+    others = [path for path in security_keychains() if Path(path) != keychain]
+    quiet_run(["security", "list-keychains", "-d", "user", "-s", str(keychain), *others],
+              "Adding the temporary keychain to the search list")
+    identities = codesigning_identities(keychain)
+    wanted = os.environ.get("MACOS_SIGNING_IDENTITY", "").strip()
+    if wanted:
+        if wanted not in identities:
+            raise RuntimeError("MACOS_SIGNING_IDENTITY is not a valid identity in the imported certificate; found: "
+                               + (", ".join(identities) or "none"))
+        identity = wanted
+    else:
+        developer_id = [name for name in identities if name.startswith("Developer ID Application:")]
+        if len(developer_id) != 1:
+            raise RuntimeError("Expected exactly one Developer ID Application identity in the imported .p12; found: "
+                               + (", ".join(identities) or "none") + ". Set MACOS_SIGNING_IDENTITY.")
+        identity = developer_id[0]
+    # Both notarization modes end as a notarytool profile inside the temporary
+    # keychain, so build.py's notarize_macos runs unchanged (NOTARY_PROFILE +
+    # NOTARY_KEYCHAIN) and no credential is on a command line during the build.
+    store = ["xcrun", "notarytool", "store-credentials", NOTARY_PROFILE_NAME, "--keychain", str(keychain)]
+    if mode == "api-key":
+        key = directory / "notary-api-key.p8"
+        private_write(key, decode_secret("APPLE_NOTARY_KEY_P8_B64"))
+        try:
+            quiet_run(store + ["--key", str(key), "--key-id", os.environ["APPLE_NOTARY_KEY_ID"].strip(),
+                               "--issuer", os.environ["APPLE_NOTARY_ISSUER_ID"].strip()],
+                      "Storing the notarization API key profile")
+        finally:
+            key.unlink(missing_ok=True)
+    else:
+        quiet_run(store + ["--apple-id", os.environ["APPLE_ID"].strip(), "--team-id", os.environ["APPLE_TEAM_ID"].strip(),
+                           "--password", os.environ["APPLE_APP_SPECIFIC_PASSWORD"].strip()],
+                  "Storing the notarization Apple ID profile")
+    github_file("GITHUB_ENV", {"MACOS_SIGNING_IDENTITY": identity, "NOTARY_PROFILE": NOTARY_PROFILE_NAME,
+                               "NOTARY_KEYCHAIN": str(keychain)})
+    job_summary([f"macOS signing identity: `{identity}`",
+                 f"Notarization credentials: {'App Store Connect API key' if mode == 'api-key' else 'Apple ID (app-specific password)'}"])
+
+
+def release_env(name):
+    """ci_env() (which drops every signing variable), plus exactly the signing
+    variables build.py needs for this target's platform, and nothing else."""
+    kind = SIGNED_RELEASE_TARGETS.get(name)
+    env = ci_env()
+    for key in RELEASE_SIGNING_ENV.get(kind, ()):
+        value = os.environ.get(key, "").strip()
+        if value:
+            env[key] = value
+    if kind == "android":
+        missing = [key for key in ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD") if not env.get(key)]
+        if missing:
+            raise RuntimeError("Production Android signing is not prepared (missing " + ", ".join(missing)
+                               + "); run release-android-signing with the GitHub secrets first")
+        if Path(env["ANDROID_KEYSTORE_PATH"]).resolve().parent != release_signing_dir():
+            raise RuntimeError("The release keystore must be the job-local file written by release-android-signing")
+    elif kind == "macos":
+        missing = [key for key in RELEASE_SIGNING_ENV["macos"] if not env.get(key)]
+        if missing:
+            raise RuntimeError("Developer ID signing/notarization is not prepared (missing " + ", ".join(missing)
+                               + "); run release-macos-signing with the GitHub secrets first")
+        env["SEDS_GS_NOTARY_RECEIPT"] = str(ROOT / "ci-results/notarization.json")
+    return env
+
+
+def release_build(name):
+    validate_host(name)
+    env = release_env(name)
+    env["CARGO_NET_OFFLINE"] = "true"
+    if name.startswith("android"):
+        verify_bundletool(env)
+    for tool in ["dx", "wasm-bindgen", "wasm-opt", "esbuild"]:
+        if not shutil.which(tool, path=env["PATH"]):
+            raise RuntimeError(f"Missing prepared tool: {tool}")
+    if (ROOT / "artifacts" / name).exists():
+        raise RuntimeError("Refusing stale platform artifact directory; use a fresh checkout")
+    (ROOT / "ci-results").mkdir(exist_ok=True)
+    checked(release_command(name), env, "release-" + name, dioxus_progress=True,
+            android_upstream_r8=name.startswith("android"))
+
+
+def find_apksigner():
+    sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or ""
+    def version(path):
+        return tuple(int(p) if p.isdigit() else 0 for p in re.split(r"[.-]", path.parent.name))
+    candidates = sorted(Path(sdk).glob("build-tools/*/apksigner"), key=version) if sdk else []
+    found = str(candidates[-1]) if candidates else shutil.which("apksigner")
+    if not found:
+        raise RuntimeError("apksigner not found in the Android SDK build-tools")
+    return found
+
+
+def apk_signers(output):
+    """(DN, SHA-256) for each signer in `apksigner verify --print-certs` output."""
+    count = re.search(r"^Number of signers: (\d+)$", output, re.MULTILINE)
+    digests = re.findall(r"^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]{64})$", output, re.MULTILINE)
+    names = re.findall(r"^Signer #\d+ certificate DN: (.+)$", output, re.MULTILINE)
+    if not count or int(count.group(1)) != len(digests) or len(names) != len(digests):
+        raise RuntimeError("Could not read the APK signer certificates from apksigner output")
+    return list(zip(names, digests))
+
+
+def verify_android_release(name):
+    apk = ROOT / "artifacts" / name / "dist" / "SEDS GS.apk"
+    if not apk.is_file():
+        raise RuntimeError(f"Release APK missing: {apk}")
+    result = subprocess.run([find_apksigner(), "verify", "--print-certs", "--verbose", str(apk)],
+                            capture_output=True, text=True)
+    print(result.stdout + result.stderr)
+    if result.returncode:
+        raise RuntimeError(f"apksigner verify failed (exit {result.returncode})")
+    if not re.search(r"^Verified using v2 scheme \(APK Signature Scheme v2\): true$", result.stdout, re.MULTILINE):
+        raise RuntimeError("Release APK is not signed with APK Signature Scheme v2")
+    signers = apk_signers(result.stdout)
+    expected = normalized_digest(os.environ.get("SEDS_GS_RELEASE_ANDROID_CERT_SHA256"))
+    if len(signers) != 1 or not expected or signers[0][1] != expected:
+        raise RuntimeError("Release APK is not signed by exactly the production keystore certificate")
+    pinned = normalized_digest(os.environ.get("ANDROID_EXPECTED_CERT_SHA256"))
+    if pinned and pinned != expected:
+        raise RuntimeError("Production keystore certificate does not match the ANDROID_EXPECTED_CERT_SHA256 "
+                           "repository variable; refusing to publish an APK that cannot update installed releases")
+    dn, digest = signers[0]
+    job_summary([f"### {name} APK signature",
+                 f"- Signer: `{dn}`",
+                 f"- Certificate SHA-256: `{colon_hex(digest)}`",
+                 f"- Matches pinned ANDROID_EXPECTED_CERT_SHA256: {'yes' if pinned else 'no pin set'}"])
+
+
+def verify_macos_release(name):
+    # The original dist/ bundle: build_targets copies dist/ into artifacts/
+    # without preserving symlinks, so that copy of the .app is not verifiable.
+    dist = ROOT / "dist"
+    app, dmg = dist / "UBSEDS GS.app", dist / "UBSEDS GS.dmg"
+    staged = ROOT / "artifacts" / name / "dist" / "UBSEDS GS.dmg"
+    for path in (app, dmg, staged):
+        if not path.exists():
+            raise RuntimeError(f"Release macOS output missing: {path}")
+    if file_sha256(staged) != file_sha256(dmg):
+        raise RuntimeError("The staged DMG is not the verified dist/ DMG")
+    checks = [
+        ["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)],
+        ["codesign", "--verify", "--strict", "--verbose=2", str(dmg)],
+        ["xcrun", "stapler", "validate", str(dmg)],
+        ["spctl", "-a", "-vvv", "-t", "install", str(dmg)],
+    ]
+    outputs = []
+    for argv in checks:
+        result = subprocess.run(argv, capture_output=True, text=True)
+        print("$ " + " ".join(argv) + "\n" + result.stdout + result.stderr)
+        if result.returncode:
+            raise RuntimeError(f"{argv[0]} {argv[1]} failed (exit {result.returncode})")
+        outputs.append(result.stdout + result.stderr)
+    if "source=Notarized Developer ID" not in outputs[-1]:
+        raise RuntimeError("Gatekeeper did not accept the DMG as Notarized Developer ID")
+    details = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True)
+    text = details.stdout + details.stderr
+    if details.returncode or not re.search(r"flags=0x[0-9a-f]*\(.*runtime.*\)", text) \
+            or "Timestamp=" not in text:
+        raise RuntimeError("App signature lacks the hardened runtime or a secure timestamp")
+    authority = re.search(r"^Authority=(Developer ID Application: .+)$", text, re.MULTILINE)
+    if not authority or authority.group(1) != os.environ.get("MACOS_SIGNING_IDENTITY", "").strip():
+        raise RuntimeError("App is not signed by the imported Developer ID identity")
+    try:
+        receipt = json.loads((ROOT / "ci-results/notarization.json").read_text())
+    except (OSError, ValueError):
+        raise RuntimeError("Notarization receipt missing") from None
+    if receipt.get("status") != "Accepted":
+        raise RuntimeError(f"Notarization status is {receipt.get('status')!r}, not Accepted")
+    job_summary([f"### {name} DMG",
+                 f"- Identity: `{authority.group(1)}`",
+                 f"- Notarization submission: `{receipt.get('id')}` ({receipt['status']})",
+                 "- Stapled, Gatekeeper: accepted (Notarized Developer ID); hardened runtime + timestamp"])
+
+
+def release_verify(name):
+    kind = SIGNED_RELEASE_TARGETS.get(name)
+    if kind == "android":
+        verify_android_release(name)
+    elif kind == "macos":
+        verify_macos_release(name)
+    else:
+        raise RuntimeError(f"{name} has no release signature to verify")
+
+
+def check_release_assets(directory, expected):
+    """Exactly the expected public files; never signing material."""
+    found = sorted(p.name for p in directory.iterdir())
+    for path in directory.iterdir():
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"Release assets must be regular files: {path.name}")
+        if path.name.lower().endswith(SIGNING_MATERIAL_SUFFIXES):
+            raise RuntimeError(f"Refusing signing material in release assets: {path.name}")
+    if found != sorted(expected):
+        raise RuntimeError(f"Release assets {found} differ from the expected {sorted(expected)}")
+
+
+def release_stage(name):
+    dist = ROOT / "artifacts" / name / "dist"
+    out = ROOT / "release-assets" / name
+    if out.exists():
+        raise RuntimeError("Refusing stale release-assets directory")
+    out.mkdir(parents=True)
+    for source, asset in RELEASE_ASSETS[name].items():
+        path = dist / source
+        if path.is_symlink() or not path.is_file():
+            raise RuntimeError(f"{name}: expected release output missing: {path}")
+        shutil.copyfile(path, out / asset)
+    check_release_assets(out, RELEASE_ASSETS[name].values())
+    job_summary([f"### {name} assets"] + [f"- `{asset}` {file_sha256(out / asset)}"
+                                         for asset in sorted(RELEASE_ASSETS[name].values())])
+
+
+def release_checksums(directory, targets):
+    """Validate the merged asset set and write SHA256SUMS (sha256sum format)."""
+    directory = Path(directory)
+    expected = [asset for target in targets for asset in RELEASE_ASSETS[target].values()]
+    sums = directory / "SHA256SUMS"
+    if sums.exists():
+        raise RuntimeError("Refusing stale SHA256SUMS")
+    check_release_assets(directory, expected)
+    sums.write_text("".join(f"{file_sha256(directory / asset)}  {asset}\n" for asset in sorted(expected)))
+    return sums
+
+
+def release_cleanup():
+    """always(): delete every piece of signing material this job could hold."""
+    removed = []
+    try:
+        directory = release_signing_dir()
+    except RuntimeError:
+        directory = None
+    if directory is not None:
+        keychain = directory / KEYCHAIN_NAME
+        if platform.system() == "Darwin" and keychain.exists():
+            subprocess.run(["security", "delete-keychain", str(keychain)], check=False)
+            removed.append("temporary keychain")
+        if directory.exists():
+            shutil.rmtree(directory)
+            removed.append(str(directory))
+    # build.py writes the store/key passwords into the generated Gradle signing
+    # config; the generated project is never uploaded, but remove it anyway.
+    dx = ROOT / "target" / "dx"
+    if dx.is_dir():
+        for gradle in dx.glob("*/*/android/app/app/build.gradle.kts"):
+            if "storePassword" in gradle.read_text(encoding="utf-8", errors="replace"):
+                gradle.unlink()
+                removed.append(str(gradle.relative_to(ROOT)))
+    print("Release signing cleanup: " + (", ".join(removed) if removed else "nothing to remove"))
+
+
 def main():
     configure_utf8_console()
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["bootstrap", "build"])
-    parser.add_argument("--target", choices=[p["target"] for p in PLATFORMS], default=os.environ.get("CI_FRONTEND_TARGET"), required=not bool(os.environ.get("CI_FRONTEND_TARGET")))
+    parser.add_argument("action", choices=["bootstrap", "build", "release-version", "release-android-signing",
+                                           "release-macos-signing", "release-build", "release-verify",
+                                           "release-stage", "release-checksums", "release-cleanup"])
+    parser.add_argument("--target", choices=[p["target"] for p in PLATFORMS], default=os.environ.get("CI_FRONTEND_TARGET"))
     parser.add_argument("--profile", choices=["debug", "release"], default=os.environ.get("CI_FRONTEND_PROFILE", "release"))
+    parser.add_argument("--tag", help="release-version: the pushed tag, e.g. v0.3.1b36")
+    parser.add_argument("--assets", help="release-checksums: directory holding every downloaded asset")
+    parser.add_argument("--release-targets", help="release-checksums: comma-separated targets that were built")
     args = parser.parse_args()
+    if args.action in {"bootstrap", "build", "release-build", "release-verify", "release-stage"} and not args.target:
+        parser.error(f"{args.action} needs --target or CI_FRONTEND_TARGET")
     if args.action == "bootstrap":
         bootstrap(args.target)
-    else:
+    elif args.action == "build":
         run(args.target, args.profile)
-
+    elif args.action == "release-version":
+        info = release_version(args.tag)
+        github_file("GITHUB_OUTPUT", info)
+        job_summary([f"## {info['name']}", f"Tag `{info['tag']}`, Android versionCode {info['version_code']}."])
+    elif args.action == "release-android-signing":
+        prepare_android_release_signing()
+    elif args.action == "release-macos-signing":
+        prepare_macos_release_signing()
+    elif args.action == "release-build":
+        release_build(args.target)
+    elif args.action == "release-verify":
+        release_verify(args.target)
+    elif args.action == "release-stage":
+        release_stage(args.target)
+    elif args.action == "release-checksums":
+        names = [n for n in (args.release_targets or "").split(",") if n]
+        if not args.assets or not names or any(n not in RELEASE_TARGETS for n in names):
+            parser.error("release-checksums needs --assets and --release-targets from " + ",".join(RELEASE_TARGETS))
+        print(release_checksums(args.assets, names).read_text(), end="")
+    else:
+        release_cleanup()
 
 if __name__ == "__main__":
     main()
