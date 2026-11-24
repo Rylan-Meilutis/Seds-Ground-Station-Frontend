@@ -81,6 +81,14 @@ pub(crate) const COVERED: &[&str] = &[
     "recovery-search/track-duplicate",
     "replay-bundle/flight.manifest",
     "replay-trajectory/flight",
+    // The station's exports of the bundled recording and of a report-cases
+    // recording, answered offline and compared (local_station/tests.rs).
+    "replay-bundle/exports/cases-calibration-history",
+    "replay-bundle/exports/cases-report-preview",
+    "replay-bundle/exports/cases-report-preview-window",
+    "replay-bundle/exports/flight-report-preview",
+    "replay-bundle/exports/flight-report-preview-window",
+    "replay-bundle/exports/requests",
     "requests/gse-self-test-confirmation",
     "rrls/status",
     "rrls/status-relaying",

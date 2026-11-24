@@ -23,8 +23,8 @@ SNAPSHOT = ROOT / "tests" / "fixtures" / "backend-contract"
 DEFAULT_BACKEND = ROOT.parent / "GroundStation26" / "backend" / "tests" / "contract-fixtures"
 
 
-# JSON replies and frames, plus replay bundles and the CSVs they must reproduce.
-FIXTURE_SUFFIXES = {".json", ".gsreplay", ".csv"}
+# JSON replies and frames, plus replay bundles and the exports they must reproduce.
+FIXTURE_SUFFIXES = {".json", ".gsreplay", ".csv", ".tsv", ".zip"}
 
 
 def json_files(directory: Path) -> set[str]:

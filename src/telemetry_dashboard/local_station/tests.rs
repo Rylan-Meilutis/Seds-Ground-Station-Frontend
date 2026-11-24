@@ -409,4 +409,92 @@ fn a_bundles_terrain_and_search_reach_the_flight_replay() {
     let extras = &s.replay_document.as_ref().unwrap()["replay_extras"];
     assert_eq!(extras["terrain"]["format"], "gs26.heightmap");
     assert!(extras["overlays"].as_array().unwrap().iter().any(|o| o["kind"] == "search_coverage"));
+/// The station's answers to export requests (GroundStation26 `contract_fixtures`,
+/// `replay-bundle/exports/requests.json`): the flight bundle answers the
+/// `flight` case; the `cases` recording (report cases the flight lacks) is
+/// assembled from the station's CSV and calibration history of that
+/// recording with the flight bundle's report context.
+fn export_fixture(name: &str) -> Vec<u8> {
+    let path = crate::backend_contract::dir().join("replay-bundle").join(name);
+    std::fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+}
+
+fn report_cases_inputs() -> exports::ExportInputs {
+    let mut files = bundle::unzip(BUNDLE).unwrap();
+    files.retain(|path, _| path == "config/report_context.json");
+    files.insert("derived/calibration_history.json".into(), export_fixture("exports/cases-calibration-history.json"));
+    let csv = std::rc::Rc::new(export_fixture("exports/cases-recording.csv"));
+    exports::ExportInputs::from_bundle("groundstation_recording_2026-01-02_00-00-00_000.db", csv, &files)
+}
+
+#[test]
+fn offline_exports_equal_the_station_exports_byte_for_byte() {
+    let session = bundle::open("flight.gsreplay", BUNDLE).unwrap();
+    let flight = session.exports.clone().expect("a bundle answers exports");
+    let cases = report_cases_inputs();
+    assert!(!cases.calibration_history.is_empty());
+    let requests: Value = serde_json::from_slice(&export_fixture("exports/requests.json")).unwrap();
+    let mut compared = 0;
+    for request in requests.as_array().unwrap() {
+        let path = request["path"].as_str().unwrap();
+        let inputs = if request["case"] == "flight" { &flight } else { &cases };
+        let answer = exports::answer(inputs, path).unwrap_or_else(|| panic!("{path} is an export route"));
+        let status = request["status"].as_u64().unwrap() as u16;
+        match answer {
+            Ok(file) => {
+                assert_eq!(status, 200, "{path}: the station answered {status} {}", request["body"]);
+                let file_name = request["file"].as_str().unwrap();
+                let expected = export_fixture(file_name);
+                if file_name.ends_with(".json") {
+                    let ours: Value = serde_json::from_slice(&file.bytes).unwrap();
+                    assert_eq!(ours, serde_json::from_slice::<Value>(&expected).unwrap(), "{path}: preview differs from {file_name}");
+                } else {
+                    assert!(file.bytes == expected, "{path}: offline bytes differ from {file_name}\n--- offline\n{}\n--- station\n{}", String::from_utf8_lossy(&file.bytes[..file.bytes.len().min(3000)]), String::from_utf8_lossy(&expected[..expected.len().min(3000)]));
+                }
+                assert!(!file.content_type.is_empty());
+            }
+            Err((code, message)) => {
+                assert_eq!((code, message.as_str()), (status, request["body"].as_str().unwrap_or_default()), "{path}");
+            }
+        }
+        compared += 1;
+    }
+    assert!(compared >= 30, "{compared} requests");
+    // The bundle's own CSV route and the preview served inline.
+    let csv = exports::answer(&flight, "/api/recordings/groundstation_recording_2026-01-01_00-00-00_000.db/csv").unwrap().unwrap();
+    assert_eq!(csv.filename, "groundstation_recording_2026-01-01_00-00-00_000.csv");
+    assert_eq!(csv.bytes, STATION_CSV);
+}
+
+#[test]
+fn exports_the_bundle_cannot_make_say_they_need_the_station() {
+    let flight = bundle::open("flight.gsreplay", BUNDLE).unwrap().exports.clone().unwrap();
+    let id = "groundstation_recording_2026-01-01_00-00-00_000.db";
+    let report = |format: &str| {
+        let request = serde_json::json!({"recording": id, "format": format, "channels": null}).to_string();
+        let encoded: String = request.bytes().map(|b| format!("%{b:02X}")).collect();
+        exports::answer(&flight, &format!("/api/recordings/report?request={encoded}")).unwrap()
+    };
+    for format in ["xlsx", "pdf"] {
+        let (code, message) = report(format).unwrap_err();
+        assert_eq!(code, 501);
+        assert!(message.contains("Excel and PDF reports need the station"));
+    }
+    assert_eq!(report("csv").unwrap().filename, "telemetry-report.csv");
+    assert_eq!(report("preview").unwrap().filename, "");
+    // A custom review window needs the station; the default window is the bundled file.
+    let base = format!("/api/flight_review/recording/{id}/flight_export");
+    let whole = exports::answer(&flight, &base).unwrap().unwrap();
+    assert_eq!(whole.content_type, "application/zip");
+    assert!(whole.filename.starts_with("flight-") && whole.filename.ends_with(".zip"));
+    let zip = &flight.zips["flight_export"];
+    let (from, to) = (zip.from_ms.unwrap(), zip.to_ms.unwrap());
+    assert_eq!(exports::answer(&flight, &format!("{base}?from_ms={from}&to_ms={to}")).unwrap().unwrap(), whole);
+    let form = (from / 1000 * 1000, (to + 999) / 1000 * 1000);
+    assert_eq!(exports::answer(&flight, &format!("{base}?from_ms={}&to_ms={}", form.0, form.1)).unwrap().unwrap(), whole);
+    assert_eq!(exports::answer(&flight, &format!("{base}?from_ms={}&to_ms={to}", from + 5_000)).unwrap().unwrap_err().0, 501);
+    // Other recordings are not in the bundle; other routes are not exports.
+    assert_eq!(exports::answer(&flight, "/api/recordings/other.db/csv").unwrap().unwrap_err().0, 404);
+    assert!(exports::answer(&flight, "/api/recordings").is_none());
+    assert!(exports::answer(&flight, "/api/flight_review/recording/x").is_none());
 }
