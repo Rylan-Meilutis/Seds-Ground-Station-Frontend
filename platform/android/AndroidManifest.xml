@@ -9,6 +9,9 @@
          while the app is in the background. Requested only after an in-app
          explanation, and only while the user takes part. -->
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
+    <!-- Proximity lock and recovery search (SearchTrackService): location
+         foreground services. A shared search track needs only "while using"
+         location: the service starts from the user's opt-in in the open app. -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.CAMERA"/>
@@ -100,5 +103,14 @@
         <receiver
                 android:name="com.ubseds.gs26.ProximityGeofenceReceiver"
                 android:exported="false"/>
+
+        <!-- Recovery search: keeps recording a track the user chose to share
+             while the search runs, with the app in the background (ongoing
+             "Recovery search" notification with "Stop sharing"). Started and
+             stopped by Rust (recovery_search_native.rs). -->
+        <service
+                android:name="com.ubseds.gs26.SearchTrackService"
+                android:exported="false"
+                android:foregroundServiceType="location"/>
     </application>
 </manifest>

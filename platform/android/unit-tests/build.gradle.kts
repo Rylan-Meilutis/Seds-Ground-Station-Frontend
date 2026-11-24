@@ -21,6 +21,7 @@ sourceSets {
             // Only Android-free files: the rest need the Android SDK.
             setSrcDirs(listOf("../kotlin"))
             include("com/ubseds/gs26/ProximityPolicy.kt")
+            include("com/ubseds/gs26/SearchTrackPolicy.kt")
         }
     }
 }
