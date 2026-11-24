@@ -181,6 +181,30 @@ fn vdda_text(status: &DaqInputHealthStatus) -> Option<(String, VddaLevel)> {
     Some((text, vdda_level(vdda, max)))
 }
 
+/// The MCP3564R reference line: "2.200 V (station)", and why it warns.
+/// Nominal is 2.4 V ±2 %; outside 2.35–2.45 V is a drifted part (or a wrong
+/// setting). A DAQ on its default while the station has another value has
+/// not received the station's setting.
+fn mcp_vref_line(status: &DaqInputHealthStatus, station_v: Option<f32>) -> Option<(String, Option<String>)> {
+    let value = status.mcp_vref_v.map(|v| v.0).filter(|v| v.is_finite())?;
+    let source = status.mcp_vref_source.as_deref().filter(|s| !s.is_empty());
+    let text = match source {
+        Some(source) => format!("{value:.3} V ({source})"),
+        None => format!("{value:.3} V"),
+    };
+    let warning = if source == Some("default") && station_v.is_some_and(|station| (station - value).abs() >= 0.0005) {
+        Some(format!(
+            "The DAQ is on its default reference, not the station's {:.3} V setting.",
+            station_v.unwrap_or_default()
+        ))
+    } else if !(2.35..=2.45).contains(&value) {
+        Some("Outside 2.35–2.45 V (nominal 2.4 V ±2 %): a drifted part or a wrong setting. Re-measure +VREF.".into())
+    } else {
+        None
+    };
+    Some((text, warning))
+}
+
 /// One over-range channel line of the DAQ panel.
 #[derive(Clone, Debug, PartialEq)]
 struct AdcChannelLine {
@@ -224,6 +248,23 @@ fn DaqInputHealth(status: DaqInputHealthStatus, connected: bool, elapsed: u64, t
     let fresh = daq_input_fresh(&status, connected, elapsed);
     let adc_lines = adc_channel_lines(&status, super::current_wallclock_ms());
     let vdda = vdda_text(&status);
+    let station_vref = *super::station_settings::STATION_MCP_VREF_V.read();
+    let mcp_vref = mcp_vref_line(&status, station_vref);
+    let reports_vref = status.mcp_vref_v.is_some();
+    let settings_owner = super::station_settings_request::use_factory();
+    use_effect(move || {
+        // The station's setting, once, so a DAQ on its default can be compared.
+        if !reports_vref || super::station_settings::STATION_MCP_VREF_V.peek().is_some() {
+            return;
+        }
+        spawn(async move {
+            if let Ok(raw) = settings_owner.get::<serde_json::Value>("/api/calibration").await
+                && let Some(value) = super::station_settings::mcp_vref_from_calibration(&raw)
+            {
+                *super::station_settings::STATION_MCP_VREF_V.write() = Some(value);
+            }
+        });
+    });
     rsx! {
         section { "data-daq-input": if fresh { "fresh" } else { "stale" }, style:"padding:14px;border:1px solid {theme.border_soft};border-radius:10px;min-width:0;",
             h4 { style:"margin:0;", "DAQ input health" }
@@ -273,6 +314,15 @@ fn DaqInputHealth(status: DaqInputHealthStatus, connected: bool, elapsed: u64, t
                 if status.kg50_p6 {
                     dt { "P6 leg difference (max)" } dd { style:"margin:0;", "{millivolts(status.p6_imbalance_max_mv)}" }
                     dt { "P6 leg mean" } dd { style:"margin:0;", "{millivolts(status.p6_common_mv)}" }
+                }
+                if let Some((text, warning)) = mcp_vref {
+                    dt { "MCP3564R reference" }
+                    dd { style:"margin:0;", "data-mcp-vref": if warning.is_some() { "warn" } else { "ok" },
+                        if let Some(reason) = warning.clone() {
+                            span { class:"gs-badge gs-badge--warn", title:"{reason}", "{text}" }
+                            p { style:"margin:4px 0 0;font-size:0.8rem;color:{theme.text_secondary};", "{reason}" }
+                        } else { "{text}" }
+                    }
                 }
                 if let Some((text, level)) = vdda {
                     dt { "+3V3A (VDDA)" }
@@ -893,6 +943,32 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(daq_input_health(&row, true, 0).unwrap().0, board_display::Health::Healthy, "recent only: named in the panel, not red");
+    }
+
+    #[test]
+    fn daq_input_shows_the_mcp_reference_and_warns_on_drift_or_default() {
+        use crate::telemetry_dashboard::types::Volts;
+        let mut status = v2_status();
+        assert!(status.mcp_vref_v.is_none() && status.mcp_vref_source.is_none(), "serde default when absent");
+        assert_eq!(mcp_vref_line(&status, Some(2.2)), None);
+        let decoded: DaqInputHealthStatus = serde_json::from_str(
+            r#"{"received_age_ms":0,"supply_low_mv":0,"chamber_floor_mv":0,"mcp_vref_v":2.2,"mcp_vref_source":"station"}"#,
+        ).unwrap();
+        assert_eq!(decoded.mcp_vref_source.as_deref(), Some("station"));
+        let (text, warning) = mcp_vref_line(&decoded, Some(2.2)).unwrap();
+        assert_eq!(text, "2.200 V (station)");
+        assert!(warning.unwrap().contains("2.35–2.45 V"), "2.2 V is a drifted part");
+        status.mcp_vref_v = Some(Volts(2.4));
+        status.mcp_vref_source = Some("station".into());
+        assert_eq!(mcp_vref_line(&status, Some(2.4)), Some(("2.400 V (station)".into(), None)));
+        status.mcp_vref_source = Some("default".into());
+        assert_eq!(mcp_vref_line(&status, Some(2.4)).unwrap().1, None, "default equal to the station setting");
+        assert!(mcp_vref_line(&status, Some(2.2)).unwrap().1.unwrap().contains("not the station's 2.200 V"));
+        assert_eq!(mcp_vref_line(&status, None).unwrap().1, None, "station setting unknown");
+        let html = render_daq_input(decoded);
+        assert!(html.contains("MCP3564R reference") && html.contains("2.200 V (station)"), "{html}");
+        assert!(html.contains("data-mcp-vref=\"warn\""));
+        assert!(!render_daq_input(v2_status()).contains("MCP3564R"));
     }
 
     #[test]

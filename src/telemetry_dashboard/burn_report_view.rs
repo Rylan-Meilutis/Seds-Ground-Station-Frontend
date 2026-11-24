@@ -82,6 +82,26 @@ pub(crate) struct Report {
     pub coverage: Coverage,
     pub quality_flags: Vec<Flag>,
     pub archive_id: Option<String>,
+    /// A thrust load cell was over range for longer than the curve bridges:
+    /// the impulse is a lower bound.
+    pub impulse_lower_bound: bool,
+    /// Unbridged over-range time of the thrust load cells in the window, s.
+    pub over_range_gap_s: f64,
+}
+
+/// "Total impulse" text: a lower bound ("≥") when a thrust load cell was
+/// over range above full scale.
+pub(crate) fn impulse_text(r: &Report) -> String {
+    let value = format!("{:.0} ± {:.0} N·s", r.summary.total_impulse_ns, r.impulse_sigma_ns);
+    if r.impulse_lower_bound { format!("≥ {value} (lower bound: thrust load cell over range)") } else { value }
+}
+
+/// The "ADC over range" row, when the thrust load cells left a gap.
+pub(crate) fn over_range_row(r: &Report) -> Option<(String, String)> {
+    (r.over_range_gap_s > 0.0).then(|| (
+        "ADC over range".to_owned(),
+        format!("{:.3} s with no thrust data (load cell beyond full scale)", r.over_range_gap_s),
+    ))
 }
 
 pub(crate) fn detail_path(id: &str) -> String {
@@ -126,10 +146,11 @@ pub(crate) fn polyline(curve: &[[f64; 2]], w: f64, h: f64) -> (String, f64, f64)
 pub(crate) fn report_rows(r: &Report) -> Vec<(String, String)> {
     let s = &r.summary;
     let mut rows = vec![
-        ("Total impulse".to_owned(), format!("{:.0} ± {:.0} N·s", s.total_impulse_ns, r.impulse_sigma_ns)),
+        ("Total impulse".to_owned(), impulse_text(r)),
         ("Burn time (5% of peak)".to_owned(), format!("{:.2} s", s.burn_time_s)),
         ("Peak / average thrust".to_owned(), format!("{:.0} N / {:.0} N", s.peak_thrust_n, r.average_thrust_n)),
     ];
+    rows.extend(over_range_row(r));
     if let Some(m) = r.fill_at_ignition_kg {
         rows.push(("Fill at ignition".to_owned(), format!("{m:.2} kg")));
     }
@@ -328,6 +349,13 @@ mod tests {
         let rows = report_rows(&r);
         assert_eq!(rows[0].1, "9192 ± 900 N·s");
         assert!(rows.iter().any(|(k, v)| k == "Propellant consumed" && v == "not measured"));
+        assert!(!rows.iter().any(|(k, _)| k == "ADC over range"), "older reports: no over-range row");
+        let mut over = r.clone();
+        over.impulse_lower_bound = true;
+        over.over_range_gap_s = 0.125;
+        let rows = report_rows(&over);
+        assert_eq!(rows[0].1, "≥ 9192 ± 900 N·s (lower bound: thrust load cell over range)");
+        assert!(rows.iter().any(|(k, v)| k == "ADC over range" && v == "0.125 s with no thrust data (load cell beyond full scale)"));
         assert!(rows.iter().any(|(k, v)| k == "Chamber pressure" && v == "not valid"));
         let empty: Report = serde_json::from_value(json!({})).unwrap();
         // A live provisional report has no capture yet: the list still decodes.

@@ -449,10 +449,18 @@ derived from DAQ channels (load-cell weight and fill percent, chamber pressure,
   the plot. Over-range samples never move the autoscale.
 - A live capture on the Calibration page stops with an error if the channel goes
   over range; the calibration is not changed.
+- Burn reports and the Motor & flight tab show the total impulse as a lower bound
+  ("≥ …") when a thrust load cell was over range above full scale, and an
+  "ADC over range" row with the unbridged over-range time.
 - Settings → board health, DAQ input health, lists the channels over range now
   or within the last 10 minutes (now / latched, counts in the last 60 s and since
   DAQ boot, current episode length) and the DAQ's +3V3A (VDDA): warning outside
-  3.15–3.45 V, danger above 3.6 V.
+  3.15–3.45 V, danger above 3.6 V. It also shows the MCP3564R reference the DAQ
+  applies and its source (station / flash / default), warning outside
+  2.35–2.45 V or when the DAQ is on its default while the station's setting
+  differs. The station setting is edited in Settings → Ground Station →
+  Loadcells ("MCP3564R reference (V)", 1.9–2.6 V; loaded from
+  `/api/calibration` `mcp_vref_v`, saved to `/api/calibration/mcp_vref`).
 
 ## Notes For Backend Authors
 

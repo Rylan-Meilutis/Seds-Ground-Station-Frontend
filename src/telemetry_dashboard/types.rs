@@ -465,6 +465,12 @@ pub struct DaqInputHealthStatus {
     /// Highest VDDA in the last report interval, volts.
     #[serde(default)]
     pub vdda_max_v: Option<Volts>,
+    /// The MCP3564R reference the DAQ applies, volts.
+    #[serde(default)]
+    pub mcp_vref_v: Option<Volts>,
+    /// Where the DAQ's reference came from: "station" | "flash" | "default".
+    #[serde(default)]
+    pub mcp_vref_source: Option<String>,
 }
 
 /// One DAQ ADC channel's over-range state (backend daq_input_health.rs).

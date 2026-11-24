@@ -211,10 +211,7 @@ pub(crate) fn motor_rows(m: &MotorView) -> Vec<(String, String)> {
     };
     let s = &r.summary;
     let mut rows = vec![
-        (
-            "Total impulse".to_owned(),
-            format!("{:.0} ± {:.0} N·s", s.total_impulse_ns, r.impulse_sigma_ns),
-        ),
+        ("Total impulse".to_owned(), super::burn_report_view::impulse_text(r)),
         (
             "Burn time (5 % of peak)".to_owned(),
             format!("{:.2} s", s.burn_time_s),
@@ -264,6 +261,7 @@ pub(crate) fn motor_rows(m: &MotorView) -> Vec<(String, String)> {
             ),
         ),
     ];
+    rows.extend(super::burn_report_view::over_range_row(r));
     if let Some(p) = &m.predicted {
         let delta = p
             .total_impulse_ns

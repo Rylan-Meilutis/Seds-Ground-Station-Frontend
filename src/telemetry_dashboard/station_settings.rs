@@ -106,6 +106,7 @@ fn StationSettingsBody(
                     h3 {style:"margin:0;","Loadcells"}
                     p {style:"margin:0;color:{theme.text_muted};","Choose the DAQ input and the load cell used for fill cutoff here. Each input retains its own calibration."}
                     super::data_tab::Kg50InputSelector {theme:theme.clone(),selection:calibration_context,disabled:!crate::auth::can_edit_calibration()||(abort_only_mode&&crate::auth::can_view_actions())||calibration_locked()||input_epoch()==u64::MAX,disabled_reason:input_disabled_reason(abort_only_mode,calibration_locked())}
+                    McpVrefSetting {theme:theme.clone(),disabled:!crate::auth::can_edit_calibration()||(abort_only_mode&&crate::auth::can_view_actions())||calibration_locked()}
                     FillSourceSetting {theme:theme.clone(),fill_targets,disabled:abort_only_mode||!crate::auth::can_view_actions()}
                     p {style:"color:{theme.text_muted};", "Temperature correction follows the sensor’s saved drift calibration. This backend has no independent on/off preference; fitted coefficients are preserved."}
                     if crate::auth::can_view_calibration() {
@@ -207,4 +208,140 @@ fn FillSourceSetting(
         }
         if !message().is_empty(){p {role:"status","{message}"}}
     }}
+}
+
+/// The station's MCP3564R reference setting (volts), as last loaded or saved
+/// here. The DAQ health panel compares it with the reference the DAQ reports.
+pub(super) static STATION_MCP_VREF_V: GlobalSignal<Option<f32>> = Signal::global(|| None);
+
+/// Saves the station's MCP3564R reference. The backend's loadcell settings
+/// field is `mcp_vref_v` (GET /api/calibration).
+pub(super) const MCP_VREF_PATH: &str = "/api/calibration/mcp_vref";
+pub(super) const MCP_VREF_MIN_V: f32 = 1.9;
+pub(super) const MCP_VREF_MAX_V: f32 = 2.6;
+
+/// An operator-entered reference: 1.9–2.6 V, kept to 3 decimals.
+pub(super) fn parse_mcp_vref(text: &str) -> Result<f32, String> {
+    let value: f32 = text.trim().parse().map_err(|_| "Enter the reference in volts, e.g. 2.200".to_string())?;
+    if !value.is_finite() || !(MCP_VREF_MIN_V..=MCP_VREF_MAX_V).contains(&value) {
+        return Err(format!("The reference must be {MCP_VREF_MIN_V:.1}–{MCP_VREF_MAX_V:.1} V"));
+    }
+    Ok((value * 1000.0).round() / 1000.0)
+}
+
+/// The station's saved reference from a GET /api/calibration body.
+pub(super) fn mcp_vref_from_calibration(raw: &serde_json::Value) -> Option<f32> {
+    raw.get("mcp_vref_v")
+        .and_then(serde_json::Value::as_f64)
+        .map(|v| v as f32)
+        .filter(|v| v.is_finite())
+}
+
+#[component]
+fn McpVrefSetting(theme: ThemeConfig, disabled: bool) -> Element {
+    let settings_owner = super::station_settings_request::use_factory();
+    let mut saved = use_signal(|| None::<f32>);
+    let mut text = use_signal(String::new);
+    let mut busy = use_signal(|| false);
+    let mut message = use_signal(String::new);
+    use_effect(move || {
+        spawn(async move {
+            match settings_owner.get::<serde_json::Value>("/api/calibration").await {
+                Ok(raw) => match mcp_vref_from_calibration(&raw) {
+                    Some(value) => {
+                        saved.set(Some(value));
+                        text.set(format!("{value:.3}"));
+                        *STATION_MCP_VREF_V.write() = Some(value);
+                    }
+                    None => message.set("This station does not report an MCP3564R reference setting.".into()),
+                },
+                Err(_) if !settings_owner.current() => (),
+                Err(error) => message.set(format!("MCP3564R reference unavailable: {error}")),
+            }
+        });
+    });
+    let unavailable = saved.read().is_none();
+    let save = move |_| {
+        if disabled || busy() || saved.peek().is_none() {
+            return;
+        }
+        let value = match parse_mcp_vref(&text.peek()) {
+            Ok(value) => value,
+            Err(error) => {
+                message.set(error);
+                return;
+            }
+        };
+        busy.set(true);
+        spawn(async move {
+            let body = serde_json::json!({ "mcp_vref_v": value });
+            match settings_owner.post::<_, serde_json::Value>(MCP_VREF_PATH, &body).await {
+                Ok(raw) => {
+                    let confirmed = mcp_vref_from_calibration(&raw).filter(|v| (v - value).abs() < 0.0005);
+                    if let Some(v) = confirmed {
+                        saved.set(Some(v));
+                        text.set(format!("{v:.3}"));
+                        *STATION_MCP_VREF_V.write() = Some(v);
+                        message.set(format!("Reference saved: {v:.3} V. The load-cell calibrations were converted by the station."));
+                    } else {
+                        message.set("The station did not confirm this reference. Review the current value.".into());
+                    }
+                }
+                Err(_) if !settings_owner.current() => return,
+                Err(error) => message.set(format!("Reference not changed: {error}")),
+            }
+            busy.set(false);
+        });
+    };
+    rsx! {section {"data-mcp-vref":"",style:"display:grid;gap:8px;padding:12px;border:1px solid {theme.border_soft};border-radius:10px;",
+        label {r#for:"mcp-vref","MCP3564R reference (V)"}
+        div {style:"display:flex;flex-wrap:wrap;gap:8px;align-items:center;",
+            input {id:"mcp-vref",r#type:"number",min:"1.900",max:"2.600",step:"0.001",inputmode:"decimal",value:"{text}",
+                disabled:disabled||busy()||unavailable,
+                style:"padding:8px;border-radius:6px;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};font:inherit;width:9em;",
+                oninput:move |event| text.set(event.value()),
+            }
+            button {r#type:"button",class:"gs-btn",disabled:disabled||busy()||unavailable,onclick:save,"Save reference"}
+        }
+        p {style:"margin:0;font-size:12px;color:{theme.text_muted};",
+            "Measure with a DMM between P7/P8 pin 6 (+VREF) and GND. Changing it rescales every MCP3564R volt reading, and the stored load-cell calibrations are converted automatically. Nominal 2.400 V."
+        }
+        if !message().is_empty() {p {role:"status",style:"margin:0;","{message}"}}
+    }}
+}
+
+#[cfg(test)]
+mod mcp_vref_tests {
+    use super::*;
+
+    #[test]
+    fn reference_entry_is_bounded_and_kept_to_three_decimals() {
+        assert_eq!(parse_mcp_vref("2.2"), Ok(2.2));
+        assert_eq!(parse_mcp_vref(" 2.40049 "), Ok(2.4));
+        assert_eq!(parse_mcp_vref("1.9"), Ok(1.9));
+        assert_eq!(parse_mcp_vref("2.6"), Ok(2.6));
+        assert!(parse_mcp_vref("1.899").is_err());
+        assert!(parse_mcp_vref("2.601").is_err());
+        assert!(parse_mcp_vref("NaN").is_err());
+        assert!(parse_mcp_vref("").is_err());
+    }
+
+    #[test]
+    fn station_reference_is_read_from_the_calibration_file() {
+        assert_eq!(mcp_vref_from_calibration(&serde_json::json!({"kg50_input":"amp2","mcp_vref_v":2.2})), Some(2.2));
+        assert_eq!(mcp_vref_from_calibration(&serde_json::json!({"kg50_input":"amp2"})), None, "older stations omit it");
+    }
+
+    #[test]
+    fn reference_field_renders_bounds_and_measurement_help() {
+        let mut dom = VirtualDom::new(|| rsx! { McpVrefSetting { theme: ThemeConfig::default(), disabled: false } });
+        dom.rebuild_in_place();
+        let html = dioxus::ssr::render(&dom);
+        assert!(html.contains("MCP3564R reference (V)"), "{html}");
+        assert!(html.contains("min=\"1.900\"") && html.contains("max=\"2.600\"") && html.contains("step=\"0.001\""));
+        assert!(html.contains("P7/P8 pin 6 (+VREF) and GND"));
+        assert!(html.contains("converted automatically"));
+        // Nothing to edit until the station reports its setting.
+        assert!(html.contains("disabled"));
+    }
 }
