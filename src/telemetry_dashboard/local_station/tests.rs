@@ -416,6 +416,8 @@ fn a_bundles_terrain_and_search_reach_the_flight_replay() {
     let extras = &s.replay_document.as_ref().unwrap()["replay_extras"];
     assert_eq!(extras["terrain"]["format"], "gs26.heightmap");
     assert!(extras["overlays"].as_array().unwrap().iter().any(|o| o["kind"] == "search_coverage"));
+}
+
 /// The station's answers to export requests (GroundStation26 `contract_fixtures`,
 /// `replay-bundle/exports/requests.json`): the flight bundle answers the
 /// `flight` case; the `cases` recording (report cases the flight lacks) is
@@ -504,4 +506,24 @@ fn exports_the_bundle_cannot_make_say_they_need_the_station() {
     assert_eq!(exports::answer(&flight, "/api/recordings/other.db/csv").unwrap().unwrap_err().0, 404);
     assert!(exports::answer(&flight, "/api/recordings").is_none());
     assert!(exports::answer(&flight, "/api/flight_review/recording/x").is_none());
+}
+
+#[test]
+fn the_flight_prediction_tabs_read_the_local_station() {
+    // Demo: the phase-coloured track comes from the rows and the state timeline.
+    let station = LocalStation::new(demo::session(0), EPOCH);
+    let _ = station.frames(EPOCH + 120_000);
+    let track: crate::telemetry_dashboard::map_3d::FlightTrack = serde_json::from_value(station.get_json_for_test("/api/flight_phases", EPOCH + 120_000)).unwrap();
+    assert!(track.points.len() > 10);
+    let phases: Vec<&str> = track.phases.iter().map(|p| p.phase.as_str()).collect();
+    assert_eq!(phases.first(), Some(&"pad"));
+    assert!(phases.contains(&"boost") && phases.contains(&"coast"), "{phases:?}");
+    assert!(track.points.iter().all(|p| p.timestamp_ms <= EPOCH + 120_000), "stamped on the playback clock");
+    let plans: crate::telemetry_dashboard::flight_plans::PlanList = decode(&station, "/api/flight_plans");
+    assert!(plans.plans.is_empty(), "the demo has no plans");
+    let search: crate::telemetry_dashboard::recovery_search::Status = decode(&station, "/api/recovery_search");
+    assert!(!search.active);
+    let simulate = station.request("POST", "/api/los_prediction/simulate", Some(b"{}"));
+    assert_eq!(simulate.status, 501, "a station computation, not a write to acknowledge");
+    assert_eq!(station.request("GET", "/api/terrain/heightmap?lat=1&lon=2&extent_m=2000&size=129", None).text().contains("\"available\":false"), true);
 }

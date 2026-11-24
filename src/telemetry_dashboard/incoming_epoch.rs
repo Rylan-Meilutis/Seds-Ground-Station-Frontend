@@ -207,7 +207,7 @@ pub(super) fn context_for_path(path: &str, ordinary: bool) -> Result<Option<Read
         "/flightstate" | "/api/action_policy" | "/api/recent" | "/api/fill_targets"
         | "/api/launch_clock" | "/api/boards" | "/api/network_topology" | "/api/network_time"
         | "/api/board-recovery/status" | "/api/actuator/plumbing/status" | "/api/gse/status"
-        | "/api/antenna/status" | "/api/recovery" | "/api/rrls/control"
+        | "/api/antenna/status" | "/api/recovery" | "/api/rrls/control" | "/api/los_prediction"
         | "/api/recording_status" | "/api/notifications" | "/api/messages" | "/api/alerts");
     if ordinary || live { ReadContext::capture().map(Some) } else { Ok(None) }
 }

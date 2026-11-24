@@ -473,6 +473,24 @@ impl LocalStation {
             _ if self.replay_id().is_some_and(|id| path == format!("/api/recordings/{}/replay/export", percent_component(&id))) => {
                 self.session.replay_document.clone()?
             }
+            // With no recorded trajectory (the demo, a portable replay file) the
+            // track and its phases come from the rows and the state timeline.
+            "/api/flight_phases" if self.session.trajectory.is_none() => self.flight_phases(wall),
+            // The flight plans a bundle carries (a plan bundle's own plan and the
+            // station's recent ones), listed and served as the station does.
+            "/api/flight_plans" => json!({
+                "plans": self.session.plans.iter().map(|plan| json!({
+                    "id": plan.id, "label": plan.label, "kind": plan.kind, "created_ms": plan.created_ms, "created_by": plan.created_by,
+                    "fill_kg": plan.summary.fill_kg, "apogee_m": plan.summary.apogee_m,
+                    "landing": plan.landing.as_ref().map(|l| json!({"lat_deg": l.lat_deg, "lon_deg": l.lon_deg})),
+                    "warnings": plan.warnings.len(),
+                })).collect::<Vec<_>>(),
+            }),
+            _ if path.starts_with("/api/flight_plans/") && !path["/api/flight_plans/".len()..].contains('/') => {
+                let id = percent_decode(&path["/api/flight_plans/".len()..]);
+                serde_json::to_value(self.session.plans.iter().find(|plan| plan.id == id)?).ok()?
+            }
+            "/api/recovery_search" if self.session.recovery_search.is_none() => json!({"format": "gs26.recovery_search", "active": false, "overlay": null}),
             "/api/recordings/store" => {
                 let legacy: Vec<Value> = self.recordings().as_array().into_iter().flatten().map(|r| json!({"id": r["id"], "bytes": r["bytes"]})).collect();
                 json!({"always_on": false, "groups": [], "legacy": legacy})
@@ -490,6 +508,38 @@ impl LocalStation {
                 return None;
             }
         })
+    }
+
+    /// `GET /api/flight_phases` computed from the GPS rows and the state
+    /// timeline, stamped on the wall clock like the pushed rows.
+    fn flight_phases(&self, wall: i64) -> Value {
+        let clock = self.clock.get();
+        let to = self.position(wall);
+        let base = to - self.wrap(to);
+        let at = self.wrap(to);
+        let phase_of = |state: &str| match state {
+            "Launch" | "Ascent" => "boost",
+            "Coast" | "Apogee" => "coast",
+            "Descent" | "Reefing" | "ParachuteDeploy" => "drogue",
+            "Landed" | "Recovery" => "landed",
+            _ => "pad",
+        };
+        let mut phases: Vec<(String, i64)> = Vec::new();
+        for (t, state) in self.session.states.iter().filter(|(t, _)| *t <= at) {
+            let phase = phase_of(state).to_string();
+            if phases.last().is_none_or(|(p, _)| *p != phase) {
+                phases.push((phase, clock.wall_of(base + t)));
+            }
+        }
+        let segments: Vec<Value> = phases.iter().enumerate().map(|(i, (phase, start))| json!({"phase": phase, "start_ms": start, "end_ms": phases.get(i + 1).map(|n| n.1)})).collect();
+        let phase_at = |t: i64| phases.iter().rev().find(|(_, start)| *start <= t).map(|(p, _)| p.clone());
+        let track = self.session.track(at);
+        let gps_times: Vec<i64> = ["GPS_DATA", "GPS"].iter().flat_map(|ty| self.session.samples.iter().filter(move |s| s.data_type == *ty && s.t_ms <= at)).filter(|s| s.values.first().copied().flatten().is_some_and(|v| v.abs() > 0.0001)).map(|s| s.t_ms).collect();
+        let points: Vec<Value> = track.iter().zip(gps_times).map(|((lat, lon, alt), t)| {
+            let stamp = clock.wall_of(base + t);
+            json!({"timestamp_ms": stamp, "latitude": lat, "longitude": lon, "altitude_m": alt, "phase": phase_at(stamp)})
+        }).collect();
+        json!({"points": points, "phases": segments, "events": [], "source_sender_id": "FC", "current_phase": phases.last().map(|p| p.0.clone()), "sampled": false})
     }
 
     /// The replay document's rows (portable replay format, with ids).
@@ -533,6 +583,12 @@ impl LocalStation {
         Some(json!({"upper_id": upper.min(self.replay_snapshot()?["upper_id"].as_i64()?), "next_id": next_id, "has_more": has_more, "rows": rows, "seeds": seeds}))
     }
 
+    #[cfg(test)]
+    pub(crate) fn get_json_for_test(&self, path_and_query: &str, wall: i64) -> Value {
+        let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
+        self.get_json(path, query, wall).unwrap_or(Value::Null)
+    }
+
     fn alerts_between(&self, from: i64, to: i64, mut each: impl FnMut(i64, &super::Alert)) {
         if !self.looped() {
             for a in self.session.alerts.iter().filter(|a| a.t_ms > from && a.t_ms <= to) {
@@ -566,6 +622,10 @@ impl LocalStation {
             // Signing out of a local station leaves it.
             if path == "/api/auth/logout" {
                 return json_reply(&json!({"ok": true}));
+            }
+            // A computation, not a write: it runs on a station.
+            if path == "/api/los_prediction/simulate" {
+                return text_reply(501, "Signal-loss simulation runs on a station: open this recording from a connected dashboard to simulate it.");
             }
             if path == "/api/command" {
                 let cmd = _body.and_then(|b| serde_json::from_slice::<Value>(b).ok()).and_then(|v| v["cmd"].as_str().map(str::to_owned)).unwrap_or_else(|| "command".into());
