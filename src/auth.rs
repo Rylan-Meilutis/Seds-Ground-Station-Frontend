@@ -311,7 +311,11 @@ pub fn station_app_name() -> &'static str {
 /// The station's own name from `GET /api/auth/session` `station_name`, else
 /// the role's default.
 pub fn station_name() -> String {
-    let status = current_status();
+    station_name_of(&current_status())
+}
+
+/// [`station_name`] for a given session status.
+pub fn station_name_of(status: &SessionStatus) -> String {
     if let Some(name) = status.station_name.as_deref().map(str::trim).filter(|name| !name.is_empty()) {
         return name.chars().take(64).collect();
     }

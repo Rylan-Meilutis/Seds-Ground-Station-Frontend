@@ -3422,7 +3422,7 @@ fn TelemetryDashboardInner() -> Element {
                                 warning_alert:active_warning_alert,
                                 error_alert:active_error_alert,
                                 active:_main_tab_to_str(*active_main_tab.read()).to_string(),
-                                title:layout.branding.app_name.clone().unwrap_or_else(||"GroundStation".into()),
+                                title:navigation_title(layout.branding.app_name.as_deref(),auth::station_name),
                                 on_navigate:move|id:String|{active_main_tab.set(_main_tab_from_str(&id));tabs_expanded.set(false);navigation_rail::close_after_mobile_selection(rail_collapsed);},
                                 on_settings:move |_|{let mut overlay=show_settings_overlay;overlay.set(true);navigation_rail::close_after_mobile_selection(rail_collapsed);},
                             }
@@ -4790,5 +4790,28 @@ mod station_status_tests {
         assert_eq!(StationStatus::of(false, true), StationStatus::Attention);
         assert_eq!(StationStatus::of(false, false), StationStatus::Nominal);
         assert_eq!(StationStatus::of(true, false).label(), "Aborted");
+    }
+}
+
+/// The navigation rail title: the layout's `branding.app_name`, else the
+/// session's `station_name` (whose own fallback is the role's default name).
+fn navigation_title(app_name: Option<&str>, station_name: impl FnOnce() -> String) -> String {
+    app_name.map(str::trim).filter(|name| !name.is_empty()).map(str::to_string).unwrap_or_else(station_name)
+}
+
+#[cfg(test)]
+mod navigation_title_tests {
+    use super::navigation_title;
+    use crate::auth::{SessionStatus, station_name_of};
+
+    #[test]
+    fn title_falls_back_to_the_session_station_name() {
+        let mut session: SessionStatus = crate::backend_contract::decode("auth/session-operator");
+        session.station_name = Some("Pad B".into());
+        assert_eq!(navigation_title(Some("Telemetry Dashboard"), || station_name_of(&session)), "Telemetry Dashboard");
+        assert_eq!(navigation_title(None, || station_name_of(&session)), "Pad B");
+        assert_eq!(navigation_title(Some("  "), || station_name_of(&session)), "Pad B");
+        session.station_name = None;
+        assert_eq!(navigation_title(None, || station_name_of(&session)), "GroundStation", "the role default stays the last fallback");
     }
 }
