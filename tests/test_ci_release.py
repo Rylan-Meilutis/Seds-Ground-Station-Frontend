@@ -64,7 +64,7 @@ class ReleaseWorkflow(unittest.TestCase):
         for job in ["unsigned", "android", "macos", *STORE_JOBS]:
             self.assertEqual(self.jobs[job]["needs"], "version")
             checkout = self.jobs[job]["steps"][0]
-            self.assertEqual(checkout["with"]["ref"], "refs/tags/${{ needs.version.outputs.tag }}")
+            self.assertEqual(checkout["with"]["ref"], "${{ needs.version.outputs.ref }}")
 
     def test_secrets_only_in_the_signing_steps_of_the_signing_jobs(self):
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})

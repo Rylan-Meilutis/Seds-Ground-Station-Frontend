@@ -409,7 +409,12 @@ git push origin v0.3.1b36
   - it keeps the signed assets as the run's `release-<target>` artifacts for
     7 days;
   - it does not create or edit a GitHub Release, and does not upload to
-    TestFlight or Play.
+    TestFlight or Play;
+  - it builds the **head of the branch it was started from** (`main` or `dev`),
+    so the tag does not have to exist yet. Pushing a tag would publish. The
+    `tag` input still names the version and must match `Cargo.toml` and
+    `Dioxus.toml`; the guard still requires a protected branch and that the
+    commit is on `main` or `dev`.
 
   Use it to prove signing:
   `gh workflow run release.yml -R "$R" --ref dev -f tag=v0.3.1b36 -f skip_macos=true`.

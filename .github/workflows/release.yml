@@ -46,16 +46,21 @@ jobs:
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
       guarded: ${{ steps.guard.outputs.guarded }}
+      ref: ${{ steps.guard.outputs.ref }}
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ env.RELEASE_TAG }}
+        # A dispatched dry run builds the protected branch head it was started from
+        # (no tag needed); everything else builds the release tag.
+        ref: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && github.sha || format('refs/tags/{0}', env.RELEASE_TAG) }}
         fetch-depth: 0
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
     - name: Protected ref, tag on main or dev
       id: guard
+      env:
+        RELEASE_DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && 'true' || 'false' }}
       run: python scripts/ci/frontend.py release-guard
     - name: Tag matches Cargo.toml version and Dioxus.toml build
       id: version
@@ -82,7 +87,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ needs.version.outputs.tag }}
+        ref: ${{ needs.version.outputs.ref }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -133,7 +138,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ needs.version.outputs.tag }}
+        ref: ${{ needs.version.outputs.ref }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -198,7 +203,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ needs.version.outputs.tag }}
+        ref: ${{ needs.version.outputs.ref }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -257,7 +262,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ needs.version.outputs.tag }}
+        ref: ${{ needs.version.outputs.ref }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -314,7 +319,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ needs.version.outputs.tag }}
+        ref: ${{ needs.version.outputs.ref }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -353,7 +358,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ needs.version.outputs.tag }}
+        ref: ${{ needs.version.outputs.ref }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
@@ -412,7 +417,7 @@ jobs:
     steps:
     - uses: actions/checkout@v4
       with:
-        ref: refs/tags/${{ needs.version.outputs.tag }}
+        ref: ${{ needs.version.outputs.ref }}
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'

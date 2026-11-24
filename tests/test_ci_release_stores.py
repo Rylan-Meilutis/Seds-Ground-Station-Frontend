@@ -53,9 +53,9 @@ class ReleaseGuard(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def guard(self, tag, event="push", ref=None, protected="true"):
+    def guard(self, tag, event="push", ref=None, protected="true", dry_run=None, sha=None):
         env = {"GITHUB_EVENT_NAME": event, "GITHUB_REF": ref or f"refs/tags/{tag}", "GITHUB_REF_PROTECTED": protected,
-               **GIT_ENV}
+               "RELEASE_DRY_RUN": dry_run or "false", "GITHUB_SHA": sha or "", **GIT_ENV}
         with patch.object(ci, "ROOT", self.work), patch.dict(os.environ, env), \
              contextlib.redirect_stdout(io.StringIO()):
             return ci.release_guard(tag)
@@ -67,6 +67,28 @@ class ReleaseGuard(unittest.TestCase):
 
     def test_dispatch_from_protected_release_branch_passes(self):
         self.assertEqual(self.guard("v0.3.1b36", "workflow_dispatch", "refs/heads/main")["guarded"], "true")
+
+    def test_tag_runs_check_out_the_tag(self):
+        self.assertEqual(self.guard("v0.3.1b36")["ref"], "refs/tags/v0.3.1b36")
+
+    def test_dispatched_dry_run_builds_the_protected_branch_head_without_a_tag(self):
+        dev_head = git(self.work, "rev-parse", "v0.3.1b36^{commit}")   # dev's head in this fixture
+        result = self.guard("v0.3.1b40", "workflow_dispatch", "refs/heads/dev", dry_run="true", sha=dev_head)
+        self.assertEqual((result["guarded"], result["release_branch"], result["commit"], result["ref"]),
+                         ("true", "dev", dev_head, dev_head))
+
+    def test_dry_run_still_refuses_unprotected_or_feature_commits(self):
+        feature = git(self.work, "rev-parse", "v0.3.1b37^{commit}")
+        with self.assertRaisesRegex(RuntimeError, "not a protected ref"):
+            self.guard("v0.3.1b40", "workflow_dispatch", "refs/heads/dev", protected="false", dry_run="true", sha=feature)
+        with self.assertRaisesRegex(RuntimeError, "not on"):
+            self.guard("v0.3.1b40", "workflow_dispatch", "refs/heads/dev", dry_run="true", sha=feature)
+        with self.assertRaisesRegex(RuntimeError, "from main or dev"):
+            self.guard("v0.3.1b40", "workflow_dispatch", "refs/heads/feature", dry_run="true", sha=feature)
+
+    def test_dry_run_flag_is_ignored_on_tag_pushes(self):
+        # A pushed tag always builds the tag, never a branch head.
+        self.assertEqual(self.guard("v0.3.1b36", dry_run="true", sha="0" * 40)["ref"], "refs/tags/v0.3.1b36")
 
     def test_refusals(self):
         cases = [

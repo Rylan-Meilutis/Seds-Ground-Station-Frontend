@@ -1111,7 +1111,15 @@ def release_guard(tag, branches=RELEASE_BRANCHES):
     if os.environ.get("GITHUB_REF_PROTECTED", "").strip().lower() != "true":
         raise RuntimeError(f"{ref} is not a protected ref (GITHUB_REF_PROTECTED is not true). Add the release tag "
                            "and branch rulesets from docs/releasing.md before releasing.")
-    commit = git_capture("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+    dry_run = event == "workflow_dispatch" and os.environ.get("RELEASE_DRY_RUN", "").strip().lower() == "true"
+    if dry_run:
+        # A no-publish dry run builds the dispatched protected branch head; the tag
+        # need not exist yet (pushing it would publish). It still names the version.
+        commit = os.environ.get("GITHUB_SHA", "").strip() or git_capture("rev-parse", "HEAD")
+        checkout_ref = commit
+    else:
+        commit = git_capture("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+        checkout_ref = f"refs/tags/{tag}"
     found = []
     for branch in branches:
         fetched = subprocess.run(["git", "fetch", "--quiet", "--no-tags", "origin",
@@ -1126,7 +1134,7 @@ def release_guard(tag, branches=RELEASE_BRANCHES):
     if not found:
         raise RuntimeError(f"Tag {tag} ({commit}) is not on {' or '.join('origin/' + b for b in branches)}; "
                            "a release must be tagged on a protected release branch")
-    return {"guarded": "true", "release_branch": found[0], "commit": commit}
+    return {"guarded": "true", "release_branch": found[0], "commit": commit, "ref": checkout_ref}
 
 
 # ---------------------------------------------------------------------------
