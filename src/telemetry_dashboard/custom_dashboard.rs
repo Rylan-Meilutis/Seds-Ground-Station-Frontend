@@ -290,18 +290,24 @@ fn layout_data_types(layout: &super::layout::DataTabLayout) -> std::collections:
     types
 }
 
-/// The data tab's name for one channel of a data type, if it gives one.
-fn layout_channel_name(layout: &super::layout::DataTabLayout, data_type: &str, index: usize) -> Option<String> {
-    for tab in &layout.tabs {
-        if tab.id == data_type && let Some(name) = tab.channels.get(index) { return Some(name.clone()); }
-        for subtab in tab.subtabs.iter().flatten() {
-            if subtab.data_type.as_deref().unwrap_or(&tab.id) == data_type
-                && let Some(name) = subtab.channels.as_ref().and_then(|names| names.get(index)) {
-                return Some(name.clone());
+/// The valves the layout's state view shows (`state_tab` `valve_state`
+/// widgets for VALVE_STATE): (index, display label), first widget wins per
+/// index, in index order. The data tab's channel names are identifiers
+/// ("NormallyOpen"), not what an operator reads.
+pub(super) fn layout_valve_labels(state: &super::layout::StateTabLayout) -> Vec<(usize, String)> {
+    let mut out = std::collections::BTreeMap::new();
+    for widget in state.states.iter().flat_map(|s| &s.sections).flat_map(|s| &s.widgets) {
+        if !matches!(widget.kind, super::layout::StateWidgetKind::ValveState) || widget.data_type.as_deref().is_some_and(|t| t != "VALVE_STATE") {
+            continue;
+        }
+        for valve in widget.valves.iter().flatten() {
+            let label = valve.label.trim();
+            if !label.is_empty() {
+                out.entry(valve.index).or_insert_with(|| label.chars().take(120).collect::<String>());
             }
         }
     }
-    None
+    out.into_iter().collect()
 }
 
 /// The unit the data tab's formatter suffix gives a channel (" psig" -> "psig").
@@ -331,7 +337,7 @@ fn layout_channel_unit(layout: &super::layout::DataTabLayout, data_type: &str, i
 /// source's full voltage. A layout sharing none of the built-in fill or
 /// avionics types gets one card per data-tab tab instead. Card ids stay those
 /// of the built-in list so phase profiles keep working.
-fn layout_defaults(layout: &super::layout::DataTabLayout, battery: &super::layout::BatteryLayoutConfig) -> Vec<Card> {
+fn layout_defaults(layout: &super::layout::DataTabLayout, battery: &super::layout::BatteryLayoutConfig, valves: &[(usize, String)]) -> Vec<Card> {
     let builtin = defaults();
     if layout.tabs.is_empty() {
         return builtin;
@@ -339,9 +345,6 @@ fn layout_defaults(layout: &super::layout::DataTabLayout, battery: &super::layou
     let types = layout_data_types(layout);
     let (flight, base): (Vec<Card>, Vec<Card>) = builtin.into_iter().partition(|card| card.section == "Flight");
     let mut cards = base.into_iter().filter(|card| types.contains(&card.data_type)).map(|mut card| {
-        if card.data_type == "VALVE_STATE" && let Some(name) = layout_channel_name(layout, &card.data_type, card.index) {
-            card.label = name;
-        }
         if let Some(unit) = layout_channel_unit(layout, &card.data_type, card.index) {
             card.unit = unit;
         }
@@ -353,6 +356,23 @@ fn layout_defaults(layout: &super::layout::DataTabLayout, battery: &super::layou
         }
         card
     }).collect::<Vec<_>>();
+    // One valve card per valve the layout's state view shows, with its label;
+    // the built-in valve cards keep their ids (and phase profiles).
+    if !valves.is_empty() && let Some(at) = cards.iter().position(|card| card.data_type == "VALVE_STATE") {
+        let builtin: Vec<Card> = cards.iter().filter(|card| card.data_type == "VALVE_STATE").cloned().collect();
+        cards.retain(|card| card.data_type != "VALVE_STATE");
+        let section = builtin[0].section.clone();
+        let laid_out = valves.iter().map(|(index, label)| {
+            let mut card = builtin.iter().find(|card| card.index == *index).cloned().unwrap_or_else(|| Card {
+                id: default_card_id(&section, label, "VALVE_STATE", *index),
+                index: *index,
+                ..builtin[0].clone()
+            });
+            card.label = label.clone();
+            card
+        });
+        cards.splice(at..at, laid_out);
+    }
     if cards.is_empty() {
         cards = layout.tabs.iter().filter(|tab| !tab.channels.is_empty()).take(16).map(|tab| Card {
             id: default_card_id("Data", &tab.label, &tab.id, 0),
@@ -378,20 +398,20 @@ fn layout_defaults(layout: &super::layout::DataTabLayout, battery: &super::layou
 
 /// The layout's defaults for an untouched built-in dashboard; `None` when the
 /// operator has customised the dashboard or nothing changes.
-fn untouched_layout_defaults(current: &[Card], layout: &super::layout::DataTabLayout,
+fn untouched_layout_defaults(current: &[Card], layout: &super::layout::DataTabLayout, valves: &[(usize, String)],
     battery: &super::layout::BatteryLayoutConfig) -> Option<Vec<Card>> {
     if current != defaults().as_slice() {
         return None;
     }
-    let next = layout_defaults(layout, battery);
+    let next = layout_defaults(layout, battery, valves);
     (next.as_slice() != current).then_some(next)
 }
 
 /// Replaces an untouched built-in dashboard with the layout's defaults once
 /// the station layout is known, saving and returning the new cards.
-pub(super) fn adopt_layout_defaults(current: &[Card], layout: &super::layout::DataTabLayout,
+pub(super) fn adopt_layout_defaults(current: &[Card], layout: &super::layout::DataTabLayout, valves: &[(usize, String)],
     battery: &super::layout::BatteryLayoutConfig) -> Option<Vec<Card>> {
-    let next = untouched_layout_defaults(current, layout, battery)?;
+    let next = untouched_layout_defaults(current, layout, valves, battery)?;
     save(&next);
     Some(next)
 }
@@ -702,7 +722,7 @@ fn display_card(mut card: Card, test_fire: bool) -> Card {
 }
 
 #[component]
-pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::DataTabLayout, #[props(default)] battery: super::layout::BatteryLayoutConfig, #[props(default)] test_fire_mode: bool) -> Element {
+pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::DataTabLayout, #[props(default)] battery: super::layout::BatteryLayoutConfig, #[props(default)] valve_labels: Vec<(usize, String)>, #[props(default)] test_fire_mode: bool) -> Element {
     // Launch metadata is installed by the parent's effect into the history
     // store. Refresh availability even when no telemetry or editor is active.
     let _ = *super::HEADER_CLOCK_TICK.read();
@@ -809,7 +829,7 @@ pub(super) fn CustomDashboard(theme: ThemeConfig, data_layout: super::layout::Da
                 small {class:"gs26-phase-profile-caption","{phase_caption}"}
             }
             if *editing.read() {
-                button {onclick:{let restore_layout=data_layout.clone();let restore_battery=battery.clone();move |_|{let next=layout_defaults(&restore_layout,&restore_battery);save(&next);cards.set(next);}},"Restore defaults"}
+                button {onclick:{let restore_layout=data_layout.clone();let restore_battery=battery.clone();let restore_valves=valve_labels.clone();move |_|{let next=layout_defaults(&restore_layout,&restore_battery,&restore_valves);save(&next);cards.set(next);}},"Restore defaults"}
                 button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.id=new_card_id(&next,"card");card.label="New telemetry card".into();next.push(card);save(&next);cards.set(next);},"Add card"}
                 button {disabled:snapshot.len()>=32,onclick:move |_|{let mut next=cards.read().clone();let mut card=defaults()[0].clone();card.id=new_card_id(&next,"camera");card.label="Live camera".into();card.section="Cameras".into();card.display="camera".into();card.width="wide".into();next.push(card);save(&next);cards.set(next);},"Add camera"}
             }
@@ -1471,23 +1491,39 @@ mod tests {
         serde_json::from_value(crate::backend_contract::fixture("replay-export/flight")["layout"].clone()).unwrap()
     }
 
+    /// The live path: the layout as `/api/layout` serves it (the SEDS
+    /// station's, and the demo station's through the local station) decoded
+    /// with the dashboard's type, then the cards the dashboard adopts.
+    #[test]
+    fn valve_cards_read_the_layouts_display_labels_on_the_live_path() {
+        let labels = |layout: &super::super::layout::LayoutConfig| -> Vec<String> {
+            let current = defaults();
+            let cards = untouched_layout_defaults(&current, &layout.data_tab, &layout_valve_labels(&layout.state_tab), &layout.battery).unwrap_or(current);
+            cards.into_iter().filter(|c| c.data_type == "VALVE_STATE").map(|c| c.label).collect()
+        };
+        assert_eq!(labels(&station_layout()), ["Pilot", "Vent", "Dump", "Igniter", "Nitrogen", "Nitrous", "Fill Lines"]);
+        let station = super::super::local_station::LocalStation::new(super::super::local_station::demo::session(0), 0);
+        let demo: super::super::layout::LayoutConfig = serde_json::from_slice(&station.request("GET", "/api/layout", None).body).unwrap();
+        assert_eq!(labels(&demo), ["Main", "Vent", "Dump", "Igniter", "Nitrogen", "Nitrous", "Fill lines"]);
+        assert!(!labels(&station_layout()).iter().any(|l| l == "NormallyOpen"));
+    }
+
     #[test]
     fn station_layout_defaults_take_labels_units_and_battery_max_from_the_backend() {
         let layout = station_layout();
-        let cards = layout_defaults(&layout.data_tab, &layout.battery);
+        let cards = layout_defaults(&layout.data_tab, &layout.battery, &layout_valve_labels(&layout.state_tab));
         assert!(valid(&cards));
         let battery = |sender: &str| cards.iter().find(|c| c.data_type == "BATTERY_VOLTAGE" && c.sender == sender).unwrap().max;
         assert_eq!(battery("PB"), 8.4, "AV bay source full_voltage");
         assert_eq!(battery("VB"), 15.2);
         assert_eq!(battery("GB"), 15.2);
-        let valve = |index: usize| cards.iter().find(|c| c.data_type == "VALVE_STATE" && c.index == index).unwrap();
-        assert_eq!(valve(1).label, "NormallyOpen", "the data tab's VALVE_STATE channel name");
-        assert_eq!(valve(4).label, "Nitrogen");
+        let valves: Vec<&str> = cards.iter().filter(|c| c.data_type == "VALVE_STATE").map(|c| c.label.as_str()).collect();
+        assert_eq!(valves, ["Pilot", "Vent", "Dump", "Igniter", "Nitrogen", "Nitrous", "Fill Lines"], "the state view's display labels, never the data tab's identifiers");
         let chamber = cards.iter().find(|c| c.data_type == "COMBUSTION_CHAMBER_PRESSURE").unwrap();
         assert_eq!(chamber.unit, "psig", "formatter suffix");
-        // Ids stay the built-in ones so per-phase profiles still match.
+        // Built-in cards keep their ids so per-phase profiles still match.
         let builtin = defaults().into_iter().map(|c| c.id).collect::<std::collections::BTreeSet<_>>();
-        assert!(cards.iter().all(|c| builtin.contains(&c.id)));
+        assert!(cards.iter().filter(|c| !(c.data_type == "VALVE_STATE" && [3, 6].contains(&c.index))).all(|c| builtin.contains(&c.id)));
         for dt in ["LOADCELL_50_WEIGHT_KG", "LOADCELL_WEIGHT_KG", "OX_TANK_PRESSURE", "LOADCELL_FILL_PERCENT"] {
             assert!(cards.iter().any(|c| c.data_type == dt), "{dt} is in the station layout");
         }
@@ -1497,13 +1533,13 @@ mod tests {
     fn another_vehicle_gets_its_own_channels_and_no_layout_keeps_the_list() {
         let battery = super::super::layout::BatteryLayoutConfig::default();
         let empty: super::super::layout::DataTabLayout = serde_json::from_value(serde_json::json!({"tabs":[]})).unwrap();
-        assert!(layout_defaults(&empty, &battery) == defaults(), "no data tab: the built-in list is the fallback");
+        assert!(layout_defaults(&empty, &battery, &[]) == defaults(), "no data tab: the built-in list is the fallback");
 
         let other: super::super::layout::DataTabLayout = serde_json::from_value(serde_json::json!({"tabs":[
             {"id":"HYBRID_PRESSURE","label":"Hybrid pressure","channels":["P"],"channel_formatters":[{"suffix":" bar"}]},
             {"id":"UI_OVERVIEW","label":"Overview","channels":[]}
         ]})).unwrap();
-        let cards = layout_defaults(&other, &battery);
+        let cards = layout_defaults(&other, &battery, &[]);
         let base = cards.iter().filter(|c| c.section != "Flight").collect::<Vec<_>>();
         assert_eq!(base.len(), 1, "no foreign fill or battery cards");
         assert_eq!((base[0].data_type.as_str(), base[0].label.as_str(), base[0].unit.as_str()), ("HYBRID_PRESSURE", "Hybrid pressure", "bar"));
@@ -1515,10 +1551,10 @@ mod tests {
         let layout = station_layout();
         let mut custom = defaults();
         custom[0].label = "Mine".into();
-        assert!(untouched_layout_defaults(&custom, &layout.data_tab, &layout.battery).is_none());
-        let adopted = untouched_layout_defaults(&defaults(), &layout.data_tab, &layout.battery).unwrap();
-        assert!(adopted == layout_defaults(&layout.data_tab, &layout.battery));
-        assert!(untouched_layout_defaults(&adopted, &layout.data_tab, &layout.battery).is_none());
+        assert!(untouched_layout_defaults(&custom, &layout.data_tab, &[], &layout.battery).is_none());
+        let adopted = untouched_layout_defaults(&defaults(), &layout.data_tab, &layout_valve_labels(&layout.state_tab), &layout.battery).unwrap();
+        assert!(adopted == layout_defaults(&layout.data_tab, &layout.battery, &layout_valve_labels(&layout.state_tab)));
+        assert!(untouched_layout_defaults(&adopted, &layout.data_tab, &layout_valve_labels(&layout.state_tab), &layout.battery).is_none());
     }
 
     #[test]

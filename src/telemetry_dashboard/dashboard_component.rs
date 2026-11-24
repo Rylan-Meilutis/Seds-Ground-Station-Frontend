@@ -418,7 +418,7 @@ fn TelemetryDashboardInner() -> Element {
                 return;
             };
             let current = cards.peek().clone();
-            if let Some(next) = custom_dashboard::adopt_layout_defaults(&current, &layout.data_tab, &layout.battery) {
+            if let Some(next) = custom_dashboard::adopt_layout_defaults(&current, &layout.data_tab, &custom_dashboard::layout_valve_labels(&layout.state_tab), &layout.battery) {
                 cards.set(next);
             }
         });
@@ -4037,7 +4037,7 @@ fn TelemetryDashboardInner() -> Element {
                                                 },
                                             }
                                         }
-                                        custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),battery:layout.battery.clone(),test_fire_mode:igt::shows_stand_panels(layout.test_fire_mode)}
+                                        custom_dashboard::CustomDashboard {theme:theme.clone(),data_layout:layout.data_tab.clone(),battery:layout.battery.clone(),valve_labels:custom_dashboard::layout_valve_labels(&layout.state_tab),test_fire_mode:igt::shows_stand_panels(layout.test_fire_mode)}
                                         if *ground_station_view.read() && auth::can_view_actions() && !workspace.contains(MainTab::Actions) && flight_state.read().as_str() == "Aborted" {
                                             for policy_view_key in [station_mode_observer::connection_view_key()] { gse_panel::ClearGseAbort { key: "{policy_view_key}",} }
                                         }
