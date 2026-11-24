@@ -224,6 +224,79 @@ pub(crate) fn mode(status: Option<&Status>, outbox: &Outbox, local_track: bool) 
 }
 
 // ---------------------------------------------------------------------------
+// Background recording
+
+/// A fix as the recorder takes it: latitude, longitude, accuracy (m) and
+/// the time it was taken (Unix ms).
+pub(crate) type RawFix = (f64, f64, Option<f64>, i64);
+
+/// Whether this device keeps recording its track while the app is in the
+/// background (iOS background location updates, Android's location
+/// foreground service; `recovery_search_native`).
+///
+/// Only while it shares: the station's search is running AND this device's
+/// user opted in to that session ([`mode`] is [`Mode::Sharing`]); only where
+/// the platform can (`supported`); and only with an OS location permission
+/// the user already granted. "While using" is enough because recording
+/// always starts from the user's own tap in the open app; "Always" is never
+/// asked for this. A local-only track is never recorded in the background.
+pub(crate) fn background_recording(
+    mode: Mode,
+    supported: bool,
+    permission: super::proximity_lock::Permission,
+) -> bool {
+    use super::proximity_lock::Permission;
+    mode == Mode::Sharing && supported && matches!(permission, Permission::Foreground | Permission::Background)
+}
+
+/// What the panel says about recording with the app in the background
+/// (None while not sharing).
+pub(crate) fn background_note(
+    mode: Mode,
+    supported: bool,
+    permission: super::proximity_lock::Permission,
+) -> Option<&'static str> {
+    if mode != Mode::Sharing {
+        None
+    } else if background_recording(mode, supported, permission) {
+        Some("Keeps recording with the app in the background until you stop sharing or the search ends.")
+    } else if supported {
+        Some("Allow location to keep recording with the app in the background.")
+    } else {
+        Some("Records only while this app or page is open in front.")
+    }
+}
+
+/// Feeds fixes, oldest first, through the thinner into the upload buffer
+/// (while sharing) and the local-only track (when it is drawn). Foreground
+/// and background fixes take this same path. Returns whether the buffer
+/// changed.
+pub(crate) fn record_fixes(
+    mode: Mode,
+    outbox: &mut Outbox,
+    thinner: &mut Thinner,
+    mut local: Option<&mut LocalTrack>,
+    fixes: &[RawFix],
+) -> bool {
+    let mut dirty = false;
+    if mode == Mode::Off {
+        return dirty;
+    }
+    for &(lat, lon, acc, t) in fixes {
+        if !thinner.keep(lat, lon, t, acc) {
+            continue;
+        }
+        if mode == Mode::Sharing && outbox.push(t, lat, lon, acc).is_some() {
+            dirty = true;
+        }
+        if let Some(track) = local.as_deref_mut() {
+            track.push(lat, lon, t);
+        }
+    }
+    dirty
+}
+
+// ---------------------------------------------------------------------------
 // Recorder thinning
 
 /// Distance in metres between two points (equirectangular; short ranges).
@@ -696,6 +769,79 @@ mod tests {
         assert!(outbox.opt_out_due(&still));
         outbox.reconcile(&still);
         assert!(!outbox.armed(), "a pending opt-out is never undone by the station's stale state");
+    }
+
+    #[test]
+    fn background_recording_needs_sharing_support_and_a_permission() {
+        use super::super::proximity_lock::Permission;
+        let granted = [Permission::Foreground, Permission::Background];
+        let refused = [Permission::NotDetermined, Permission::Denied, Permission::Unsupported];
+        for permission in granted {
+            assert!(background_recording(Mode::Sharing, true, permission));
+            assert!(!background_recording(Mode::Sharing, false, permission), "desktop and web never");
+            assert!(!background_recording(Mode::LocalOnly, true, permission), "a local-only track never");
+            assert!(!background_recording(Mode::Off, true, permission));
+        }
+        for permission in refused {
+            assert!(!background_recording(Mode::Sharing, true, permission), "{permission:?}");
+        }
+    }
+
+    #[test]
+    fn background_recording_follows_the_opt_in_and_the_search() {
+        use super::super::proximity_lock::Permission;
+        let bg = |status: &Status, outbox: &Outbox| background_recording(mode(Some(status), outbox, true), true, Permission::Foreground);
+        let mut outbox = Outbox::new("gs|ada", "dev");
+        let running = status(true, Some("rs-1"), None);
+        outbox.reconcile(&running);
+        assert!(!bg(&running, &outbox), "a running search alone never starts it");
+        outbox.arm("rs-1", "opt", None);
+        assert!(bg(&running, &outbox), "opted in to the running search");
+        // The search ends: off at once, even while late uploads continue.
+        let stopped = Status { active: false, accepting_uploads: true, ..running.clone() };
+        assert!(!bg(&stopped, &outbox));
+        // Opting out: off.
+        outbox.disarm();
+        assert!(!bg(&running, &outbox));
+        // A new session: off until the user opts in again.
+        outbox.arm("rs-1", "opt", None);
+        let next = status(true, Some("rs-2"), sharing_you("opt", None));
+        outbox.reconcile(&next);
+        assert!(!bg(&next, &outbox));
+        // Without the station's status (offline from the start): off.
+        assert!(!background_recording(mode(None, &outbox, true), true, Permission::Background));
+    }
+
+    #[test]
+    fn background_notes() {
+        use super::super::proximity_lock::Permission;
+        assert_eq!(background_note(Mode::LocalOnly, true, Permission::Foreground), None);
+        assert!(background_note(Mode::Sharing, true, Permission::Foreground).unwrap().contains("in the background until"));
+        assert!(background_note(Mode::Sharing, true, Permission::Denied).unwrap().starts_with("Allow location"));
+        assert!(background_note(Mode::Sharing, false, Permission::Foreground).unwrap().contains("only while"));
+    }
+
+    #[test]
+    fn background_fixes_take_the_foreground_path() {
+        let mut outbox = Outbox::new("gs|ada", "dev");
+        let mut thinner = Thinner::new();
+        let mut local = LocalTrack::default();
+        let fixes: Vec<RawFix> = (0..5).map(|i| (31.0 + i as f64 * 1e-4, -102.0, Some(5.0), 1_000 + i * 1_000)).collect();
+        // Not opted in: nothing is buffered, whatever the native layer queued.
+        assert!(!record_fixes(Mode::Off, &mut outbox, &mut thinner, Some(&mut local), &fixes));
+        assert!(local.points.is_empty());
+        assert!(!record_fixes(Mode::LocalOnly, &mut outbox, &mut thinner, Some(&mut local), &fixes));
+        assert!(outbox.pending.is_empty() && local.points.len() == 5);
+        // Sharing: the same thinning, sequence numbers and buffer as a
+        // foreground fix.
+        outbox.arm("rs-1", "opt", None);
+        thinner.reset();
+        let later: Vec<RawFix> = fixes.iter().map(|f| (f.0, f.1, f.2, f.3 + 10_000)).collect();
+        let mut with_dupe = later.clone();
+        with_dupe.push((31.0004, -102.0, Some(5.0), 15_500));
+        assert!(record_fixes(Mode::Sharing, &mut outbox, &mut thinner, None, &with_dupe));
+        assert_eq!(outbox.pending.iter().map(|f| f.seq).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5]);
+        assert_eq!(outbox.batch(0).unwrap().points[0].t_ms, 11_000);
     }
 
     #[test]

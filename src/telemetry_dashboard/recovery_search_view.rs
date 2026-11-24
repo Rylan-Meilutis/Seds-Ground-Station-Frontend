@@ -4,6 +4,7 @@
 use super::igt_view::ConfirmDialog;
 use super::layout::ThemeConfig;
 use super::recovery_search::{self as model, *};
+use super::recovery_search_native as native;
 use dioxus::prelude::*;
 use serde_json::{Value, json};
 use std::sync::Mutex;
@@ -24,6 +25,8 @@ pub(crate) struct DeviceView {
     pub local_distance_m: f64,
     pub has_fix: bool,
     pub watch_pending: usize,
+    /// Recording with the app in the background (`model::background_note`).
+    pub background_note: Option<&'static str>,
 }
 
 pub(crate) static DEVICE: GlobalSignal<DeviceView> = Signal::global(DeviceView::default);
@@ -35,6 +38,10 @@ struct Runtime {
     local: LocalTrack,
     last_overlay: String,
     last_overlay_ms: i64,
+    /// The native background recorder is running (asked for by this loop).
+    background: bool,
+    background_asserted_ms: i64,
+    last_native_fix_ms: i64,
 }
 
 static RUNTIME: Mutex<Runtime> = Mutex::new(Runtime {
@@ -44,6 +51,9 @@ static RUNTIME: Mutex<Runtime> = Mutex::new(Runtime {
     local: LocalTrack { points: std::collections::VecDeque::new() },
     last_overlay: String::new(),
     last_overlay_ms: 0,
+    background: false,
+    background_asserted_ms: 0,
+    last_native_fix_ms: 0,
 });
 
 /// The browser's own fix (web builds), with its accuracy and time.
@@ -124,7 +134,7 @@ fn save_outbox(force: bool) {
     }
 }
 
-fn publish_view(has_fix: bool) {
+fn publish_view(has_fix: bool, background_note: Option<&'static str>) {
     let view = with_outbox(|o, rt| DeviceView {
         sharing: o.armed(),
         pending: o.pending.len(),
@@ -135,6 +145,7 @@ fn publish_view(has_fix: bool) {
         local_distance_m: rt.local.distance_m(),
         has_fix,
         watch_pending: super::watch_companion::search_relay::pending(),
+        background_note,
     })
     .unwrap_or_default();
     if *DEVICE.peek() != view {
@@ -201,6 +212,8 @@ async fn send_opt_in(sharing: bool, delete_my_track: bool) -> Result<OptInReply,
 
 /// The user's explicit opt-in: arms only after the station accepted it.
 async fn start_sharing() -> Result<(), String> {
+    // "While using" location, asked from this tap (never "Always").
+    native::request_permission_if_needed();
     let reply = send_opt_in(true, false).await?;
     match (reply.sharing, reply.session_id.as_deref(), reply.opt_in_id.as_deref()) {
         (true, Some(session), Some(id)) => {
@@ -224,6 +237,7 @@ async fn stop_sharing(delete_my_track: bool) -> Result<(), String> {
         o.disarm();
         rt.dirty = true;
     });
+    stop_background();
     save_outbox(true);
     let reply = send_opt_in(false, delete_my_track).await;
     if reply.is_ok() {
@@ -249,6 +263,40 @@ fn current_fix(user_gps: Option<(f64, f64)>, manual: bool) -> Option<(f64, f64, 
         return None;
     }
     user_gps.map(|(lat, lon)| (lat, lon, None, now_ms()))
+}
+
+/// Stops the native background recorder (if this loop started it) and
+/// drops anything it still held.
+fn stop_background() {
+    let was = RUNTIME.lock().map(|mut rt| std::mem::replace(&mut rt.background, false)).unwrap_or(false);
+    if was {
+        native::set_running(false);
+        let _ = native::take();
+    }
+}
+
+/// Starts or stops the native background recorder to match the gate
+/// (`model::background_recording`); while it should run, asks again every
+/// 30 s (a start refused by the OS is retried; a running one ignores it).
+fn follow_background(want: bool, now: i64) {
+    if !want {
+        stop_background();
+        return;
+    }
+    let start = RUNTIME
+        .lock()
+        .map(|mut rt| {
+            let due = !rt.background || now - rt.background_asserted_ms >= 30_000;
+            if due {
+                rt.background = true;
+                rt.background_asserted_ms = now;
+            }
+            due
+        })
+        .unwrap_or(false);
+    if start {
+        native::set_running(true);
+    }
 }
 
 async fn upload_once() {
@@ -289,31 +337,49 @@ pub(super) fn RecoverySearchRuntime(user_gps: Signal<Option<(f64, f64)>>, user_l
             } else {
                 Mode::Off
             });
-            if mode != Mode::Off
-                && let Some((lat, lon, acc, t)) = fix
-            {
+            // "Stop sharing" pressed outside the app (Android notification).
+            if native::take_stop_request() && mode == Mode::Sharing {
+                spawn(async move {
+                    let _ = stop_sharing(false).await;
+                });
+            }
+            // Background recording: only while sharing, where the platform
+            // can, with the OS permission (docs/proximity-lock.md).
+            let permission = if mode == Mode::Sharing && native::SUPPORTED {
+                native::permission()
+            } else {
+                super::proximity_lock::Permission::NotDetermined
+            };
+            let background = model::background_recording(mode, native::SUPPORTED, permission);
+            follow_background(background, now);
+            // While the native recorder runs, its fixes (with their own times
+            // and accuracy, also those taken in the background) replace the
+            // dashboard's; both take the same path into the outbox.
+            let fixes: Vec<RawFix> = if background { native::take() } else { fix.into_iter().collect() };
+            if mode != Mode::Off && !fixes.is_empty() {
                 with_outbox(|o, rt| {
-                    if rt.thinner.keep(lat, lon, t, acc) {
-                        if mode == Mode::Sharing && o.push(t, lat, lon, acc).is_some() {
-                            rt.dirty = true;
-                        }
-                        if *LOCAL_ON.peek() {
-                            rt.local.push(lat, lon, t);
-                        }
+                    if background {
+                        rt.last_native_fix_ms = now;
+                    }
+                    let local = if *LOCAL_ON.peek() { Some(&mut rt.local) } else { None };
+                    if model::record_fixes(mode, o, &mut rt.thinner, local, &fixes) {
+                        rt.dirty = true;
                     }
                 });
             }
+            let native_fresh = background && RUNTIME.lock().is_ok_and(|rt| now - rt.last_native_fix_ms < 60_000);
             super::watch_companion::search_relay::relay_once().await;
             upload_once().await;
             if now - last_save >= 5_000 {
                 last_save = now;
                 save_outbox(false);
             }
-            publish_view(fix.is_some());
+            publish_view(fix.is_some() || native_fresh, model::background_note(mode, native::SUPPORTED, permission));
             publish_overlays();
             sleep_ms(1_000).await;
         }
     });
+    use_drop(stop_background);
     let recording = DEVICE.read().sharing || *LOCAL_ON.read();
     rsx! {
         if recording {
@@ -453,6 +519,9 @@ pub(super) fn RecoverySearchPanel(theme: ThemeConfig) -> Element {
                 div { style: "display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;",
                     if device.sharing {
                         span { "Your position goes to the station about every 5 m while the search is on. " }
+                        if let Some(note) = device.background_note {
+                            span { "data-search-background": "", style: "color:{theme.text_muted};", "{note} " }
+                        }
                         if device.pending > 0 {
                             span { "data-search-pending": "{device.pending}", style: "color:#fbbf24;font-weight:700;", "{device.pending} fixes waiting for signal" }
                         }
@@ -672,5 +741,10 @@ mod tests {
         assert!(sharing.contains("Stop sharing"));
         assert!(sharing.contains("3 fixes waiting for signal"));
         assert!(sharing.contains("Draw my track on this map only (never sent)"));
+        assert!(!sharing.contains("data-search-background"));
+        let note = model::background_note(Mode::Sharing, true, super::super::proximity_lock::Permission::Foreground);
+        let background = render(Some(active()), DeviceView { sharing: true, background_note: note, ..DeviceView::default() });
+        assert!(background.contains("data-search-background"));
+        assert!(background.contains("in the background until you stop sharing or the search ends"));
     }
 }

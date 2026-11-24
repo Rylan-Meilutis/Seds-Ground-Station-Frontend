@@ -106,9 +106,21 @@ mod imp {
     const CLASS: &str = "com.ubseds.gs26.ProximityBridge";
     static WAKE: AtomicBool = AtomicBool::new(false);
 
-    /// Calls a static method on `ProximityBridge`, prepending the app
-    /// Context when the signature starts with one. None on any JNI failure.
+    /// Calls a static method on `ProximityBridge` (see [`call_class`]).
     fn call<R>(
+        method: &str,
+        sig: &str,
+        args: &[JValue<'_>],
+        read: impl for<'a> FnOnce(&mut Env<'a>, ::jni::objects::JValueOwned<'a>) -> Option<R>,
+    ) -> Option<R> {
+        call_class(CLASS, method, sig, args, read)
+    }
+
+    /// Calls a static method on an app class (loaded with the app's class
+    /// loader), prepending the app Context when the signature starts with
+    /// one. None on any JNI failure. Also used by `recovery_search_native`.
+    pub fn call_class<R>(
+        class_name: &str,
         method: &str,
         sig: &str,
         args: &[JValue<'_>],
@@ -129,7 +141,7 @@ mod imp {
                     )
                     .and_then(|v| v.l())
                     .ok()?;
-                let name: JString<'_> = env.new_string(CLASS).ok()?;
+                let name: JString<'_> = env.new_string(class_name).ok()?;
                 let class = env
                     .call_method(
                         &loader,
@@ -232,6 +244,9 @@ mod imp {
     }
     pub fn open_settings() {}
 }
+
+#[cfg(target_os = "android")]
+pub(crate) use imp::call_class;
 
 /// True on iOS and Android, where the native layer owns permission, the fix
 /// and background operation.
