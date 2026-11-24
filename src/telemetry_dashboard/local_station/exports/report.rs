@@ -5,7 +5,38 @@
 //! preview is the same JSON. Function names follow the Python ones.
 use super::py::{Py, repr_float};
 use super::{HistoryRow, Row};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+
+/// An SD-resolved recording's row provenance by row id (`read_rows`'s
+/// `provenance`); `None` for other recordings.
+type Provenance = Option<HashMap<i64, Py>>;
+
+fn origin<'a>(provenance: &'a Provenance, row_id: i64) -> Option<&'a Py> {
+    provenance.as_ref()?.get(&row_id)
+}
+
+fn is_sd(origin: &Py) -> bool {
+    origin.get("origin").and_then(Py::as_str) == Some("sd")
+}
+
+/// `derived_sd`: an SD value computed from several records (boxcar, paired
+/// supply), so not one physical SD record to copy verbatim.
+fn derived_sd(origin: &Py) -> bool {
+    origin.get("mapping").filter(|m| m.is_dict()).and_then(|m| m.get("derived")).and_then(Py::as_str).is_some_and(|d| d == "boxcar" || d == "pair")
+}
+
+/// The dict without `fields` (the provenance the exports write).
+fn without_fields(origin: &Py) -> Py {
+    match origin {
+        Py::Dict(items) => Py::Dict(items.iter().filter(|(k, _)| k != "fields").cloned().collect()),
+        other => other.clone(),
+    }
+}
+
+/// `x not in (None, "")`.
+fn present(value: Option<&Py>) -> bool {
+    !matches!(value, None | Some(Py::None)) && value.and_then(Py::as_str) != Some("")
+}
 
 const MAX_ROWS: usize = 200_000;
 const MAX_SERIES: usize = 128;
@@ -430,7 +461,7 @@ fn recorded_diagnostic_info(stream: &Stream, context: &Context, versions: &HashM
     ]))
 }
 
-fn channel_info(stream: &Stream, context: &Context, versions: &HashMap<(i64, String), Py>) -> Py {
+fn channel_info(stream: &Stream, context: &Context, versions: &HashMap<(i64, String), Py>, provenance: &Provenance) -> Py {
     let mut units: Vec<&Py> = Vec::new();
     for entry in context.channel_metadata.as_list().unwrap_or(&[]) {
         let matches = entry.get("data_type").and_then(Py::as_str) == Some(stream.kind.as_str())
@@ -440,13 +471,25 @@ fn channel_info(stream: &Stream, context: &Context, versions: &HashMap<(i64, Str
             units.push(unit);
         }
     }
+    // Units an SD import's manifest names for these samples win over the layout's.
+    let mut recorded: Vec<Py> = Vec::new();
+    for sample in &stream.samples {
+        if let Some(origin) = origin(provenance, sample.row_id).filter(|o| is_sd(o))
+            && let Some(unit) = origin.get("mapping").filter(|m| m.is_dict()).and_then(|m| m.get("units")).filter(|u| u.as_str().is_some())
+            && !recorded.iter().any(|u| u.py_eq(unit))
+        {
+            recorded.push(unit.clone());
+        }
+    }
+    let from_sd = !recorded.is_empty();
+    let units: Vec<&Py> = if from_sd { recorded.iter().collect() } else { units };
     let single = units.len() == 1;
     let mut info = Py::dict(vec![
         ("sender", Py::str(&stream.sender)),
         ("data_type", Py::str(&stream.kind)),
         ("index", Py::Int(stream.index as i64)),
         ("unit", if single { units[0].clone() } else { Py::None }),
-        ("unit_source", Py::str(if single { "export_station_layout" } else { "unknown" })),
+        ("unit_source", Py::str(if !single { "unknown" } else if from_sd { "recorded_sd_manifest" } else { "export_station_layout" })),
         ("value_kind", Py::str(data_kind(&stream.kind))),
     ]);
     if let Some(diagnostic) = recorded_diagnostic_info(stream, context, versions) {
@@ -467,7 +510,7 @@ fn cell(value: Option<&Py>) -> String {
     value.map(Py::py_str).unwrap_or_default()
 }
 
-fn export_csv(streams: &[&Stream], metadata: &[Py]) -> Result<Vec<u8>, Failure> {
+fn export_csv(streams: &[&Stream], metadata: &[Py], provenance: &Provenance) -> Result<Vec<u8>, Failure> {
     let size: usize = streams.iter().zip(metadata).map(|(s, m)| m.dumps(false, false).chars().count() * s.samples.len()).sum();
     if size > 48_000_000 {
         return fail("Regression metadata makes this CSV too large. Narrow the selection or use Excel, which stores regressions separately.");
@@ -477,16 +520,33 @@ fn export_csv(streams: &[&Stream], metadata: &[Py]) -> Result<Vec<u8>, Failure> 
         let json = meta.dumps(true, false);
         let label = meta.get("channel_label").map(Py::py_str).unwrap_or_else(|| channel_label(stream));
         for s in &stream.samples {
+            // A resolved row: the time it was received (none for SD rows) and its provenance.
+            let origin = origin(provenance, s.row_id);
+            let received = match origin.map(|o| o.get("received_timestamp_ms")) {
+                None => s.t.to_string(),
+                Some(None | Some(Py::None)) => String::new(),
+                Some(Some(value)) => csv_cell(&value.py_str()),
+            };
+            let with_origin;
+            let json = match origin {
+                Some(origin) => {
+                    let mut meta = meta.clone();
+                    meta.set("sample_provenance", without_fields(origin));
+                    with_origin = meta.dumps(true, false);
+                    &with_origin
+                }
+                None => &json,
+            };
             let cells = [
                 csv_cell(s.recording),
                 s.row_id.to_string(),
-                s.t.to_string(),
+                received,
                 s.source.map(|v| v.to_string()).unwrap_or_default(),
                 csv_cell(&safe(&stream.sender)),
                 csv_cell(&safe(&stream.kind)),
                 stream.index.to_string(),
                 cell(s.value.as_ref()),
-                csv_cell(&json),
+                csv_cell(json),
                 csv_cell(&safe(&label)),
                 csv_cell(&safe(&state_label(stream, s.value.as_ref(), meta.get("boolean_labels")))),
             ];
@@ -533,7 +593,43 @@ fn daq_cell(text: &str, delimiter: char, force: bool) -> String {
     if force || text.contains([delimiter, '"', '\r', '\n']) { format!("\"{}\"", text.replace('"', "\"\"")) } else { text.to_owned() }
 }
 
-fn export_daq(streams: &[&Stream], metadata: &[Py], context: &Context, versions: &HashMap<(i64, String), Py>, delimiter: char) -> Vec<u8> {
+/// `daq_record`: one SD record's thirteen cells, quoted as the firmware writes them.
+fn daq_record(fields: &Py, delimiter: char) -> String {
+    let raw_adc = present(fields.get("raw_adc_code"));
+    let cells: Vec<String> = DAQ_COLUMNS
+        .iter()
+        .map(|name| {
+            let value = fields.get(name);
+            let text = match value {
+                None | Some(Py::None) => String::new(),
+                Some(v) => v.py_str(),
+            };
+            let force = (*name == "value" && !raw_adc) || (matches!(*name, "raw_value" | "calibrated_value") && !raw_adc && present(value));
+            daq_cell(&text, delimiter, force)
+        })
+        .collect();
+    let mut out = cells.join(&delimiter.to_string());
+    out.push_str("\r\n");
+    out
+}
+
+/// `export_daq_sd_rows` for one resolved SD sample, without the header line.
+fn daq_sd_row(origin: &Py, delimiter: char) -> Result<String, Failure> {
+    let fields = origin.get("fields");
+    let complete = match fields {
+        Some(Py::Dict(items)) => {
+            let keys: HashSet<&str> = items.iter().map(|(k, _)| k.as_str()).collect();
+            keys == DAQ_COLUMNS.iter().copied().collect::<HashSet<&str>>()
+        }
+        _ => false,
+    };
+    if !complete {
+        return fail("Imported SD sample does not contain the actual thirteen-column schema.");
+    }
+    Ok(format!("# sd_sample={}\r\n{}", without_fields(origin).dumps(true, false), daq_record(fields.unwrap_or(&Py::None), delimiter)))
+}
+
+fn export_daq(streams: &[&Stream], metadata: &[Py], context: &Context, versions: &HashMap<(i64, String), Py>, delimiter: char, provenance: &Provenance, all: &[Stream]) -> Result<Vec<u8>, Failure> {
     let d = delimiter.to_string();
     let mut out = DAQ_COLUMNS.join(&d);
     out.push_str("\r\n");
@@ -556,7 +652,7 @@ fn export_daq(streams: &[&Stream], metadata: &[Py], context: &Context, versions:
     out.push_str(&format!("# export={}\r\n", export.dumps(true, false)));
     let mut selected: Vec<(i64, &str, i64, &str, usize, &Py, Option<i64>)> = Vec::new();
     for (n, (stream, meta)) in streams.iter().zip(metadata).enumerate() {
-        let mut info = channel_info(stream, context, versions);
+        let mut info = channel_info(stream, context, versions, provenance);
         info.set("key", Py::str(&stream.key));
         info.set("samples", Py::Int(stream.samples.len() as i64));
         info.set("missing_samples", Py::Int(stream.samples.iter().filter(|s| s.value.is_none()).count() as i64));
@@ -569,9 +665,37 @@ fn export_daq(streams: &[&Stream], metadata: &[Py], context: &Context, versions:
         }
     }
     selected.sort_by(|a, b| (a.0, a.1, a.2, a.3).cmp(&(b.0, b.1, b.2, b.3)));
+    // A physical SD record is written whole: every channel mapped from it must be selected.
+    let mut physical: HashMap<String, HashSet<&str>> = HashMap::new();
+    if provenance.as_ref().is_some_and(|p| !p.is_empty()) {
+        for candidate in all {
+            for s in &candidate.samples {
+                if let Some(origin) = origin(provenance, s.row_id).filter(|o| is_sd(o) && !derived_sd(o)) {
+                    let identity = origin.get("sd_sample_id").unwrap_or(&Py::None).dumps(true, false);
+                    physical.entry(identity).or_default().insert(candidate.key.as_str());
+                }
+            }
+        }
+    }
+    let chosen: HashSet<&str> = streams.iter().map(|s| s.key.as_str()).collect();
+    let mut seen_sd: HashSet<String> = HashSet::new();
     const UTC: std::ops::Range<i64> = 315_532_800_000..4_354_819_200_000;
     for (received, recording, row_id, key, n, value, source) in selected {
         let stream = streams[n];
+        if let Some(origin) = origin(provenance, row_id).filter(|o| is_sd(o) && !derived_sd(o)) {
+            let sample_id = origin.get("sd_sample_id").filter(|id| !matches!(id, Py::None));
+            let (Some(sample_id), true) = (sample_id, origin.get("fields").is_some_and(Py::is_dict)) else {
+                return fail("Resolved SD recording lacks its original thirteen fields; no substitute was produced.");
+            };
+            let identity = sample_id.dumps(true, false);
+            if !physical.get(&identity).is_none_or(|required| required.is_subset(&chosen)) {
+                return fail("DAQ SD layout preserves whole physical SD records. Select all channels mapped from the chosen SD record, or use selected-channel CSV.");
+            }
+            if seen_sd.insert(identity) {
+                out.push_str(&daq_sd_row(origin, delimiter)?);
+            }
+            continue;
+        }
         let utc = source.filter(|s| UTC.contains(s));
         let sensor = daq_sd_sensor(&stream.sender, &stream.kind, stream.index).map_or_else(|| key.to_owned(), str::to_owned);
         let provenance = Py::dict(vec![
@@ -600,7 +724,7 @@ fn export_daq(streams: &[&Stream], metadata: &[Py], context: &Context, versions:
         out.push_str(&record.join(&d));
         out.push_str("\r\n");
     }
-    out.into_bytes()
+    Ok(out.into_bytes())
 }
 
 /// One report of the recording's `rows` (in recording order). `request` is
@@ -621,6 +745,20 @@ pub(crate) fn run(recording: &str, rows: &[Row], history_rows: &[HistoryRow], co
         return fail("No recorded samples in this selection.");
     }
     rows.sort_by_key(|r| (r.received, r.id));
+    // An SD-resolved recording: every row names its source (read_rows).
+    let provenance: Provenance = if rows.iter().any(|r| r.provenance.is_some()) {
+        let mut map = HashMap::with_capacity(rows.len());
+        for row in &rows {
+            let info = Py::parse(row.provenance.as_deref().unwrap_or("null")).map_err(|e| (422, e))?;
+            if !info.is_dict() || !matches!(info.get("origin").and_then(Py::as_str), Some("sd" | "network")) {
+                return fail("Resolved recording has invalid source provenance; no export was produced.");
+            }
+            map.insert(row.id, info);
+        }
+        Some(map)
+    } else {
+        None
+    };
     let mut versions: HashMap<(i64, String), Py> = HashMap::new();
     for row in &rows {
         if row.kind.starts_with("REC_")
@@ -714,7 +852,7 @@ pub(crate) fn run(recording: &str, rows: &[Row], history_rows: &[HistoryRow], co
                         ("regression", meta.clone()),
                         ("finite_count", Py::Int(stream.samples.iter().filter(|s| s.value.is_some()).count() as i64)),
                     ]);
-                    channel.update(channel_info(stream, context, &versions));
+                    channel.update(channel_info(stream, context, &versions, &provenance));
                     channel
                 })
                 .collect();
@@ -726,12 +864,12 @@ pub(crate) fn run(recording: &str, rows: &[Row], history_rows: &[HistoryRow], co
             ]);
             Ok(preview.dumps(false, false).into_bytes())
         }
-        "csv" => export_csv(&chosen, &metadata),
+        "csv" => export_csv(&chosen, &metadata, &provenance),
         "daq_csv" | "daq_tsv" => {
             if !request.get("recording").and_then(serde_json::Value::as_str).is_some_and(|r| !r.is_empty()) {
                 return fail("Select one recording before choosing DAQ SD layout.");
             }
-            Ok(export_daq(&chosen, &metadata, context, &versions, if format == "daq_tsv" { '\t' } else { ',' }))
+            export_daq(&chosen, &metadata, context, &versions, if format == "daq_tsv" { '\t' } else { ',' }, &provenance, &streams)
         }
         _ => fail("Choose CSV, DAQ SD CSV/TSV, Excel or PDF."),
     }

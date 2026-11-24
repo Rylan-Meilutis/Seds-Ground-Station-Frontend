@@ -9,6 +9,13 @@
 //! | `GET /api/recordings/report?request=` | `preview`, `csv`, `daq_csv`, `daq_tsv` computed here ([`report`]); `xlsx`/`pdf` need the station |
 //! | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | `exports/*.zip` from the bundle, for the default window only |
 //!
+//! An SD-resolved recording (GroundStation26 `recording_sd`) has two
+//! timelines. Its CSV and its reports read the resolved rows, each with its
+//! canonical UTC time and provenance (`data/telemetry.csv`); its time-range
+//! CSV reads the rows as received (`data/receipt_telemetry.csv`). The merge
+//! itself is the station's (it needs the operator's SD assignment); offline
+//! uses its result.
+//!
 //! Each answer is byte for byte the station's for the same request
 //! (GroundStation26 `contract_fixtures` writes the station's answers to
 //! `replay-bundle/exports/`; `local_station/tests.rs` compares).
@@ -53,6 +60,9 @@ pub(crate) struct ExportInputs {
     pub recording: String,
     /// `data/telemetry.csv`: the station's `GET /api/recordings/{id}/csv`.
     pub csv: Rc<Vec<u8>>,
+    /// `data/receipt_telemetry.csv`: an SD-resolved recording's rows as
+    /// received (absent for other recordings and older bundles).
+    pub receipt_csv: Option<Rc<Vec<u8>>>,
     /// `derived/calibration_history.json` (empty when the recording has none).
     pub calibration_history: Vec<HistoryRow>,
     /// `config/report_context.json`, the report studio's export-time context.
@@ -96,7 +106,8 @@ impl ExportInputs {
                 );
             }
         }
-        Self { recording: recording.to_owned(), csv, calibration_history, report_context: json("config/report_context.json"), export_index: index.is_some(), zips }
+        let receipt_csv = files.get("data/receipt_telemetry.csv").map(|b| Rc::new(b.clone()));
+        Self { recording: recording.to_owned(), csv, receipt_csv, calibration_history, report_context: json("config/report_context.json"), export_index: index.is_some(), zips }
     }
 }
 
@@ -224,31 +235,41 @@ pub(crate) struct Row {
     /// `values_json` (over-range values as "OVR"/"-OVR").
     pub values: String,
     pub payload: String,
+    /// An SD-resolved row's `provenance_json` (`received` is then its
+    /// canonical UTC time, the station's `timestamp_ms` of the row).
+    pub provenance: Option<String>,
 }
 
 const HEADER: &[u8] = b"id,received_timestamp_ms,source_timestamp_ms,sender_id,data_type,values_json,payload_json";
+const RESOLVED_HEADER: &[u8] = b"id,received_timestamp_ms,source_timestamp_ms,sender_id,data_type,values_json,payload_json,canonical_utc_ms,provenance_json";
 
-/// The rows of a receipt-time recording CSV with each record's raw cells, or
-/// the reason it cannot be used (an SD-resolved recording's CSV is on the
-/// resolved timeline, not the receipt rows these exports read).
+/// Whether a recording CSV is an SD-resolved recording's (resolved timeline).
+fn is_resolved(csv: &[u8]) -> bool {
+    csv.starts_with(RESOLVED_HEADER)
+}
+
+/// The rows of a recording CSV with each record's raw cells: a receipt-time
+/// CSV, or an SD-resolved one (rows on their canonical time, with provenance).
 fn rows(csv: &[u8]) -> Result<Vec<(Row, Vec<&[u8]>)>, (u16, String)> {
     let mut records = records(csv).into_iter();
     let header = records.next().unwrap_or_default().join(&b","[..]);
-    if !header.starts_with(HEADER) || header.windows(16).any(|w| w == b"canonical_utc_ms") {
-        return Err((NEED_STATION, "This recording is SD-resolved; its time-range CSV and reports need the station.".into()));
+    if !header.starts_with(HEADER) {
+        return Err((NEED_STATION, "This bundle's recording CSV has an unknown layout; its exports need the station.".into()));
     }
+    let resolved = header.starts_with(RESOLVED_HEADER);
     let int = |cell: &[u8]| std::str::from_utf8(cell).ok().and_then(|t| t.parse::<i64>().ok());
     Ok(records
-        .filter(|cells| cells.len() >= 7)
+        .filter(|cells| cells.len() >= if resolved { 9 } else { 7 })
         .filter_map(|cells| {
             let row = Row {
                 id: int(cells[0])?,
-                received: int(cells[1])?,
+                received: int(cells[if resolved { 7 } else { 1 }])?,
                 source: int(cells[2]),
                 sender: untext(cells[3]),
                 kind: untext(cells[4]),
                 values: unquote(cells[5]),
                 payload: unquote(cells[6]),
+                provenance: resolved.then(|| unquote(cells[8])),
             };
             Some((row, cells))
         })
@@ -269,7 +290,13 @@ fn range_csv(inputs: &ExportInputs, query: &BTreeMap<String, String>) -> Answer 
     if start < 0 || end <= start {
         return Err((400, "Choose an end time later than the start time.".into()));
     }
-    let rows = rows(&inputs.csv)?;
+    // An SD-resolved recording's time-range CSV reads its rows as received.
+    let csv = match (is_resolved(&inputs.csv), &inputs.receipt_csv) {
+        (false, _) => &inputs.csv,
+        (true, Some(receipt)) => receipt,
+        (true, None) => return Err((NEED_STATION, "This bundle does not hold the SD-resolved recording's rows as received (it was made by an older station); its time-range CSV needs the station.".into())),
+    };
+    let rows = rows(csv)?;
     let recording = text_cell(&inputs.recording);
     let mut out = b"recording,id,received_timestamp_ms,source_timestamp_ms,sender_id,data_type,values_json,payload_json\r\n".to_vec();
     let mut any = false;
