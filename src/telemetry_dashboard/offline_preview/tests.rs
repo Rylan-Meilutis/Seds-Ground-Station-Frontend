@@ -3,12 +3,16 @@
 use super::*;
 
 #[component]
-fn Harness(page: String, replay: Option<(String, String)>) -> Element {
-    rsx! { OfflinePreview { theme: ThemeConfig::default(), on_exit: |_| {}, page: Some(page), replay } }
+fn Harness(page: String, replay: Option<(String, String)>, bundle: Option<(String, Vec<u8>)>) -> Element {
+    rsx! { OfflinePreview { theme: ThemeConfig::default(), on_exit: |_| {}, page: Some(page), replay, bundle } }
 }
 
 fn render(page: &str, replay: Option<(String, String)>) -> String {
-    let mut dom = VirtualDom::new_with_props(Harness, HarnessProps { page: page.into(), replay });
+    render_with(page, replay, None)
+}
+
+fn render_with(page: &str, replay: Option<(String, String)>, bundle: Option<(String, Vec<u8>)>) -> String {
+    let mut dom = VirtualDom::new_with_props(Harness, HarnessProps { page: page.into(), replay, bundle });
     dom.rebuild_in_place();
     let html = dioxus::ssr::render(&dom);
     drop(dom);
@@ -90,5 +94,27 @@ fn a_replay_file_opens_on_a_fresh_device_in_every_mode() {
                 assert!(html.contains("gs26-preview-card"), "state: the file's dashboard has cards");
             }
         }
+    }
+}
+
+#[test]
+fn a_replay_bundle_populates_every_page_with_no_station() {
+    let bundle = Some(("flight.gsreplay".to_string(), include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/flight.gsreplay").to_vec()));
+    let expect: &[(&str, &[&str])] = &[
+        ("state", &["Offline replay — flight.gsreplay", "gs26-preview-card"]),
+        ("data", &["<path d=\"M"]),
+        ("detailed", &["data-diagram-panel"]),
+        ("network-topology", &["Flight Computer"]),
+        ("map", &["Recorded GPS track"]),
+        ("vehicle", &["Flight summary", "Load 3D replay"]),
+        ("calibration", &["Fit:"]),
+        ("data-export", &["Export CSV (as the station exports it)", "Replay bundle (.gsreplay)", "Export layout.json"]),
+    ];
+    for (page, needles) in expect {
+        let html = render_with(page, None, bundle.clone());
+        for needle in *needles {
+            assert!(html.contains(needle), "{page}: missing {needle:?}");
+        }
+        assert_clean(page, &html);
     }
 }

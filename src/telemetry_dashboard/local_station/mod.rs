@@ -9,6 +9,7 @@
 //! Nothing here is reachable from the live dashboard: a session exists only
 //! while the offline workspace is mounted and is dropped with it. The live
 //! transport (`dashboard_transport.rs`) never consults it.
+pub(crate) mod bundle;
 pub(crate) mod demo;
 pub(crate) mod replay_file;
 
@@ -140,6 +141,16 @@ pub(crate) struct Session {
     pub notes: Vec<String>,
     /// Wall-clock origin added to sample times in served JSON.
     pub epoch_ms: i64,
+    /// Station diagram topologies (`GET /api/diagrams` `diagrams`), from a bundle.
+    pub diagrams: Vec<Value>,
+    /// Derived figures (flight review, burn report), from a bundle.
+    pub derived: Vec<(String, String)>,
+    /// Map tiles by (z, x, y), from a bundle.
+    pub tiles: BTreeMap<(u32, u32, u32), Vec<u8>>,
+    /// The recording's `GET /api/recordings/{id}/csv`, from a bundle.
+    pub csv: Option<std::rc::Rc<Vec<u8>>>,
+    /// A bundle's `manifest.json`.
+    pub manifest: Option<Value>,
     index: BTreeMap<(String, String), Vec<usize>>,
 }
 
@@ -185,7 +196,10 @@ impl Session {
             }
         }
         LIVE_SESSIONS.with(|n| n.set(n.get() + 1));
-        Self { source, title, mode, provenance, layout, boards, samples, states, alerts, calibration, recordings, replay_document, vehicle_geometry, notes, epoch_ms, index }
+        Self {
+            source, title, mode, provenance, layout, boards, samples, states, alerts, calibration, recordings, replay_document, vehicle_geometry, notes, epoch_ms,
+            diagrams: Vec::new(), derived: Vec::new(), tiles: BTreeMap::new(), csv: None, manifest: None, index,
+        }
     }
 
     pub fn start_ms(&self) -> i64 {

@@ -56,6 +56,9 @@ pub(crate) const COVERED: &[&str] = &[
     "radio/modem",
     // Opened with no station in offline_preview/tests.rs and local_station/tests.rs.
     "replay-export/flight",
+    // With replay-bundle/flight.gsreplay and flight.csv: opened with no station
+    // and its CSV export compared with the station's (local_station/tests.rs).
+    "replay-bundle/flight.manifest",
     "requests/gse-self-test-confirmation",
     "rrls/status",
     "rrls/status-relaying",

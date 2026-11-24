@@ -113,7 +113,7 @@ pub(crate) fn open(file_name: &str, text: &str) -> Result<Session, String> {
         .filter_map(|a| Some(Alert { t_ms: a["timestamp_ms"].as_i64()?, warning: a["severity"] != "error", message: a["message"].as_str()?.to_string() }))
         .collect();
     let provenance = file["replay_context"]["provenance"].as_str().map(|p| match p {
-        "hardware" => "Recorded".to_string(),
+        "hardware" | "unknown" | "" => "Recorded".to_string(),
         "firmware_sim" | "internal_flight_sim" | "simulated" => "Recorded (simulated)".to_string(),
         other => format!("Recorded ({other})"),
     });

@@ -43,6 +43,12 @@ struct DiagramsReply {
 }
 
 /// Station topologies that validate; any that do not keep the bundled copy.
+/// The bundled topologies with a station's `GET /api/diagrams` applied (the
+/// offline workspace passes a replay bundle's copy).
+pub(crate) fn with_station_diagrams(diagrams: Vec<serde_json::Value>) -> Vec<Topology> {
+    merge_station(topology::bundled(), DiagramsReply { diagrams }).0
+}
+
 fn merge_station(bundled: Vec<Topology>, reply: DiagramsReply) -> (Vec<Topology>, Vec<String>) {
     let mut out = bundled;
     let mut problems = Vec::new();

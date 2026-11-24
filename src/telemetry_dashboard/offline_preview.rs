@@ -81,6 +81,44 @@ fn format_item(value: f32, formatter: &Value) -> String {
     format!("{prefix}{body}{suffix}")
 }
 
+/// A replay bundle (ZIP) or a portable JSON replay file.
+fn open_bytes(name: &str, bytes: &[u8]) -> Result<Session, String> {
+    if local_station::bundle::is_bundle(bytes) {
+        local_station::bundle::open(name, bytes)
+    } else {
+        let text = std::str::from_utf8(bytes).map_err(|_| "The file is neither a .gsreplay bundle nor UTF-8 JSON.".to_string())?;
+        replay_file::open(name, text)
+    }
+}
+
+/// Saves bytes as a download (web) or into Downloads/Documents (native).
+fn save_file(name: &str, bytes: &[u8], media_type: &str) -> Result<String, String> {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use wasm_bindgen::JsCast;
+        let array = js_sys::Uint8Array::from(bytes);
+        let parts = js_sys::Array::of1(&array);
+        let _ = media_type;
+        let blob = web_sys::Blob::new_with_u8_array_sequence(&parts).map_err(|_| "Cannot create the file")?;
+        let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(|_| "Cannot create the download")?;
+        let document = web_sys::window().and_then(|w| w.document()).ok_or("No document")?;
+        let link: web_sys::HtmlAnchorElement = document.create_element("a").map_err(|_| "Cannot create the download")?.dyn_into().map_err(|_| "Cannot create the download")?;
+        link.set_href(&url);
+        link.set_download(name);
+        link.click();
+        gloo_timers::callback::Timeout::new(60_000, move || { let _ = web_sys::Url::revoke_object_url(&url); }).forget();
+        Ok(format!("{name} downloaded."))
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = media_type;
+        let directory = dirs::download_dir().or_else(dirs::document_dir).ok_or("No Downloads or Documents directory")?;
+        let path = directory.join(name);
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(format!("Saved {}", path.display()))
+    }
+}
+
 fn text_of(value: &Value) -> String {
     value.as_str().unwrap_or("").to_string()
 }
@@ -180,8 +218,17 @@ fn lane_chart(aria: String, lanes: Vec<Lane>, from: i64, to: i64, cursor: Option
     }
 }
 
-/// The recorded GPS track drawn on a grid (no map tiles offline).
+/// Web Mercator world pixels (256 px tiles) of a coordinate at zoom `z`.
+fn world_px(lat: f64, lon: f64, z: f64) -> (f64, f64) {
+    let size = 256.0 * 2f64.powf(z);
+    let rad = lat.clamp(-85.05, 85.05).to_radians();
+    ((lon + 180.0) / 360.0 * size, (1.0 - (rad.tan() + 1.0 / rad.cos()).ln() / std::f64::consts::PI) / 2.0 * size)
+}
+
+/// The recorded GPS track in Web Mercator, over a bundle's map tiles when it
+/// carries them and over a tile-sized grid otherwise. Nothing is fetched.
 fn track_map(session: &Session, at: i64) -> Element {
+    use base64::Engine as _;
     let track = session.track(at);
     let all = session.track(i64::MAX);
     if all.is_empty() {
@@ -189,38 +236,56 @@ fn track_map(session: &Session, at: i64) -> Element {
     }
     let (mut la0, mut la1, mut lo0, mut lo1) = (f64::MAX, f64::MIN, f64::MAX, f64::MIN);
     for (la, lo, _) in &all {
-        la0 = la0.min(*la);
-        la1 = la1.max(*la);
-        lo0 = lo0.min(*lo);
-        lo1 = lo1.max(*lo);
+        (la0, la1, lo0, lo1) = (la0.min(*la), la1.max(*la), lo0.min(*lo), lo1.max(*lo));
     }
-    let coslat = ((la0 + la1) / 2.0).to_radians().cos().max(0.05);
-    let w_m = ((lo1 - lo0) * 111_320.0 * coslat).max(200.0);
-    let h_m = ((la1 - la0) * 110_540.0).max(200.0);
-    let scale = (560.0 / w_m).min(240.0 / h_m);
-    let project = |la: f64, lo: f64| (20.0 + (lo - lo0) * 111_320.0 * coslat * scale + (560.0 - w_m * scale) / 2.0, 260.0 - (la - la0) * 110_540.0 * scale - (240.0 - h_m * scale) / 2.0);
+    // The deepest zoom whose tiles all exist in the bundle, else one that fits the track.
+    let covered = |z: u32| {
+        let (x0, y0) = world_px(la1, lo0, z as f64);
+        let (x1, y1) = world_px(la0, lo1, z as f64);
+        let (tx0, ty0, tx1, ty1) = ((x0 / 256.0) as u32, (y0 / 256.0) as u32, (x1 / 256.0) as u32, (y1 / 256.0) as u32);
+        (tx0..=tx1).all(|x| (ty0..=ty1).all(|y| session.tiles.contains_key(&(z, x, y))))
+    };
+    let tiled = (1..=19u32).rev().find(|z| covered(*z));
+    let z = tiled.map(f64::from).unwrap_or_else(|| {
+        let (x0, y0) = world_px(la1, lo0, 0.0);
+        let (x1, y1) = world_px(la0, lo1, 0.0);
+        (600.0 / (x1 - x0).max(1e-9)).min(280.0 / (y1 - y0).max(1e-9)).log2().clamp(1.0, 19.0)
+    });
+    let (x0, y0) = world_px(la1, lo0, z);
+    let (x1, y1) = world_px(la0, lo1, z);
+    let pad = ((x1 - x0).max(y1 - y0) * 0.12).max(24.0);
+    let (vx, vy, vw, vh) = (x0 - pad, y0 - pad, (x1 - x0) + 2.0 * pad, (y1 - y0) + 2.0 * pad);
     let line = |pts: &[(f64, f64, f32)]| pts.iter().enumerate().map(|(i, p)| {
-        let (x, y) = project(p.0, p.1);
+        let (x, y) = world_px(p.0, p.1, z);
         format!("{}{x:.1} {y:.1}", if i == 0 { "M" } else { "L" })
     }).collect::<String>();
-    let (sx, sy) = project(all[0].0, all[0].1);
-    let here = track.last().map(|p| project(p.0, p.1));
-    let full = line(&all);
-    let flown = line(&track);
+    let images: Vec<(f64, f64, String)> = match tiled {
+        Some(zt) => session.tiles.iter().filter(|((tz, _, _), _)| *tz == zt).map(|((_, x, y), data)| {
+            (f64::from(*x) * 256.0, f64::from(*y) * 256.0, format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(data)))
+        }).collect(),
+        None => Vec::new(),
+    };
+    let (sx, sy) = world_px(all[0].0, all[0].1, z);
+    let here = track.last().map(|p| world_px(p.0, p.1, z));
+    let (full, flown) = (line(&all), line(&track));
+    let r = vw.max(vh) / 90.0;
+    let coslat = ((la0 + la1) / 2.0).to_radians().cos();
     let drift = ((all.last().unwrap().0 - all[0].0) * 110_540.0).hypot((all.last().unwrap().1 - all[0].1) * 111_320.0 * coslat);
-    let grid_m = 40.0 / scale;
+    let grid_m = 40_075_016.0 * coslat / 2f64.powf(z);
     let position = track.last().map(|p| format!("{:.5}°, {:.5}° · {:.0} m", p.0, p.1, p.2)).unwrap_or_else(|| "On the pad".into());
+    let note = if tiled.is_some() { "Map tiles from the replay bundle.".to_string() } else { format!("No map tiles offline; grid squares are {grid_m:.0} m.") };
     rsx! {
-        svg { class: "gs26-preview-map", view_box: "0 0 600 280", role: "img", "aria-label": "Recorded GPS track",
-            defs { pattern { id: "preview-map-grid", width: "40", height: "40", pattern_units: "userSpaceOnUse", path { d: "M40 0H0V40", fill: "none", stroke: "#24364b" } } }
-            rect { width: "600", height: "280", fill: "url(#preview-map-grid)" }
-            path { d: "{full}", fill: "none", stroke: "#475569", stroke_width: "2", stroke_dasharray: "5 4" }
-            path { d: "{flown}", fill: "none", stroke: "#67d5c8", stroke_width: "3" }
-            circle { cx: "{sx}", cy: "{sy}", r: "7", fill: "#8bc8ff" }
-            text { x: "{sx + 10.0}", y: "{sy + 4.0}", fill: "#dbeafe", font_size: "12", "Pad" }
-            if let Some((x, y)) = here { circle { cx: "{x}", cy: "{y}", r: "6", fill: "#e8c77f" } }
+        svg { class: "gs26-preview-map", view_box: "{vx} {vy} {vw} {vh}", role: "img", "aria-label": "Recorded GPS track",
+            defs { pattern { id: "preview-map-grid", x: "0", y: "0", width: "256", height: "256", pattern_units: "userSpaceOnUse", path { d: "M256 0H0V256", fill: "none", stroke: "#24364b", vector_effect: "non-scaling-stroke" } } }
+            rect { x: "{vx}", y: "{vy}", width: "{vw}", height: "{vh}", fill: "#101d2d" }
+            rect { x: "{vx}", y: "{vy}", width: "{vw}", height: "{vh}", fill: "url(#preview-map-grid)" }
+            for (ix, iy, href) in images { image { x: "{ix}", y: "{iy}", width: "256", height: "256", href: "{href}" } }
+            path { d: "{full}", fill: "none", stroke: "#94a3b8", stroke_width: "2", stroke_dasharray: "5 4", vector_effect: "non-scaling-stroke" }
+            path { d: "{flown}", fill: "none", stroke: "#67d5c8", stroke_width: "3", vector_effect: "non-scaling-stroke" }
+            circle { cx: "{sx}", cy: "{sy}", r: "{r}", fill: "#8bc8ff" }
+            if let Some((x, y)) = here { circle { cx: "{x}", cy: "{y}", r: "{r}", fill: "#e8c77f" } }
         }
-        p { class: "gs26-preview-note", "Rocket: {position} · landing {drift:.0} m from the pad. Map tiles are not loaded without a station; grid squares are {grid_m:.0} m." }
+        p { class: "gs26-preview-note", "Rocket: {position} · landing {drift:.0} m from the pad (blue). {note}" }
     }
 }
 
@@ -240,12 +305,16 @@ pub fn OfflinePreview(
     /// A replay file to open instead of the demo: (file name, contents).
     #[props(default)]
     replay: Option<(String, String)>,
+    /// A replay bundle (`.gsreplay`) to open instead of the demo.
+    #[props(default)]
+    bundle: Option<(String, Vec<u8>)>,
 ) -> Element {
     #[cfg(not(target_arch = "wasm32"))]
     super::watch_companion::use_demo_publisher();
     // The session is built here, on entry, and dropped with this scope.
     let mut session = use_signal(|| {
         let opened = replay.as_ref().and_then(|(name, text)| replay_file::open(name, text).ok());
+        let opened = opened.or_else(|| bundle.as_ref().and_then(|(name, bytes)| local_station::bundle::open(name, bytes).ok()));
         Rc::new(opened.unwrap_or_else(|| demo::session(super::current_wallclock_ms() - demo::OPEN_AT_MS)))
     });
     let mut at = use_signal(|| { let s = session.peek(); if s.is_demo() { demo::OPEN_AT_MS } else { s.start_ms() } });
@@ -288,8 +357,7 @@ pub fn OfflinePreview(
                     return Err("Replay exceeds 64 MiB.".to_string());
                 }
                 let bytes = file.read_bytes().await.map_err(|e| e.to_string())?;
-                let text = std::str::from_utf8(&bytes).map_err(|_| "The file is not UTF-8 JSON.".to_string())?;
-                replay_file::open(&file.name(), text)
+                open_bytes(&file.name(), &bytes)
             }
             .await;
             match result {
@@ -423,7 +491,8 @@ pub fn OfflinePreview(
                 }
                 div { class: "gs26-preview-header-actions",
                     label { class: "gs26-preview-file-button",
-                        input { r#type: "file", accept: ".json,.seds-replay.json,application/json", "aria-label": "Open replay file",
+                        // No `accept` filter: phone pickers cannot match the .gsreplay extension, and the content is checked on open.
+                        input { r#type: "file", "aria-label": "Open replay file",
                             onchange: move |e| { if let Some(file) = e.files().into_iter().next() { open_file(file); } } }
                         "Open replay file"
                     }
@@ -567,7 +636,7 @@ pub fn OfflinePreview(
                         }
                     } else if current == "detailed" {
                         {
-                            let list = topology::bundled();
+                            let list = if s.diagrams.is_empty() { topology::bundled() } else { live_diagrams::with_station_diagrams(s.diagrams.clone()) };
                             let chosen = list.iter().find(|t| t.id == diagram()).or_else(|| list.first()).cloned();
                             match chosen {
                                 Some(t) => {
@@ -617,7 +686,7 @@ pub fn OfflinePreview(
                         section { class: "gs26-preview-panel", h2 { "Recovery map" } {track_map(&s, now)} }
                     } else if current == "vehicle" {
                         section { class: "gs26-preview-panel", h2 { if s.mode == Mode::TestFire { "Burn summary" } else { "Flight summary" } }
-                            dl { class: "gs26-preview-summary", for (k, v) in s.summary() { div { dt { "{k}" } dd { "{v}" } } } }
+                            dl { class: "gs26-preview-summary", for (k, v) in s.summary().into_iter().chain(s.derived.iter().cloned()) { div { dt { "{k}" } dd { "{v}" } } } }
                             for note in s.notes.iter() { p { class: "gs26-preview-note", "{note}" } }
                         }
                         section { class: "gs26-preview-panel", h2 { "3D replay" }
@@ -660,24 +729,26 @@ pub fn OfflinePreview(
                                     let rows: Vec<(String, String, String)> = c.points.iter().map(|p| (format!("{:.3}", p.0), format!("{:.2}", p.1), format!("{:.2}", c.slope * p.0 + c.offset))).collect();
                                     let equation = format!("Fit: {} = {:.2} × {} {:+.2}", c.unit, c.slope, c.raw_unit, c.offset);
                                     let (label, raw_unit, unit) = (c.label.clone(), c.raw_unit.clone(), c.unit.clone());
+                                    let has_points = !c.points.is_empty();
                                     rsx! {
-                                        svg { class: "gs26-preview-chart", view_box: "0 0 600 190", role: "img", "aria-label": "{label} calibration points",
+                                        if !has_points { p { class: "gs26-preview-note", "No capture points saved for this channel." } }
+                                        if has_points { svg { class: "gs26-preview-chart", view_box: "0 0 600 190", role: "img", "aria-label": "{label} calibration points",
                                             path { d: "M40 10V170H580", fill: "none", stroke: "#64748b" }
                                             path { d: "{fit}", stroke: "#e8c77f", stroke_width: "2", fill: "none" }
                                             for (cx, cy) in dots { circle { cx: "{cx}", cy: "{cy}", r: "5", fill: "#67d5c8" } }
                                             text { x: "44", y: "186", fill: "#94a3b8", font_size: "11", "Input ({raw_unit}) →" }
-                                        }
-                                        table { class: "gs26-preview-table",
+                                        } }
+                                        if has_points { table { class: "gs26-preview-table",
                                             thead { tr { th { "Input ({raw_unit})" } th { "Reference ({unit})" } th { "Fit ({unit})" } } }
                                             tbody { for (a, b, f) in rows { tr { td { "{a}" } td { "{b}" } td { "{f}" } } } }
-                                        }
+                                        } }
                                         p { class: "gs26-preview-note", "{equation}" }
                                     }
                                 }
-                                div { class: "gs26-preview-actions",
+                                if demo_mode { div { class: "gs26-preview-actions",
                                     button { r#type: "button", onclick: move |_| send("Capture zero".into()), "Capture zero" }
                                     button { r#type: "button", onclick: move |_| send("Capture span".into()), "Capture span" }
-                                }
+                                } }
                             }
                         }
                     } else if current == "data-export" {
@@ -694,8 +765,31 @@ pub fn OfflinePreview(
                                 }
                                 p { class: "gs26-preview-note", "A connected station lists its recordings here; export one as a portable replay and open it with “Open replay file” on any device, with no station." }
                             } else {
+                                if let Some(csv) = s.csv.clone() {
+                                    {
+                                        let name = format!("{}.csv", s.title.trim_end_matches(".db"));
+                                        rsx! {
+                                            div { class: "gs26-preview-actions",
+                                                button { r#type: "button", onclick: move |_| {
+                                                    let result = save_file(&name, &csv, "text/csv");
+                                                    toast.set(Some((result.is_ok(), result.unwrap_or_else(|e| format!("CSV export failed: {e}")))));
+                                                }, "Export CSV (as the station exports it)" }
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(layout) = s.layout.as_object().filter(|o| !o.is_empty()).map(|o| serde_json::to_vec_pretty(o).unwrap_or_default()) {
+                                    div { class: "gs26-preview-actions",
+                                        button { r#type: "button", onclick: move |_| {
+                                            let result = save_file("layout.json", &layout, "application/json");
+                                            toast.set(Some((result.is_ok(), result.unwrap_or_else(|e| format!("Export failed: {e}")))));
+                                        }, "Export layout.json" }
+                                    }
+                                }
                                 dl { class: "gs26-preview-summary",
                                     div { dt { "File" } dd { "{s.title}" } }
+                                    div { dt { "Format" } dd { if s.manifest.is_some() { "Replay bundle (.gsreplay)" } else { "Portable replay (.json)" } } }
+                                    div { dt { "Map tiles" } dd { "{s.tiles.len()}" } }
                                     div { dt { "Mode" } dd { "{s.mode.label()}" } }
                                     div { dt { "Rows" } dd { "{s.samples.len()}" } }
                                     div { dt { "Channels" } dd { "{channels.len()}" } }

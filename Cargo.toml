@@ -27,6 +27,8 @@ base64 = "0.23.1"
 hmac = "0.13.0"
 pbkdf2 = "0.13.0"
 sha2 = "0.11.1"
+# Inflates offline replay bundles (.gsreplay ZIP entries).
+miniz_oxide = "0.8.9"
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
 futures-channel = "0.3.34"

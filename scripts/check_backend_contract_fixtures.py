@@ -23,8 +23,16 @@ SNAPSHOT = ROOT / "tests" / "fixtures" / "backend-contract"
 DEFAULT_BACKEND = ROOT.parent / "GroundStation26" / "backend" / "tests" / "contract-fixtures"
 
 
+# JSON replies and frames, plus replay bundles and the CSVs they must reproduce.
+FIXTURE_SUFFIXES = {".json", ".gsreplay", ".csv"}
+
+
 def json_files(directory: Path) -> set[str]:
-    return {p.relative_to(directory).as_posix() for p in directory.rglob("*.json")}
+    return {
+        p.relative_to(directory).as_posix()
+        for p in directory.rglob("*")
+        if p.is_file() and p.suffix in FIXTURE_SUFFIXES
+    }
 
 
 def differences(backend: Path, snapshot: Path) -> list[str]:

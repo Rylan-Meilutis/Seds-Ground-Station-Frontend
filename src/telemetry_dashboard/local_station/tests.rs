@@ -192,3 +192,41 @@ fn live_row_ingest_cost() {
     println!("live_row_ingest_cost: {rows_seen} rows, {per_row_ns:.0} ns/row; offline sessions alive: {}", live_sessions());
     assert_eq!(live_sessions(), 0);
 }
+
+const BUNDLE: &[u8] = include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/flight.gsreplay");
+const STATION_CSV: &[u8] = include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/flight.csv");
+
+#[test]
+fn a_station_bundle_opens_with_everything_and_exports_the_station_csv() {
+    let s = bundle::open("flight.gsreplay", BUNDLE).unwrap();
+    assert_eq!(s.mode, Mode::Flight);
+    assert_eq!(s.samples.len(), 601);
+    assert!(s.layout["state_tab"].is_object(), "layout from the bundle");
+    assert!(s.vehicle_geometry.is_some(), "vehicle geometry from the bundle");
+    assert!(!s.diagrams.is_empty(), "station diagrams from the bundle");
+    assert!(!s.derived.is_empty(), "flight review figures from the bundle");
+    assert!(s.boards.iter().any(|b| b.sender == "FC" && b.label != "FC"), "board names from the bundle");
+    assert!(s.track(i64::MAX).len() > 100);
+    // Round trip: the CSV exported offline is the station's own CSV export of the recording.
+    assert_eq!(s.csv.as_deref().map(Vec::as_slice), Some(STATION_CSV));
+    assert!(std::str::from_utf8(STATION_CSV).unwrap().starts_with("id,"));
+    assert_eq!(s.manifest.as_ref().unwrap()["version"], 1);
+}
+
+#[test]
+fn bundles_are_verified_and_newer_versions_refused() {
+    let mut files = bundle::unzip(BUNDLE).unwrap();
+    assert!(bundle::verify(&files).is_ok());
+    let mut tampered = files.clone();
+    tampered.get_mut("data/telemetry.csv").unwrap().push(b'x');
+    assert!(bundle::verify(&tampered).err().unwrap().contains("does not match its manifest hash"));
+    let mut manifest: Value = serde_json::from_slice(&files["manifest.json"]).unwrap();
+    manifest["version"] = 2.into();
+    files.insert("manifest.json".into(), serde_json::to_vec(&manifest).unwrap());
+    assert!(bundle::verify(&files).err().unwrap().contains("newer than this app understands"));
+    manifest["format"] = "zip".into();
+    files.insert("manifest.json".into(), serde_json::to_vec(&manifest).unwrap());
+    assert!(bundle::verify(&files).err().unwrap().contains("Not a ground-station replay bundle"));
+    assert!(bundle::open("x.gsreplay", b"PK\x03\x04 not really").is_err());
+    assert!(!bundle::is_bundle(b"{\"format\":\"seds-replay\"}"));
+}
