@@ -134,6 +134,8 @@ fn replay_files_open_in_every_mode_and_degrade_without_config() {
     assert!(s.boards.iter().any(|b| b.sender == "VB"));
     assert!(s.vehicle_geometry.is_none());
     assert!(s.notes.iter().any(|n| n.contains("generic rocket")));
+    let document = s.replay_document.as_ref().unwrap();
+    assert!(document["view_config"]["stages"].is_array() && document["valve_mappings"].is_array() && document["layout"].is_object(), "the 3D player gets the sections it requires");
     assert!(replay_file::open("x.json", "{\"format\":\"csv\"}").err().unwrap().contains("Not a SEDS replay"));
     assert!(replay_file::open("x.json", "{\"format\":\"seds-replay\",\"version\":2,\"samples\":[]}").err().unwrap().contains("newer"));
     assert!(replay_file::open("x.json", "not json").is_err());

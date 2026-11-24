@@ -15822,5 +15822,104 @@
     "start_ms": 1767225600000,
     "upper_id": 601
   },
-  "version": 1
+  "valve_mappings": [
+    {
+      "data_type": "VALVE_STATE",
+      "false_label": "Closed",
+      "index": 0,
+      "label": "Pilot valve",
+      "true_label": "Open"
+    },
+    {
+      "data_type": "VALVE_STATE",
+      "false_label": "Closed",
+      "index": 1,
+      "label": "Normally-open valve",
+      "true_label": "Open"
+    },
+    {
+      "data_type": "VALVE_STATE",
+      "false_label": "Closed",
+      "index": 2,
+      "label": "Dump valve",
+      "true_label": "Open"
+    }
+  ],
+  "version": 1,
+  "view_config": {
+    "attitude": {
+      "pitch": null,
+      "roll": null,
+      "yaw": null
+    },
+    "camera_orbit": "",
+    "flight_phase_version": 1,
+    "ground_model_url": "/assets/models/gse-site.glb",
+    "ground_systems": [],
+    "model_alt": "Single-stage rocket with aft fins",
+    "model_url": "/assets/models/vehicle.glb",
+    "motions": [
+      {
+        "axis": [
+          0.0,
+          1.0,
+          0.0
+        ],
+        "binding": null,
+        "from": 0.0,
+        "node": "motor-flame",
+        "phase_values": {
+          "*": 0.0,
+          "Ascent": 1.0
+        },
+        "to": 1.0,
+        "transform": "visible"
+      },
+      {
+        "axis": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "binding": null,
+        "from": 0.001,
+        "node": "drogue-parachute",
+        "phase_values": {
+          "*": 0.0,
+          "Descent": 1.0
+        },
+        "to": 1.0,
+        "transform": "scale"
+      },
+      {
+        "axis": [
+          1.0,
+          1.0,
+          1.0
+        ],
+        "binding": null,
+        "from": 0.001,
+        "node": "main-parachute",
+        "phase_values": {
+          "*": 0.0,
+          "Landed": 1.0,
+          "Recovery": 1.0,
+          "Reefing": 1.0
+        },
+        "to": 1.0,
+        "transform": "scale"
+      }
+    ],
+    "phase_animations": {},
+    "renderer_url": "/assets/three/vehicle-renderer.js",
+    "stages": [
+      {
+        "components": [],
+        "id": "stage-1",
+        "label": "Single stage",
+        "separation": null
+      }
+    ],
+    "title": "Rocket"
+  }
 }

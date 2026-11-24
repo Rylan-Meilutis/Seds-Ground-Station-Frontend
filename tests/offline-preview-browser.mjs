@@ -18,7 +18,7 @@ try {
  const nav=page.getByRole('navigation',{name:'Mission navigation'});
  const open=async label=>{await nav.getByRole('link',{name:label,exact:true}).click();await page.getByRole('heading',{name:label,exact:true,level:1}).waitFor();};
  const pages={
-  'Dashboard':['Oxidizer mass','Valves'],'Mission':['Flight procedure','Abort'],'Map':['Recorded GPS track'],
+  'Dashboard':['Oxidizer mass','Valves'],'Mission':['Flight procedure','Abort'],'Map':['Map tiles are not loaded'],
   'Replay & summary':['Flight summary','Apogee (barometer)'],'Data':['Tank pressure'],'Diagrams':['Fill system'],
   'Network':['Flight Computer','Warnings'],'Calibration':['Fill loadcell (KG50)'],'Recordings':['Demo flight (this scenario)'],
  };
@@ -37,7 +37,8 @@ try {
   assert(!/\bNaN\b|undefined/.test(await page.locator('main').innerText()),label+' (replay) renders no NaN');}
  await open('Replay & summary');await page.getByText('Apogee (barometer)').waitFor();
  await page.getByRole('button',{name:'Load 3D replay'}).click();await page.getByRole('img',{name:'Flight vehicle and named valve states'}).waitFor({timeout:30000});
- await open('Mission');await page.getByRole('button').filter({hasText:'Launch'}).first().click();await page.getByText(/read-only/).waitFor();
+ await open('Mission');await page.getByText('Replays are read-only; commands are not sent.').waitFor();
+ await open('Calibration');await page.getByRole('button',{name:'Capture zero'}).count().then(n=>assert.equal(n,0,'no calibration actions in a replay'));
  for(const width of [320,390,844,1280]){await page.setViewportSize({width,height:844});
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no page overflow '+width);
   if(shots)await page.screenshot({path:`${shots}/offline-workspace-${width}.png`});}

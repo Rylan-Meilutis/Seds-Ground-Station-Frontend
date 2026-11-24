@@ -171,6 +171,7 @@ pub(crate) fn layout() -> Value {
             "sender_split_data_types": ["BATTERY_VOLTAGE"],
             "tabs": [
                 tab("OX_TANK_PRESSURE", "Tank pressure", json!(["Pressure"]), json!([fmt(0, " psi")])),
+                tab("PRESSURE_TRANSDUCER_CALIBRATED", "Tank transducer (VB)", json!(["Pressure"]), json!([fmt(0, " psi")])),
                 tab("LOADCELL_50_WEIGHT_KG", "Fill loadcell", json!(["Mass"]), json!([fmt(2, " kg")])),
                 tab("LOADCELL_FILL_PERCENT", "Fill level", json!(["Level"]), json!([fmt(0, " %")])),
                 tab("COMBUSTION_CHAMBER_PRESSURE", "Chamber pressure", json!(["Pressure"]), json!([fmt(0, " psig")])),
@@ -278,7 +279,7 @@ fn samples() -> Vec<Sample> {
 
 fn alerts() -> Vec<Alert> {
     vec![
-        Alert { t_ms: 3_000, warning: true, message: "Demo: GPS has 3D fix with 11 satellites; dashboard shows example data only.".into() },
+        Alert { t_ms: 25_000, warning: true, message: "Fill box battery (GB) below 14.8 V (demo warning).".into() },
         Alert { t_ms: 61_000, warning: true, message: "Tank pressure dip while venting (demo warning).".into() },
         Alert { t_ms: 160_000, warning: true, message: "Radio link margin low: RSSI below −85 dBm (demo warning).".into() },
         Alert { t_ms: 300_000, warning: true, message: "Avionics battery (PB) below 7.5 V (demo warning).".into() },

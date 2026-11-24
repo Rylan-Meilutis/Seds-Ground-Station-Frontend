@@ -119,6 +119,13 @@ pub(crate) fn open(file_name: &str, text: &str) -> Result<Session, String> {
     });
     let mut document = file.clone();
     document["mode"] = mode.player_mode().into();
+    // The 3D player needs these sections; an older or hand-made file without
+    // them still plays with generic labels.
+    for (field, empty) in [("schema", serde_json::json!({})), ("view_config", serde_json::json!({"stages": [], "ground_systems": []})), ("layout", serde_json::json!({})), ("valve_mappings", serde_json::json!([]))] {
+        if !document[field].is_object() && !document[field].is_array() {
+            document[field] = empty;
+        }
+    }
     Ok(Session::new(SessionParts {
         source: Source::Replay { file_name: file_name.to_string() },
         title: file["recording"].as_str().filter(|r| !r.is_empty()).unwrap_or(file_name).to_string(),

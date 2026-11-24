@@ -480,6 +480,10 @@ impl super::live_diagrams::derive::Inputs for DiagramInputs<'_> {
     fn status(&self, key: &str) -> Option<super::live_diagrams::derive::Observed> {
         let text = match key {
             "flight_state" => self.session.state_at(self.at),
+            "fill_phase" => {
+                let state = self.session.state_at(self.at);
+                if state.contains("Fill") { state } else { "Not filling".into() }
+            }
             "provenance" => self.session.provenance.clone(),
             k if k.starts_with("topology:") => {
                 return self.board(k.trim_start_matches("topology:"));

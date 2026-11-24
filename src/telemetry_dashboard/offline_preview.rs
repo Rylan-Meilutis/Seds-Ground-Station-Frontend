@@ -131,22 +131,21 @@ struct Lane {
     points: Vec<(i64, f32)>,
 }
 
-/// Stacked lanes, one per series, each on its own scale.
+/// Stacked lanes, one per series, each on its own scale. Labels are HTML so
+/// they keep their size at any width; only the traces are scaled.
 fn lane_chart(aria: String, lanes: Vec<Lane>, from: i64, to: i64, cursor: Option<i64>) -> Element {
-    const W: f64 = 600.0;
-    const H: f64 = 64.0;
+    const W: f64 = 1000.0;
+    const H: f64 = 100.0;
     let span = (to - from).max(1) as f64;
-    let height = (H * lanes.len().max(1) as f64).max(H);
     let cursor_x = cursor.map(|c| ((c - from) as f64 / span * W).clamp(0.0, W));
-    let lanes: Vec<(String, String, String, String, f64)> = lanes
+    let lanes: Vec<(String, String, String, String)> = lanes
         .into_iter()
-        .enumerate()
-        .map(|(i, lane)| {
-            let top = i as f64 * H;
+        .map(|lane| {
             let (mut lo, mut hi) = lane.points.iter().fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| (lo.min(p.1), hi.max(p.1)));
             if !lo.is_finite() {
                 (lo, hi) = (0.0, 1.0);
             }
+            let range = if lane.points.is_empty() { "no samples".to_string() } else { format!("{lo:.1} … {hi:.1}") };
             if (hi - lo).abs() < 1e-6 {
                 lo -= 1.0;
                 hi += 1.0;
@@ -157,26 +156,25 @@ fn lane_chart(aria: String, lanes: Vec<Lane>, from: i64, to: i64, cursor: Option
                 .enumerate()
                 .map(|(k, (t, v))| {
                     let x = ((*t - from) as f64 / span * W).clamp(0.0, W);
-                    let y = top + 8.0 + (1.0 - ((v - lo) / (hi - lo)) as f64) * (H - 20.0);
+                    let y = 6.0 + (1.0 - ((v - lo) / (hi - lo)) as f64) * (H - 12.0);
                     format!("{}{x:.1} {y:.1}", if k == 0 { "M" } else { "L" })
                 })
                 .collect::<String>();
-            let range = format!("{lo:.1} … {hi:.1}");
-            (lane.label, lane.current, path, range, top)
+            (lane.label, lane.current, path, range)
         })
         .collect();
     rsx! {
-        svg { class: "gs26-preview-chart", view_box: "0 0 {W} {height}", role: "img", "aria-label": "{aria}", preserve_aspect_ratio: "none",
-            for (label, current, path, range, top) in lanes {
-                g {
-                    line { x1: "0", x2: "{W}", y1: "{top + H - 0.5}", y2: "{top + H - 0.5}", stroke: "#24364b" }
-                    path { d: "{path}", fill: "none", stroke: "#67d5c8", stroke_width: "2", vector_effect: "non-scaling-stroke" }
-                    text { x: "6", y: "{top + 14.0}", fill: "#dbeafe", font_size: "11", "{label}: {current}" }
-                    text { x: "{W - 6.0}", y: "{top + 14.0}", fill: "#94a3b8", font_size: "10", text_anchor: "end", "{range}" }
+        div { class: "gs26-preview-lanes", role: "img", "aria-label": "{aria}",
+            for (label, current, path, range) in lanes {
+                div { class: "gs26-preview-lane",
+                    div { class: "gs26-preview-lane-head", span { "{label}: " strong { "{current}" } } small { "{range}" } }
+                    svg { view_box: "0 0 {W} {H}", preserve_aspect_ratio: "none", "aria-hidden": "true",
+                        path { d: "{path}", fill: "none", stroke: "#67d5c8", stroke_width: "2", vector_effect: "non-scaling-stroke" }
+                        if let Some(x) = cursor_x {
+                            line { x1: "{x}", x2: "{x}", y1: "0", y2: "{H}", stroke: "#e8c77f", stroke_width: "1.5", stroke_dasharray: "4 3", vector_effect: "non-scaling-stroke" }
+                        }
+                    }
                 }
-            }
-            if let Some(x) = cursor_x {
-                line { x1: "{x}", x2: "{x}", y1: "0", y2: "{height}", stroke: "#e8c77f", stroke_dasharray: "4 3" }
             }
         }
     }
@@ -210,6 +208,7 @@ fn track_map(session: &Session, at: i64) -> Element {
     let full = line(&all);
     let flown = line(&track);
     let drift = ((all.last().unwrap().0 - all[0].0) * 110_540.0).hypot((all.last().unwrap().1 - all[0].1) * 111_320.0 * coslat);
+    let grid_m = 40.0 / scale;
     let position = track.last().map(|p| format!("{:.5}°, {:.5}° · {:.0} m", p.0, p.1, p.2)).unwrap_or_else(|| "On the pad".into());
     rsx! {
         svg { class: "gs26-preview-map", view_box: "0 0 600 280", role: "img", "aria-label": "Recorded GPS track",
@@ -221,7 +220,7 @@ fn track_map(session: &Session, at: i64) -> Element {
             text { x: "{sx + 10.0}", y: "{sy + 4.0}", fill: "#dbeafe", font_size: "12", "Pad" }
             if let Some((x, y)) = here { circle { cx: "{x}", cy: "{y}", r: "6", fill: "#e8c77f" } }
         }
-        p { class: "gs26-preview-note", "Rocket: {position} · landing {drift:.0} m from the pad. Map tiles are not loaded without a station; the track is drawn on a 40-unit grid." }
+        p { class: "gs26-preview-note", "Rocket: {position} · landing {drift:.0} m from the pad. Map tiles are not loaded without a station; grid squares are {grid_m:.0} m." }
     }
 }
 
@@ -411,6 +410,7 @@ pub fn OfflinePreview(
         style {{include_str!("navigation_rail.css")}}
         style {{include_str!("controls.css")}}
         style {{live_diagrams::render::CSS}}
+        style {{live_diagrams::PAGE_CSS}}
         style {{include_str!("offline_preview.css")}}
         div { class: "gs26-offline-preview", style: shell_style, "data-source": if demo_mode { "demo" } else { "replay" },
             ondragover: move |e| e.prevent_default(),
@@ -574,8 +574,8 @@ pub fn OfflinePreview(
                                     let vars = live_diagrams::render::theme_vars(&theme);
                                     rsx! {
                                         div { class: "gs26-pid-page", style: "{vars}",
-                                            div { class: "gs26-preview-data-tabs", role: "toolbar", "aria-label": "Diagram",
-                                                for d in list.iter() { button { r#type: "button", "aria-pressed": (d.id == t.id).to_string(), class: if d.id == t.id { "selected" } else { "" }, onclick: { let id = d.id.clone(); move |_| diagram.set(id.clone()) }, "{d.title}" } }
+                                            div { class: "gs26-pid-toolbar", role: "toolbar", "aria-label": "Diagram",
+                                                for d in list.iter() { button { r#type: "button", "aria-pressed": (d.id == t.id).to_string(), onclick: { let id = d.id.clone(); move |_| diagram.set(id.clone()) }, "{d.title}" } }
                                             }
                                             live_diagrams::DiagramPanel { topology: t, state, program: false, provenance: s.provenance.clone() }
                                         }
@@ -592,11 +592,13 @@ pub fn OfflinePreview(
                                         use super::network_health::board_display::{Health, health_line};
                                         let age = b["age_ms"].as_i64();
                                         let health = match age { Some(a) if a < 2_000 => Health::Healthy, Some(a) if a < 10_000 => Health::Unhealthy, _ => Health::Stale };
-                                        let detail = age.map(|a| format!("seen {} · {} packets", age_text(a), b["packet_count"])).unwrap_or_else(|| "not seen".into());
+                                        let detail = age.map(age_text).unwrap_or_else(|| "not seen".into());
+                                        let packets = format!("{} packets", b["packet_count"].as_u64().unwrap_or(0));
                                         let (label, sender) = (text_of(&b["board_label"]), text_of(&b["sender_id"]));
                                         rsx! { div { class: "gs26-preview-board",
                                             span { strong { "{label}" } small { " {sender}" } }
-                                            {health_line("network", "Network", health, &detail)}
+                                            {health_line("network", "Last packet", health, &detail)}
+                                            small { "{packets}" }
                                         } }
                                     }
                                 }
@@ -630,7 +632,7 @@ pub fn OfflinePreview(
                                             let result = async {
                                                 let text = serde_json::to_string(&document).map_err(|e| e.to_string())?;
                                                 let encoded = serde_json::to_string(&text).map_err(|e| e.to_string())?;
-                                                let script = format!("{}\nconst root=document.getElementById({});root.__player?.dispose();root.__player=GSOfflineReplay.mount(root,{encoded});return 'ok';", super::recording_download::offline_replay_script()?, serde_json::to_string(&id).unwrap_or_default());
+                                                let script = format!("{}\ntry{{const root=document.getElementById({});root.__player?.dispose();root.__player=GSOfflineReplay.mount(root,{encoded});return 'ok';}}catch(e){{return String(e&&e.message||e);}}", super::recording_download::offline_replay_script()?, serde_json::to_string(&id).unwrap_or_default());
                                                 document::eval(&script).join::<String>().await.map_err(|e| e.to_string())
                                             }.await;
                                             if let Err(e) = result { file_status.set(format!("3D replay unavailable: {e}")); }
