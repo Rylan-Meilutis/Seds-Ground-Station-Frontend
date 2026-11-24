@@ -30,7 +30,10 @@ This page covers what the app does on each device.
   sends a location track. It has its own explicit opt-in on each device, for
   one running search, with a visible "Sharing" indicator and "Stop sharing"
   (backend-contract.md, "Recovery search"). The proximity lock never uses
-  it, and opting in to one never opts in to the other.
+  it, and opting in to one never opts in to the other. While it shares, the
+  track keeps recording with the app in the background ("Recovery search in
+  the background" below), reusing this page's location permission flow but
+  never its participation default.
 
 ## Decision on the device
 
@@ -115,6 +118,13 @@ on the phone.
 - Python: `tests/test_proximity_lock_platform.py` (manifest, Play Services
   location dependency, iOS usage strings and background mode added once,
   the shim's symbols and that it has no networking).
+- Recovery search in the background: Rust `recovery_search` tests (the
+  gate, background fixes through the same outbox), `recovery_search_native`
+  (the native queue), `recovery_search_view` (the panel's note); Kotlin
+  `SearchTrackPolicyTest`; Python
+  `tests/test_search_track_background_platform.py` (manifests, the services,
+  the plists, the shim, that the native code starts only from the gate and
+  sends nothing).
 - The iOS shim is Objective-C and is not compiled on Linux; there is no Swift
   in the phone app.
 
@@ -153,3 +163,108 @@ the map (or note "pad").
     than the timeout.
 13. RRLS: a device signed in to the RRLS in range: commands sent from the RRLS
     are refused there (409) before forwarding.
+
+## Recovery search in the background
+
+A recovery search track (Map tab; backend-contract.md, "Recovery search")
+keeps recording while the app is in the background, but only for a user who
+shares it.
+
+### The gate
+
+`recovery_search::background_recording(mode, supported, permission)` is true
+only when all of these hold:
+
+- the device **shares**: the station's search is running and the station
+  accepted **this device's own opt-in** ("Share my track for this search…",
+  confirmed) for that session (`recovery_search::mode` is `Sharing`). The
+  proximity lock's "everyone takes part by default" never applies here;
+- the platform can record in the background (iOS, Android, the watches);
+- the OS location permission is granted. "While using" is enough, because
+  recording always starts from the user's tap in the open app; the app never
+  asks for "Always" / "Allow all the time" for the search. A user who never
+  allowed location is asked for "while using" from the opt-in tap, through
+  the proximity lock's permission flow (`proximity_native::request_permission`).
+
+The runtime (`recovery_search_view`) evaluates the gate every second and
+starts or stops the native recorder (`recovery_search_native`). It stops at
+once when the user presses Stop sharing (in the app, or in the Android
+notification), when the station reports the search stopped, another session,
+or the opt-in gone, when the station refuses an upload as not opted in, when
+location is no longer allowed, and when the dashboard goes away. A
+local-only track ("Draw my track on this map only") never records in the
+background.
+
+### One path for every fix
+
+The native recorder keeps every fix in a bounded buffer (iOS: in the shim;
+Android: a Rust queue filled over JNI; 20,000 fixes, oldest dropped). The
+runtime takes them every second and feeds them through the same thinning,
+persisted outbox (`recovery_search_outbox_v1`) and upload as foreground
+fixes (`recovery_search::record_fixes`); while the recorder runs, its fixes
+replace the dashboard's location so each fix is recorded once with its own
+time and accuracy. The upload needs no app in front: the location
+background mode (iOS) or the foreground service (Android) keeps the process
+and its Rust loop running. If the OS still pauses the loop, fixes wait in the
+native buffer; if there is no signal, they wait in the outbox and go when the
+station is reachable again. If the OS kills the app, recording stops; fixes
+already in the outbox are uploaded when the app runs again (during the
+station's late-upload window).
+
+### Platforms
+
+| Platform | How | Visible to the user |
+| --- | --- | --- |
+| iOS | `assets/SearchTrackShim.m`: its own CLLocationManager, `allowsBackgroundLocationUpdates` while sharing (`UIBackgroundModes` `location`, already declared for the proximity lock), best accuracy, 5 m distance filter, no automatic pausing. Stops (and drops its buffer) on stop or when location is turned off. | The blue location indicator (`showsBackgroundLocationIndicator = YES`) whenever it records in the background; the app's red "● Sharing" indicator. |
+| Android | `SearchTrackBridge`, `SearchTrackService`: a foreground service of type `location` (fused location every 5 s / 5 m) started by Rust from the open app. Manifest: `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_LOCATION`, FINE/COARSE, `POST_NOTIFICATIONS` (asked once on Android 13+ when sharing starts). No `ACCESS_BACKGROUND_LOCATION` is needed or asked for: a location service started while the app is in front keeps "while in use" access. | Ongoing notification "Recovery search: sharing your track" with "Stop sharing". Without the notification permission (Android 13+) the service still runs and shows in the task manager. |
+| Apple Watch | Background location updates (`UIBackgroundModes` `location` in the watch app), only while the watch records its shared track (docs/watch-companion.md, "Recovery search"). | The watch's "● SHARING TRACK" page and the system location indicator. |
+| Wear OS | `SearchTrackService` (watch app): a foreground service of type `location`, started from the open app while the watch records. | Ongoing "Recovery search" notification with "Stop sharing". |
+| macOS, Windows, Linux, web | No background recording: records while the app or page is open (the panel says so). | |
+
+Android may refuse to start the service when the app is not in front
+(Android 12+), for example after a restart in the background: the app then
+records while open and Rust asks again every 30 s. App Store and Play
+review: the search uses the existing "location" background mode and the
+Play foreground service type `location` declaration (rationale: a recovery
+search track the user chose to share, shown while it runs).
+
+### Device test steps
+
+Station: start a recovery search (Map tab). Phones signed in, location
+"while using" allowed.
+
+1. **Not opted in** (iOS, Android): with a search running, do not share.
+   Background the app for 5 minutes and walk: no blue indicator (iOS), no
+   "Recovery search" notification (Android), and the station lists no track
+   for the device.
+2. **iOS**: "Share my track for this search…", confirm. The panel says it
+   keeps recording in the background. Lock the phone and walk 300 m: the
+   blue indicator shows; the station's map draws the track as you walk (no
+   app in front). Unlock: the track has no gap.
+3. **iOS, no signal**: walk out of coverage with the phone locked, come
+   back: the missing part uploads (the panel's "waiting for signal" count
+   falls to 0).
+4. **iOS, stop**: the station stops the search with the phone locked: the
+   blue indicator goes away within a few seconds of the next status poll.
+   Share again and press Stop sharing: the indicator goes at once.
+5. **Android**: share and confirm. On Android 13+ allow notifications. The
+   "Recovery search: sharing your track" notification appears. Switch to
+   another app, lock the screen, walk 300 m: the track appears on the
+   station. "Stop sharing" in the notification: the notification goes, the
+   station shows the device no longer sharing, the app's panel agrees.
+6. **Android, end**: share again, stop the search on the station with the
+   app in the background: the notification goes after the next status poll.
+7. **Android, permissions**: deny notifications on Android 13+: sharing
+   still records in the background (the service shows in the task manager).
+   Revoke location in Settings while sharing: recording stops; the panel
+   asks to allow location.
+8. **Apple Watch**: share on the watch ("Share watch track…"). Lower the
+   wrist and walk for 5 minutes: the watch keeps "fixes waiting" and the
+   phone relays them (station map). Stop the search: the watch stops
+   location (no location indicator) after its next snapshot.
+9. **Wear OS**: share on the watch. The "Recovery search" notification
+   appears; let the screen go ambient and walk: the track reaches the
+   station through the phone. "Stop sharing" in the notification ends it.
+10. **Force quit** (any): recording stops; reopen the app: fixes taken
+    before the quit are uploaded.
+

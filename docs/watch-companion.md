@@ -663,8 +663,31 @@ can share its own track, relayed by the phone.
   the snapshot says `active` and `sharing` for the same session. While it
   records it shows a red "● SHARING TRACK" and "Stop sharing". Fixes are
   thinned (5 m or 30 s, accuracy at most 100 m), numbered by the watch and
-  kept in a persisted buffer of at most 5,000. Location runs while sharing
-  (Apple Watch: while the app is in front; Wear OS: while the app runs).
+  kept in a persisted buffer of at most 5,000. Location runs only while the
+  watch records, and then also with the wrist down or another app in front:
+  * Apple Watch: background location updates (`UIBackgroundModes`
+    `location`), started from the app in front when recording starts. Every
+    fix goes to the recorder from the location callback (the 2 s tick does
+    not run in the background) and the buffer goes to the phone at most every
+    10 s; updates stop as soon as the watch no longer records (Stop sharing,
+    or a snapshot that ends the search).
+  * Wear OS: `SearchTrackService`, a foreground service of type `location`
+    with an ongoing "Recovery search" notification and "Stop sharing",
+    started from the open app while recording. It keeps the Data Layer
+    listener (so it learns when the search ends), records through
+    `PhoneLink.searchTick` and stops itself when the watch no longer records.
+    It uses a plain ongoing notification; the Ongoing Activity API would need
+    `androidx.wear:wear-ongoing`, which the build does not use yet.
+  * Not a workout session (`HKWorkoutSession` / Health Services exercise):
+    that needs HealthKit or Health Services permissions, records the walk as
+    a workout in the user's health data and Activity rings, and App Review
+    expects a fitness feature. Background location started from the app in
+    front gives the same continuous GPS for a search. If device tests show
+    watchOS suspending a long search anyway, a workout session is the
+    fallback.
+  If the phone is not reachable (or its app is suspended), fixes wait on the
+  watch and go when the phone is back; the phone accepts them only for the
+  watch's current opt-in and session.
 * **Relay.** The watch sends `search_track` (at most 100 fixes, oldest first)
   to a reachable phone every 2 s. The phone takes custody in its own
   persisted outbox (`recovery_search_watch_outbox_v1`) and acknowledges the

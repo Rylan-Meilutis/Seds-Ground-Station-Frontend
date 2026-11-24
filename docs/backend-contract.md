@@ -796,6 +796,12 @@ location ever leaves the device):
   The station refuses anything else and the device discards its buffer when
   refused, when the search's late-upload window closes, or when the user
   stops sharing.
+- While it shares, the device keeps recording with the app in the
+  background (iOS background location with the blue indicator, Android's
+  location foreground service with a "Recovery search" notification), only
+  under the same opt-in and running search, and stops when either ends
+  ([proximity-lock.md](proximity-lock.md), "Recovery search in the
+  background"). Background fixes take the same outbox and upload.
 - "Draw my track on this map only (never sent)" records the device's own
   track for its own map. It is never uploaded.
 - The station keeps the tracks only for the session. An administrator can
