@@ -385,6 +385,8 @@ pub(super) fn RecordingStorePanel(
     let mut minutes = use_signal(|| "2".to_string());
     let mut pending_delete = use_signal(|| None::<String>);
     let bundle_media = use_signal(super::bundle_media_options::BundleMedia::default);
+    // Replay bundles optionally carry the station's Excel/PDF reports (`?reports=true`).
+    let mut bundle_reports = use_signal(|| false);
     let mut draft = use_signal(|| None::<Settings>);
     use_effect(move || {
         let _ = refresh();
@@ -504,6 +506,10 @@ pub(super) fn RecordingStorePanel(
             }
             h4 { "Event captures ({size_label(current.captures_bytes)})" }
             super::bundle_media_options::BundleMediaToggles { choice: bundle_media }
+            label { title: "Adds the station's Excel and PDF reports of the whole recording (up to 16 MB) to each replay bundle you download. Without them the offline app builds the same reports itself.",
+                input { r#type: "checkbox", "data-bundle-reports": "", checked: bundle_reports(), onchange: move |e| bundle_reports.set(e.checked()) }
+                " Include the Excel and PDF reports in replay bundles"
+            }
             if current.groups.is_empty() { p { "No event captures yet. Launches, aborts and every station sequence are captured automatically." } }
             for group in current.groups.iter() {
                 details { key: "{group.event_type}", open: true,
@@ -550,7 +556,12 @@ pub(super) fn RecordingStorePanel(
                                             busy.set(true);
                                             spawn(async move {
                                                 let name = format!("{}.gsreplay", id.trim_end_matches(".db"));
-                                                let query = bundle_media.peek().query();
+                                                let media = bundle_media.peek().query();
+                                                let query = match (media.is_empty(), bundle_reports()) {
+                                                    (true, true) => "?reports=true".to_string(),
+                                                    (false, true) => format!("{media}&reports=true"),
+                                                    _ => media,
+                                                };
                                                 let result = super::recording_download::download_csv_path_owned(&format!("/api/recordings/{id}/bundle{query}"), &name, owner.clone()).await;
                                                 if owner.is_current() { message.set(result.unwrap_or_else(|error| format!("Download failed: {error}"))); }
                                                 busy.set(false);
