@@ -636,7 +636,7 @@ impl LocalStation {
         }
         // Exports (CSV, reports, review zips) as the station writes them, from a bundle.
         if let Some(inputs) = &self.session.exports
-            && let Some(answer) = super::exports::answer(inputs, path_and_query)
+            && let Some(answer) = super::exports::answer_at(inputs, path_and_query, wall)
         {
             return match answer {
                 Ok(file) => reply(200, file.bytes, file.content_type),

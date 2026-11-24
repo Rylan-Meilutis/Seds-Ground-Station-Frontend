@@ -17,7 +17,7 @@ block = { path = "vendor-block" }
 ios-event-loop-patch = "Tao 0.34.8 common-mode observers; see vendor-tao/GROUNDSTATION-PATCH.md"
 
 [dependencies]
-time = { version = "0.3.55", features = ["parsing", "macros"] }
+time = { version = "0.3.55", features = ["parsing", "macros", "formatting"] }
 dioxus = { version = "0.7.10", default-features = false }
 dioxus-router = "0.7.10"
 
@@ -29,6 +29,10 @@ pbkdf2 = "0.13.0"
 sha2 = "0.11.1"
 # Inflates offline replay bundles (.gsreplay ZIP entries).
 miniz_oxide = "0.8.9"
+# The motor/flight review exports offline (local_station/exports/review): the
+# station's ZIP writer, byte for byte (same deflate, same CRC).
+flate2 = "1.1.10"
+crc32fast = "1.5.0"
 getrandom = { version = "0.4.3", features = ["wasm_js"] }
 
 futures-channel = "0.3.34"

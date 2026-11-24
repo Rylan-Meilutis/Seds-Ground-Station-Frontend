@@ -7,7 +7,8 @@
 //! | `GET /api/recordings/{id}/csv` | `data/telemetry.csv`, unchanged |
 //! | `GET /api/recordings/csv?start_ms&end_ms` | the rows of `data/telemetry.csv` in the range, behind a `recording` column (this recording only) |
 //! | `GET /api/recordings/report?request=` | `preview`, `csv`, `daq_csv`, `daq_tsv` computed here ([`report`]); `xlsx`/`pdf` need the station |
-//! | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | `exports/*.zip` from the bundle, for the default window only |
+//! | `GET /api/flight_review/recording/{id}/motor_export`, `.../flight_export` | without a window: `exports/*.zip` from the bundle; with `from_ms`/`to_ms`: computed here ([`review`]) as the station sends it with `raster=false` |
+//! | `GET /api/flight_review/recording/{id}?from_ms&to_ms` | the review of that window, computed here ([`review`]); without a window the bundle's `derived/flight_review.json` answers |
 //!
 //! An SD-resolved recording (GroundStation26 `recording_sd`) has two
 //! timelines. Its CSV and its reports read the resolved rows, each with its
@@ -21,6 +22,7 @@
 //! `replay-bundle/exports/`; `local_station/tests.rs` compares).
 mod py;
 mod report;
+pub(crate) mod review;
 
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -49,7 +51,11 @@ pub(crate) struct HistoryRow {
 #[derive(Clone, Debug)]
 pub(crate) struct BundledZip {
     pub filename: String,
+    /// The default window the file covers (`exports/index.json`); a request
+    /// with any window is computed instead.
+    #[allow(dead_code)]
     pub from_ms: Option<i64>,
+    #[allow(dead_code)]
     pub to_ms: Option<i64>,
     pub bytes: Vec<u8>,
 }
@@ -72,6 +78,9 @@ pub(crate) struct ExportInputs {
     pub export_index: bool,
     /// By kind (`motor_export`, `flight_export`).
     pub zips: BTreeMap<String, BundledZip>,
+    /// `derived/review_inputs.json` (+ the hybrid motor model): reviews and
+    /// review exports of any window. `None` for an older bundle.
+    pub review: Option<review::Bundle>,
 }
 
 impl ExportInputs {
@@ -107,7 +116,8 @@ impl ExportInputs {
             }
         }
         let receipt_csv = files.get("data/receipt_telemetry.csv").map(|b| Rc::new(b.clone()));
-        Self { recording: recording.to_owned(), csv, receipt_csv, calibration_history, report_context: json("config/report_context.json"), export_index: index.is_some(), zips }
+        let review = review::Bundle::from_files(files);
+        Self { recording: recording.to_owned(), csv, receipt_csv, calibration_history, report_context: json("config/report_context.json"), export_index: index.is_some(), zips, review }
     }
 }
 
@@ -118,7 +128,14 @@ const NEED_STATION: u16 = 501;
 /// The answer to an export request, `None` when `path_and_query` is not an
 /// export route. `path_and_query` is the request as the UI makes it, for
 /// example `/api/recordings/csv?start_ms=1&end_ms=2`.
+#[cfg(test)]
 pub(crate) fn answer(inputs: &ExportInputs, path_and_query: &str) -> Option<Answer> {
+    answer_at(inputs, path_and_query, super::super::current_wallclock_ms())
+}
+
+/// [`answer`] at wall-clock time `now_ms` (the review's `created_ms`, an
+/// export's `generated_ms`).
+pub(crate) fn answer_at(inputs: &ExportInputs, path_and_query: &str, now_ms: i64) -> Option<Answer> {
     let (path, query) = path_and_query.split_once('?').unwrap_or((path_and_query, ""));
     let segments: Vec<String> = path.trim_start_matches('/').split('/').map(|s| decode(s, false)).collect();
     let segments: Vec<&str> = segments.iter().map(String::as_str).collect();
@@ -127,7 +144,8 @@ pub(crate) fn answer(inputs: &ExportInputs, path_and_query: &str) -> Option<Answ
         ["api", "recordings", "csv"] => Some(range_csv(inputs, &query)),
         ["api", "recordings", "report"] => Some(report_answer(inputs, &query)),
         ["api", "recordings", id, "csv"] => Some(recording_csv(inputs, id)),
-        ["api", "flight_review", "recording", id, kind @ ("motor_export" | "flight_export")] => Some(review_export(inputs, id, kind, &query)),
+        ["api", "flight_review", "recording", id, kind @ ("motor_export" | "flight_export")] => Some(review_export(inputs, id, kind, &query, now_ms)),
+        ["api", "flight_review", "recording", id] if query.contains_key("from_ms") || query.contains_key("to_ms") => Some(review_summary(inputs, id, &query, now_ms)),
         _ => None,
     }
 }
@@ -345,14 +363,37 @@ fn report_answer(inputs: &ExportInputs, query: &BTreeMap<String, String>) -> Ans
     Ok(ExportFile { bytes, content_type, filename })
 }
 
-/// The UI's whole-second rendering of a window (`flight_review_view::ExportControls`).
-fn form_window(from: i64, to: i64) -> (i64, i64) {
-    (from.div_euclid(1000) * 1000, (to + 999).div_euclid(1000) * 1000)
+fn window(query: &BTreeMap<String, String>) -> Result<(Option<i64>, Option<i64>), (u16, String)> {
+    let number = |name: &str| -> Result<Option<i64>, (u16, String)> {
+        query.get(name).map(|v| v.parse::<i64>().map_err(|_| (400, format!("Failed to deserialize query string: {name}: invalid digit found in string")))).transpose()
+    };
+    Ok((number("from_ms")?, number("to_ms")?))
 }
 
-fn review_export(inputs: &ExportInputs, id: &str, kind: &str, query: &BTreeMap<String, String>) -> Answer {
+fn no_review_inputs() -> (u16, String) {
+    (NEED_STATION, "This bundle holds no review inputs; a custom window needs the station.".into())
+}
+
+/// The review of a custom window (`review::summary`).
+fn review_summary(inputs: &ExportInputs, id: &str, query: &BTreeMap<String, String>, now_ms: i64) -> Answer {
     if id != inputs.recording {
         return Err((404, "Recording not found. Refresh the recording list.".into()));
+    }
+    let (from, to) = window(query)?;
+    let bundle = inputs.review.as_ref().ok_or_else(no_review_inputs)?;
+    Ok(ExportFile { bytes: review::summary(bundle, from, to, now_ms)?, content_type: "application/json", filename: String::new() })
+}
+
+fn review_export(inputs: &ExportInputs, id: &str, kind: &str, query: &BTreeMap<String, String>, now_ms: i64) -> Answer {
+    if id != inputs.recording {
+        return Err((404, "Recording not found. Refresh the recording list.".into()));
+    }
+    let (from, to) = window(query)?;
+    if from.is_some() || to.is_some() {
+        // A window: computed as the station computes it (no PNG/PDF).
+        let bundle = inputs.review.as_ref().ok_or_else(no_review_inputs)?;
+        let (filename, bytes) = review::export(bundle, kind, from, to, now_ms)?;
+        return Ok(ExportFile { bytes, content_type: "application/zip", filename });
     }
     let Some(zip) = inputs.zips.get(kind) else {
         return Err(match (inputs.export_index, kind) {
@@ -361,17 +402,5 @@ fn review_export(inputs: &ExportInputs, id: &str, kind: &str, query: &BTreeMap<S
             (false, _) => (NEED_STATION, "This bundle holds no review exports; export from the station.".into()),
         });
     };
-    let number = |name: &str| query.get(name).and_then(|v| v.parse::<i64>().ok());
-    let window = (number("from_ms"), number("to_ms"));
-    let default = match (zip.from_ms, zip.to_ms) {
-        (Some(from), Some(to)) => window == (Some(from), Some(to)) || window == {
-            let (a, b) = form_window(from, to);
-            (Some(a), Some(b))
-        },
-        _ => false,
-    };
-    if window != (None, None) && !default {
-        return Err((NEED_STATION, "Offline, the bundle holds the export of the default window only; a custom window needs the station.".into()));
-    }
     Ok(ExportFile { bytes: zip.bytes.clone(), content_type: "application/zip", filename: zip.filename.clone() })
 }
