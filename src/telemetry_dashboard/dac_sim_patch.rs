@@ -27,8 +27,10 @@ async fn sleep_ms(ms: u32) {
 }
 
 /// The patch section for the control document: each DAC output to one input or none.
-pub(super) fn patch_body(links: &[Option<String>; 2], attenuation: &[f64; 2]) -> Value {
-    json!({"patch": {"dac1": links[0], "dac2": links[1], "dac1_attenuation": attenuation[0], "dac2_attenuation": attenuation[1]}})
+/// The links only: the station merges `patch` per key, so the attenuations
+/// set elsewhere (a test tool) are kept rather than reset to 1.
+pub(super) fn patch_body(links: &[Option<String>; 2]) -> Value {
+    json!({"patch": {"dac1": links[0], "dac2": links[1]}})
 }
 
 /// Current links from `/api/firmware-sim` (bay.plant.dac.patch).
@@ -72,7 +74,7 @@ pub(super) fn DacSimPatchView(theme: ThemeConfig, status: Value, admin: bool) ->
     let y_in = |i: usize| 15.0 + row_h * i as f64;
     let y_dac = |c: usize| height / 3.0 * (c as f64 + 1.0);
     let mut send = move |next: [Option<String>; 2]| {
-        let body = patch_body(&next, &[1.0, 1.0]);
+        let body = patch_body(&next);
         let owner = super::recording_download::ExportOwner::capture_ordinary_selected(|| true);
         let request = super::station_settings_request::post_captured::<_, Value>("/api/firmware-sim/control", &body, owner);
         message.set("Patching...".into());
@@ -141,9 +143,10 @@ mod tests {
     fn links_and_body_round_trip() {
         let links = links_from(&status());
         assert_eq!(links, [Some("hvain1".to_string()), None]);
-        let body = patch_body(&links, &[1.0, 1.0]);
+        let body = patch_body(&links);
         assert_eq!(body["patch"]["dac1"], "hvain1");
         assert!(body["patch"]["dac2"].is_null());
+        assert!(body["patch"].get("dac1_attenuation").is_none(), "attenuations are not reset by re-patching");
         assert!(INPUTS.iter().all(|(id, _)| !id.starts_with("sar")), "only inputs the plant routes");
     }
 

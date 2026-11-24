@@ -87,23 +87,20 @@ impl ControlDraft {
             let x: f64 = s.trim().parse().map_err(|_| format!("{name} must be a number"))?;
             if (lo..=hi).contains(&x) { Ok(x) } else { Err(format!("{name} must be {lo} to {hi}")) }
         };
+        // Every fault this panel edits is sent, off as false/0: the station
+        // merges `faults` per key, so faults set elsewhere (P10 swap, drift)
+        // are kept and the ones switched off here are cleared.
         let mut faults = serde_json::Map::new();
         for (k, on) in &self.faults {
-            if *on {
-                faults.insert(k.clone(), json!(true));
-            }
+            faults.insert(k.clone(), json!(*on));
         }
         for (name, s, lo, hi) in [("KG50 bypass", &self.kg50_bypass, 0.0, 1.0), ("KG1000 bypass", &self.kg1000_bypass, 0.0, 1.0)] {
             let x = f(name, s, lo, hi)?;
-            if x > 0.0 {
-                faults.insert(if name.starts_with("KG50") { "kg50_bypass" } else { "kg1000_bypass" }.into(), json!(x));
-            }
+            faults.insert(if name.starts_with("KG50") { "kg50_bypass" } else { "kg1000_bypass" }.into(), json!(x));
         }
         let stuck: serde_json::Map<String, Value> =
             self.stuck.iter().filter(|(_, s)| s == "open" || s == "closed").map(|(v, s)| (v.clone(), json!(s))).collect();
-        if !stuck.is_empty() {
-            faults.insert("stuck_valves".into(), Value::Object(stuck));
-        }
+        faults.insert("stuck_valves".into(), Value::Object(stuck));
         let mut body = json!({
             "plant": {"qd_connected": self.qd_connected, "nitrogen_bottle_open": self.nitrogen_bottle_open,
                       "nitrous_bottle_open": self.nitrous_bottle_open},
@@ -299,6 +296,10 @@ mod tests {
         let body = d.body().unwrap();
         assert_eq!(body["faults"]["stuck_valves"]["vent"], "closed");
         assert_eq!(body["faults"]["radio_drop"], true);
+        assert_eq!(body["faults"]["gps_no_fix"], false, "faults switched off here are cleared explicitly");
+        assert_eq!(body["faults"]["kg50_bypass"], 0.0);
+        assert!(body["faults"].get("p10_inputs_swapped").is_none() && body["faults"].get("kg50_drift_kg_per_c").is_none(),
+            "faults this panel does not edit are left to the station's per-key merge");
         assert_eq!(body["loads"]["kg50_kg"], 10.0);
         assert!(body.get("igt").is_none());
         let mut bad = d.clone();
