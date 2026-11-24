@@ -342,7 +342,9 @@ fn gse_model_path(config: Option<&super::vehicle_tab::VehicleVisualizationConfig
 
 fn sync_scene(status: &Status, model_path: &str) {
     let url = serde_json::to_string(&super::vehicle_tab::backend_url(model_path)).unwrap();
-    let renderer = serde_json::to_string(&super::vehicle_tab::backend_url("/assets/model-viewer.min.js")).unwrap();
+    // With a local station the UI's own copy of the renderer serves.
+    let base = if super::station_link::is_local() { String::new() } else { UrlConfig::base_http() };
+    let renderer = serde_json::to_string(&format!("{base}/assets/model-viewer.min.js")).unwrap();
     let animation = match status.phase.as_str() {
         "raising" | "settling" | "holding" => "nitrogen-test",
         "filling" => "nitrous-fill",
