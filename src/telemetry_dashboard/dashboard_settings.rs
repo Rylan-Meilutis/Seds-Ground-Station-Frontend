@@ -1200,11 +1200,8 @@ fn NetworkTimeBadge(network_time: Signal<Option<NetworkTimeSync>>, language: Str
 }
 
 fn format_launch_clock_delta(ms: i64) -> String {
-    let total_centis = (ms.max(0) + 5) / 10;
-    let minutes = total_centis / 6_000;
-    let seconds = (total_centis / 100) % 60;
-    let centis = total_centis % 100;
-    format!("{minutes:02}:{seconds:02}.{centis:02}")
+    // Nearest hundredth; the shared formatter truncates.
+    crate::telemetry_dashboard::tclock::tclock_body(ms.max(0).unsigned_abs().saturating_add(5), 2)
 }
 
 fn launch_clock_tminus_remaining_ms(clock: &LaunchClockMsg, now_ms: i64) -> Option<i64> {
@@ -1309,6 +1306,17 @@ mod launch_clock_tests {
     use std::sync::Mutex;
 
     static MONOTONIC_TMINUS_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn header_value_keeps_hundredths_and_extends_past_an_hour() {
+        use super::format_launch_clock_delta as f;
+        assert_eq!(f(9_167), "00:09.17");
+        assert_eq!(f(-50), "00:00.00");
+        assert_eq!(f(3_599_996), "1:00:00.00");
+        assert_eq!(f(6_000_000), "1:40:00.00");
+        assert_eq!(f(93_784_000), "1:02:03:04.00");
+        assert_eq!(f(i64::MAX), "106751991167:07:12:55.81");
+    }
 
     #[test]
     fn tminus_holds_duration_until_backend_anchor_arrives() {
@@ -1571,10 +1579,10 @@ fn LaunchClockBadge(
                 .duration_ms
                 .and_then(|_| monotonic_tminus_display_ms(clock, None))
                 .map(format_launch_clock_delta)
-                .unwrap_or_else(|| "--:--.-".to_string()),
+                .unwrap_or_else(|| crate::telemetry_dashboard::tclock::TCLOCK_UNKNOWN_BODY.to_string()),
             LaunchClockKind::TPlus => launch_clock_tplus_elapsed_ms(clock, None, None)
                 .map(format_launch_clock_delta)
-                .unwrap_or_else(|| "--:--.-".to_string()),
+                .unwrap_or_else(|| crate::telemetry_dashboard::tclock::TCLOCK_UNKNOWN_BODY.to_string()),
             LaunchClockKind::Idle => format_launch_clock_delta(
                 clock
                     .duration_ms

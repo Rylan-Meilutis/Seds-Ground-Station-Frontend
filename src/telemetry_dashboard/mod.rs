@@ -80,6 +80,7 @@ mod recording_store_view;
 mod saved_replay;
 mod host_power_admin;
 mod recovery_marker;
+pub(crate) mod tclock;
 mod auto_vent_notice;
 mod fc_estimator_notice;
 pub(crate) mod igt;

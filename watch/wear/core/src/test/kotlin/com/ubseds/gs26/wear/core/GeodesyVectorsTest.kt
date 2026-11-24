@@ -77,6 +77,18 @@ class GeodesyVectorsTest {
         }
     }
 
+    /** Same `tclock_format` vectors as tclock.rs, tclock.js and the Swift core. */
+    @Test
+    fun tclockVectors() {
+        val cases = vectors["tclock_format"]!!.jsonArray.map { it.jsonObject }
+        assertTrue(cases.size >= 10)
+        for (c in cases) {
+            val ms = c["ms"]!!.jsonPrimitive.long
+            val digits = c["fraction_digits"]!!.jsonPrimitive.long.toInt()
+            assertEquals("$ms", c["text"]!!.jsonPrimitive.content, Format.tclock(ms, digits))
+        }
+    }
+
     @Test
     fun arrowVectors() {
         for (c in vectors["arrow"]!!.jsonArray.map { it.jsonObject }) {

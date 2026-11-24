@@ -55,16 +55,13 @@ async fn sleep_ms(ms: u32) {
     tokio::time::sleep(std::time::Duration::from_millis(ms as u64)).await;
 }
 
-/// Demo clock as the mission header shows it: T− before ignition, T+ after.
+/// Demo clock as the mission header shows it: T- before ignition, T+ after.
 fn mission_clock(session: &Session, at: i64) -> String {
     let launch = session.states.iter().find(|(_, s)| s == "Launch").map(|(t, _)| *t + if session.is_demo() { 10_000 } else { 0 });
     let Some(launch) = launch else {
         return format!("{:.1} s", (at - session.start_ms()) as f64 / 1000.0);
     };
-    let d = at - launch;
-    let s = d.abs() / 1000;
-    let tenths = (d.abs() % 1000) / 100;
-    format!("T{} {:02}:{:02}.{}", if d < 0 { "−" } else { "+" }, s / 60, s % 60, tenths)
+    super::tclock::format_tclock_ms(at.saturating_sub(launch), 1)
 }
 
 fn format_item(value: f32, formatter: &Value) -> String {

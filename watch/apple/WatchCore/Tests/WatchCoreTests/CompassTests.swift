@@ -117,8 +117,25 @@ final class CompassTests: XCTestCase {
         XCTAssertEqual(clockText(LaunchClock(kind: "tminus", ms: 5_000), elapsedMs: 1_500), "T- 00:03")
         XCTAssertEqual(clockText(LaunchClock(kind: "tminus", ms: 5_000), elapsedMs: 9_000), "T- 00:00")
         XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: 83_000), elapsedMs: 1_500), "T+ 01:24")
-        XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: 6_000_000), elapsedMs: 0), "T+ 100:00")
+        XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: 6_000_000), elapsedMs: 0), "T+ 1:40:00")
+        XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: 93_784_000), elapsedMs: 0), "T+ 1:02:03:04")
+        XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: .max), elapsedMs: .max), "T+ 106751991167:07:12:55")
+        XCTAssertEqual(clockText(LaunchClock(kind: "tminus", ms: .min), elapsedMs: .max), "T- 00:00")
         XCTAssertEqual(clockText(LaunchClock(kind: "tplus", ms: 1_000), elapsedMs: -5_000), "T+ 00:01")
         XCTAssertNil(clockText(LaunchClock(kind: "idle", ms: 0), elapsedMs: 0))
+    }
+
+    /// Same `tclock_format` vectors as tclock.rs, tclock.js and the Wear core.
+    func testTClockVectors() throws {
+        struct Case: Decodable { let ms: Int64; let fraction_digits: Int; let text: String }
+        struct Vectors: Decodable { let tclock_format: [Case] }
+        let packageDir = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let url = packageDir.appendingPathComponent("../../test-vectors.json").standardizedFileURL
+        let cases = try JSONDecoder().decode(Vectors.self, from: Data(contentsOf: url)).tclock_format
+        XCTAssertGreaterThanOrEqual(cases.count, 10)
+        for c in cases {
+            XCTAssertEqual(tclockText(msFromT0: c.ms, fractionDigits: c.fraction_digits), c.text, "\(c.ms)")
+        }
     }
 }

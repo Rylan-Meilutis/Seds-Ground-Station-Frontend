@@ -47,14 +47,7 @@ fn utc(ms: i64) -> String {
         .unwrap_or_else(|| format!("{ms} UTC milliseconds"))
 }
 fn elapsed(ms: i64) -> String {
-    let sign = if ms < 0 { "−" } else { "+" };
-    let seconds = ms.unsigned_abs() / 1000;
-    format!(
-        "T{sign}{:02}:{:02}:{:02}",
-        seconds / 3600,
-        seconds / 60 % 60,
-        seconds % 60
-    )
+    super::tclock::format_tclock_ms(ms, 0)
 }
 static RECOVERY_STATUS: GlobalSignal<Status> = Signal::global(Status::default);
 
@@ -189,7 +182,8 @@ mod tests {
     }
     #[test]
     fn signed_elapsed() {
-        assert_eq!(elapsed(-10000), "T−00:00:10");
-        assert_eq!(elapsed(90000), "T+00:01:30");
+        assert_eq!(elapsed(-10000), "T- 00:10");
+        assert_eq!(elapsed(90000), "T+ 01:30");
+        assert_eq!(elapsed(3_723_000), "T+ 1:02:03");
     }
 }

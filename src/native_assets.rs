@@ -46,6 +46,10 @@ pub(crate) fn station_asset(path: &str) -> Option<(&'static str, &'static [u8])>
             "text/javascript; charset=utf-8",
             include_bytes!("../station_ui/rendering/three/software-renderer.js"),
         )),
+        "/assets/three/tclock.js" => Some((
+            "text/javascript; charset=utf-8",
+            include_bytes!("../station_ui/rendering/three/tclock.js"),
+        )),
         "/assets/three/three.core.js" => Some((
             "text/javascript; charset=utf-8",
             include_bytes!("../station_ui/rendering/three/three.core.js"),
@@ -99,6 +103,7 @@ mod tests {
             "/assets/three/BufferGeometryUtils.js",
             "/assets/three/software-renderer.js",
             "/assets/three/replay-scene.js",
+            "/assets/three/tclock.js",
             "/assets/models/vehicle.glb",
             "/assets/models/gse-site.glb",
         ] {

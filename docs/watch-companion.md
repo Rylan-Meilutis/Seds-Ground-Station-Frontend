@@ -277,9 +277,11 @@ Snapshot (phone → watch), abridged:
   publishers.
 * `items` holds every registry item; a missing value has `text:"--"`,
   `level:"unknown"`. `level` is `normal|warn|alert|unknown`.
-* `clock.kind` is `idle|tminus|tplus`. The watch shows `T- mm:ss` counting
-  down from `ms` (clamped at 0) or `T+ mm:ss` counting up, from the receive
-  instant.
+* `clock.kind` is `idle|tminus|tplus`. The watch shows `T- MM:SS` counting
+  down from `ms` (clamped at 0) or `T+ MM:SS` counting up, from the receive
+  instant. From one hour the clock is `H:MM:SS` and from one day `D:HH:MM:SS`
+  (`T+ 1:02:03:04`), the same text as the phone and station (`tclock_format`
+  in `watch/test-vectors.json`).
 * Ages (`age_ms`) are at send time; the watch adds time since it received the
   snapshot. A target is stale when `stale` is true or its current age exceeds
   `settings.compass.stale_after_s`.

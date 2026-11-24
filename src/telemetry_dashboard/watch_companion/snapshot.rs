@@ -78,10 +78,10 @@ fn fmt_number(value: f64, precision: usize) -> String {
 }
 
 pub fn clock_text(clock: &Clock) -> String {
-    let s = clock.ms.max(0) / 1000;
+    let magnitude = clock.ms.max(0).unsigned_abs();
     match clock.kind {
-        "tminus" => format!("T- {:02}:{:02}", s / 60, s % 60),
-        "tplus" => format!("T+ {:02}:{:02}", s / 60, s % 60),
+        "tminus" => crate::telemetry_dashboard::tclock::format_tclock(true, magnitude, 0),
+        "tplus" => crate::telemetry_dashboard::tclock::format_tclock(false, magnitude, 0),
         _ => "Idle".into(),
     }
 }
@@ -639,6 +639,20 @@ mod tests {
                 ms: -5
             }),
             "T- 00:00"
+        );
+        assert_eq!(
+            clock_text(&Clock {
+                kind: "tplus",
+                ms: 6_000_000
+            }),
+            "T+ 1:40:00"
+        );
+        assert_eq!(
+            clock_text(&Clock {
+                kind: "tplus",
+                ms: i64::MAX
+            }),
+            "T+ 106751991167:07:12:55"
         );
         assert_eq!(
             clock_text(&Clock {

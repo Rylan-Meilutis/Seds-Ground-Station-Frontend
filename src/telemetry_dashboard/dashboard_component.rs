@@ -2943,7 +2943,7 @@ fn TelemetryDashboardInner() -> Element {
              .gs26-status-flight {{ display:flex; align-items:baseline; gap:0.35rem; min-width:0; width:fit-content; max-width:100%; flex-wrap:nowrap; white-space:nowrap; line-height:1.1; margin:0; padding:0.04rem 0.12rem 0.07rem 0; }}
              .gs26-status-flight {{ grid-column:1; grid-row:2; }}
              .gs26-launch-clock {{ display:inline-flex; align-items:baseline; line-height:1; white-space:nowrap; vertical-align:baseline; color:var(--gs26-app-text,#f8fafc); font-weight:800; }}
-             .gs26-launch-clock-value {{ display:inline-flex; align-items:baseline; width:9ch; padding-left:0.35ch; line-height:1; text-align:left; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; }}
+             .gs26-launch-clock-value {{ display:inline-flex; align-items:baseline; min-width:9ch; padding-left:0.35ch; line-height:1; text-align:left; font-family:var(--gs-font-mono); font-variant-numeric:tabular-nums; }}
              .gs26-status-network {{ grid-column:2; grid-row:1; justify-self:end; line-height:1; }}
              .gs26-status-launch {{ grid-column:2; grid-row:2; justify-self:end; line-height:1; }}
              .gs26-status-ack {{ grid-column:2; grid-row:3; justify-self:end; }}

@@ -275,6 +275,119 @@
    "text": "0s"
   }
  ],
+ "_comment_tclock": "T-clock text (Rust tclock.rs, station_ui/rendering/three/tclock.js, Swift Clock.swift, Kotlin Format.tclock): ms from T-0 (negative = before), fraction digits truncated. MM:SS under 1 h, H:MM:SS from 1 h, D:HH:MM:SS from 1 day; the lead field never wraps.",
+ "tclock_format": [
+  {
+   "ms": 0,
+   "fraction_digits": 0,
+   "text": "T+ 00:00"
+  },
+  {
+   "ms": 0,
+   "fraction_digits": 2,
+   "text": "T+ 00:00.00"
+  },
+  {
+   "ms": 59999,
+   "fraction_digits": 0,
+   "text": "T+ 00:59"
+  },
+  {
+   "ms": 59999,
+   "fraction_digits": 2,
+   "text": "T+ 00:59.99"
+  },
+  {
+   "ms": -59999,
+   "fraction_digits": 0,
+   "text": "T- 00:59"
+  },
+  {
+   "ms": -59999,
+   "fraction_digits": 1,
+   "text": "T- 00:59.9"
+  },
+  {
+   "ms": -1,
+   "fraction_digits": 0,
+   "text": "T- 00:00"
+  },
+  {
+   "ms": 83000,
+   "fraction_digits": 0,
+   "text": "T+ 01:23"
+  },
+  {
+   "ms": 3599999,
+   "fraction_digits": 0,
+   "text": "T+ 59:59"
+  },
+  {
+   "ms": 3600000,
+   "fraction_digits": 0,
+   "text": "T+ 1:00:00"
+  },
+  {
+   "ms": -3600000,
+   "fraction_digits": 2,
+   "text": "T- 1:00:00.00"
+  },
+  {
+   "ms": 6000000,
+   "fraction_digits": 0,
+   "text": "T+ 1:40:00"
+  },
+  {
+   "ms": 86399999,
+   "fraction_digits": 0,
+   "text": "T+ 23:59:59"
+  },
+  {
+   "ms": 86400000,
+   "fraction_digits": 0,
+   "text": "T+ 1:00:00:00"
+  },
+  {
+   "ms": 93784000,
+   "fraction_digits": 0,
+   "text": "T+ 1:02:03:04"
+  },
+  {
+   "ms": 356461000,
+   "fraction_digits": 0,
+   "text": "T+ 4:03:01:01"
+  },
+  {
+   "ms": -34560000000,
+   "fraction_digits": 0,
+   "text": "T- 400:00:00:00"
+  },
+  {
+   "ms": 4294967295,
+   "fraction_digits": 0,
+   "text": "T+ 49:17:02:47"
+  },
+  {
+   "ms": 2147483647,
+   "fraction_digits": 3,
+   "text": "T+ 24:20:31:23.647"
+  },
+  {
+   "ms": -2147483648,
+   "fraction_digits": 0,
+   "text": "T- 24:20:31:23"
+  },
+  {
+   "ms": 9223372036854775807,
+   "fraction_digits": 0,
+   "text": "T+ 106751991167:07:12:55"
+  },
+  {
+   "ms": -9223372036854775808,
+   "fraction_digits": 3,
+   "text": "T- 106751991167:07:12:55.808"
+  }
+ ],
  "arrow": [
   {
    "bearing_true": 0,

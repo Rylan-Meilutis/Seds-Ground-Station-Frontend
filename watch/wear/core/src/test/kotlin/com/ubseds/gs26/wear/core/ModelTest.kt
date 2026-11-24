@@ -172,7 +172,10 @@ class ModelTest {
         assertEquals(Level.UNKNOWN, st.item("velocity", 0).level)
         assertEquals("T- 00:03", Format.clock(Clock("tminus", 5_000), "x", 1_200))
         assertEquals("T- 00:00", Format.clock(Clock("tminus", 5_000), "x", 9_000))
-        assertEquals("T- 61:05", Format.clock(Clock("tminus", 3_665_000), "x", 0))
+        assertEquals("T- 1:01:05", Format.clock(Clock("tminus", 3_665_000), "x", 0))
+        assertEquals("T+ 1:02:03:04", Format.clock(Clock("tplus", 93_784_000), "x", 0))
+        assertEquals("T+ 106751991167:07:12:55", Format.clock(Clock("tplus", Long.MAX_VALUE), "x", Long.MAX_VALUE))
+        assertEquals("T- 00:00", Format.clock(Clock("tminus", Long.MIN_VALUE), "x", Long.MAX_VALUE))
         assertEquals("Hold", Format.clock(Clock("idle", 0), "Hold", 9_000))
     }
 
