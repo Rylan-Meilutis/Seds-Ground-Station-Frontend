@@ -3,7 +3,13 @@
 Pushing a tag `v<version>b<build>` runs `.github/workflows/release.yml`. It
 builds the release apps, signs Android and macOS with the production
 identities from repository secrets, and publishes a GitHub Release named
-`Version <version> Build <build>`, like the earlier releases.
+`Version <version> Build <build>`, like the earlier releases. When their
+secrets exist it also uploads the iOS app to **TestFlight** and an Android App
+Bundle to the **Google Play internal testing track**. Nothing ever goes to a
+public App Store or Play release.
+
+The run refuses to sign anything unless it comes from a protected ref and the
+tag's commit is on `main` or `dev` (section 0).
 
 | Job | Runner | Assets |
 |---|---|---|
@@ -14,7 +20,10 @@ identities from repository secrets, and publishes a GitHub Release named
 | `android` android-armv7 | ubuntu-24.04 | `SEDS.GS_armv7.apk` (armeabi-v7a, production-signed) |
 | `macos` macos | macos-15 | `UBSEDS.GS.dmg` (Apple silicon, Developer ID, notarized and stapled) |
 | `macos` macos-intel | macos-15-intel | `UBSEDS.GS_x86_64.dmg` (Intel, Developer ID, notarized and stapled) |
-| `publish` | ubuntu-24.04 | all of the above, plus `SHA256SUMS` |
+| `publish` | ubuntu-24.04 | all of the above, plus `SHA256SUMS` (not in a dry run) |
+| `dry-run` | ubuntu-24.04 | manual dry runs only: checks the signed set, publishes nothing |
+| `testflight` | macos-15 | `UBSEDS GS.ipa` (App Store signed) uploaded to App Store Connect / TestFlight; not a GitHub asset |
+| `play` | ubuntu-24.04 | `SEDS GS.aab` (arm64-v8a, upload-key signed) uploaded to the Play **internal** track; not a GitHub asset |
 
 The names are the ones GitHub showed for v0.3.1b35 (GitHub turns spaces into
 dots). There are a few differences:
@@ -23,7 +32,7 @@ dots). There are a few differences:
   builds it with `PKGEXT=.pkg.tar.gz`.
 - New assets: deb, rpm, Linux arm64, the armv7 APK and the Intel DMG.
 
-iOS, watchOS and Wear OS are not part of the release.
+watchOS and Wear OS are not part of the release. iOS goes only to TestFlight.
 
 Every job runs the same `scripts/ci/frontend.py bootstrap` and `build.py`
 code paths as the build-only CI (`platforms.yml`), with warnings fatal:
@@ -38,6 +47,70 @@ code paths as the build-only CI (`platforms.yml`), with warnings fatal:
     `notarize_macos` runs `notarytool submit --wait`, `stapler staple`,
     `stapler validate` and spctl.
 
+## 0. Protected refs (once)
+
+The `version` job runs `frontend.py release-guard` before anything else. It
+refuses the run unless all of these hold:
+
+- it is a tag push of `refs/tags/<tag>`, or a `workflow_dispatch` started from
+  `main` or `dev`;
+- GitHub reports that ref as protected (`GITHUB_REF_PROTECTED`, which is
+  `github.ref_protected`), so a ruleset must cover it;
+- after fetching `origin/main` and `origin/dev`,
+  `git merge-base --is-ancestor <tag commit> origin/<branch>` succeeds for one
+  of them.
+
+Every job that touches a secret (`android`, `macos`, `testflight`, `play`),
+and `publish`, needs `version` to succeed with `guarded == 'true'`. Those jobs
+run in the `release` environment.
+
+On 2026-11-24 this repository had **no rulesets and no environments**, so the
+guard refuses every release until the following are applied. They only add
+settings. `R=Rylan-Meilutis/Seds-Ground-Station-Frontend`:
+
+```sh
+R=Rylan-Meilutis/Seds-Ground-Station-Frontend
+
+# 1. Release tags: only admins create them; nobody moves or deletes them.
+cat > /tmp/release-tags.json <<'JSON'
+{"name": "Release tags", "target": "tag", "enforcement": "active",
+ "conditions": {"ref_name": {"include": ["refs/tags/v*.*.*b*"], "exclude": []}},
+ "rules": [{"type": "creation"}, {"type": "update"}, {"type": "deletion"}, {"type": "non_fast_forward"}],
+ "bypass_actors": [{"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}]}
+JSON
+gh api -X POST "repos/$R/rulesets" --input /tmp/release-tags.json
+
+# 2. Release branches: no force-push, no deletion (direct pushes to dev still work).
+cat > /tmp/release-branches.json <<'JSON'
+{"name": "Release branches", "target": "branch", "enforcement": "active",
+ "conditions": {"ref_name": {"include": ["refs/heads/main", "refs/heads/dev"], "exclude": []}},
+ "rules": [{"type": "deletion"}, {"type": "non_fast_forward"}]}
+JSON
+gh api -X POST "repos/$R/rulesets" --input /tmp/release-branches.json
+
+# 3. The release environment: deployable only from release tags, main and dev.
+gh api -X PUT "repos/$R/environments/release" \
+  -F 'deployment_branch_policy[protected_branches]=false' \
+  -F 'deployment_branch_policy[custom_branch_policies]=true'
+gh api -X POST "repos/$R/environments/release/deployment-branch-policies" -f name='v*.*.*b*' -f type=tag
+gh api -X POST "repos/$R/environments/release/deployment-branch-policies" -f name=main -f type=branch
+gh api -X POST "repos/$R/environments/release/deployment-branch-policies" -f name=dev -f type=branch
+
+# Check
+gh api "repos/$R/rulesets" --jq '.[] | {id, name, target, enforcement}'
+gh api "repos/$R/environments/release/deployment-branch-policies" --jq '.branch_policies[] | {name, type}'
+```
+
+Actor 5 is the repository Admin role. Do not add required reviewers to
+`release` unless you want to approve each signing job by hand.
+
+Optional and stronger: move the signing secrets from repository secrets to
+`release` environment secrets, so that only jobs passing the environment's
+policy can read them. Set each one again from the Mac with
+`gh secret set <NAME> --env release -R "$R"`, then delete the repository copy
+with `gh secret delete <NAME> -R "$R"`. The workflow reads `secrets.<NAME>`
+either way.
+
 ## Signing material: only in the release workflow, only from secrets
 
 - `platforms.yml` (push/PR CI) never sees a secret. Android CI APKs are signed
@@ -45,7 +118,7 @@ code paths as the build-only CI (`platforms.yml`), with warnings fatal:
   are unsigned.
 - `tests/test_ci_release.py` enforces where secrets can appear:
   - only in `release.yml`;
-  - only in the `android` and `macos` jobs;
+  - only in the `android`, `macos`, `testflight` and `play` jobs;
   - only in step `env:`, never in `run:` text;
   - in each signing job, the last step is `release-cleanup` with `if: always()`.
 - The signing files are decoded into `$RUNNER_TEMP/seds-release-signing/`
@@ -57,7 +130,15 @@ code paths as the build-only CI (`platforms.yml`), with warnings fatal:
   expected files and refuses keystores, `.p12`, `.p8` and keychains.
 - Build logs (`ci-results/`) of the signing jobs are never uploaded.
 - If the secrets are missing, the job fails with a message naming them. There
-  is no fallback to a development key or to an unsigned DMG.
+  is no fallback to a development key or to an unsigned DMG. The store jobs
+  are the exception: with none of their store secrets set they skip with a
+  notice, and `publish` does not depend on them.
+- The store jobs upload no workflow artifacts. The `.p8` and the Play
+  service-account key are written only for the upload command and deleted
+  right after it.
+- Each signing job writes the expiry of its certificate (and of the App Store
+  profile) to the job summary. It adds a warning annotation when the expiry is
+  under 30 days away, but never fails the job.
 
 ## 1. Bump the version
 
@@ -67,7 +148,8 @@ code paths as the build-only CI (`platforms.yml`), with warnings fatal:
    release to the next. For example, 0.3.1 build 36 is 301036.
 2. Optional: write release notes in `docs/release-notes/v<version>b<build>.md`.
    Without that file the release uses GitHub's `--generate-notes`.
-3. Merge to `main` (earlier releases were tagged from `main`).
+3. Merge to `main` or `dev`. The release guard refuses tags on any other
+   branch. Earlier releases were tagged from `main`.
 
 The `version` job refuses a tag that does not equal
 `v<Cargo version>b<Dioxus build>`.
@@ -173,6 +255,139 @@ The job summary records:
 
 Until the Apple secrets exist, run the workflow manually with "skip macOS"
 (below). A tag push without them fails the macOS job and publishes nothing.
+On 2026-11-24 `APPLE_NOTARY_KEY_P8_B64`, `APPLE_NOTARY_KEY_ID` and
+`APPLE_NOTARY_ISSUER_ID` did not exist yet, so **releasing with "skip macOS"
+is the default** until the App Store Connect key is created. `APPLE_TEAM_ID`
+alone does not enable the Apple ID fallback; the error names the API-key
+secrets first.
+
+### iOS → TestFlight
+
+| Secret | Value |
+|---|---|
+| `IOS_DISTRIBUTION_P12_B64` | base64 of the Apple Distribution certificate and private key, exported as `.p12` |
+| `IOS_DISTRIBUTION_P12_PASSWORD` | the `.p12` export password |
+| `IOS_APPSTORE_PROFILE_B64` | base64 of the **App Store** provisioning profile for `com.UBSEDS.GS26`, made with that certificate |
+| `APPLE_NOTARY_KEY_P8_B64`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID` | the same App Store Connect API key as notarization. It also uploads builds (Developer role or higher) |
+
+On the Mac (`R` as above):
+
+```sh
+base64 -i ios-distribution.p12 | gh secret set IOS_DISTRIBUTION_P12_B64 -R "$R"
+gh secret set IOS_DISTRIBUTION_P12_PASSWORD -R "$R"
+base64 -i GS26_AppStore.mobileprovision | gh secret set IOS_APPSTORE_PROFILE_B64 -R "$R"
+```
+
+The `testflight` job runs these steps:
+
+1. `release-store-check --store testflight`: with none of the three `IOS_*`
+   secrets set, it ends with a "TestFlight upload skipped" notice. With some
+   set, any missing one (including the `APPLE_NOTARY_*` key) fails the job.
+2. `release-ios-signing`: decodes the profile into `$RUNNER_TEMP` and refuses
+   it unless it is an App Store profile whose `application-identifier` is
+   `<team>.com.UBSEDS.GS26`: no device list, not enterprise, no
+   `get-task-allow`, not expired. It imports the `.p12` into a temporary
+   keychain, then requires exactly one Apple Distribution identity whose
+   certificate the profile lists.
+3. `release-store-build`: `build.py --target ios --release --final`. That is
+   the existing distribution path. `package_ios_ipa_with_script` with
+   `sign_kind="distribution"` runs `scripts/ios_package_sign.sh`, which
+   chooses the identity from the keychain search list by the profile's
+   certificates, applies the profile's entitlements and zips
+   `dist/ipas/UBSEDS GS.ipa`.
+4. `release-store-verify` checks:
+   - the bundle id;
+   - `CFBundleShortVersionString` is the Cargo version and `CFBundleVersion`
+     is the Dioxus build;
+   - the embedded App Store profile;
+   - `codesign --verify --deep --strict`;
+   - the Apple Distribution authority.
+5. `release-store-upload`: `xcrun altool --upload-app --type ios --apiKey <id>
+   --apiIssuer <issuer>`. `AuthKey_<id>.p8` is placed in
+   `$RUNNER_TEMP/seds-release-signing/appstoreconnect-home/.appstoreconnect/private_keys`,
+   which is `HOME` / `API_PRIVATE_KEYS_DIR` for that command only, and is
+   deleted when altool exits. Rerunning a build number that App Store Connect
+   already has ("Redundant Binary Upload") is reported, not failed.
+
+The build shows up in App Store Connect → TestFlight after processing. It is
+never submitted for App Store review; that stays a manual step.
+
+**The Apple Watch app is not in the IPA.**
+
+- `build_targets.py` refuses `--final` for the `watchos` target.
+- There are no App Store profiles for the watch app or its widget extension.
+- The iOS app is signed with `codesign` by `ios_package_sign.sh`, not by
+  `xcodebuild`. So Xcode cloud signing (`-allowProvisioningUpdates` with
+  `-authenticationKeyPath` / `-authenticationKeyID` /
+  `-authenticationKeyIssuerID`), which could create the missing profiles with
+  the App Store Connect key, does not apply here.
+
+To ship the watch app later, choose one:
+
+- Create the two App Store profiles in the developer portal and provide them
+  as `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION` /
+  `IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION`, which `build.py` already
+  reads. `--final` then has to allow `watchos`.
+- Move the watch build to an `xcodebuild archive` with cloud signing.
+
+### Android → Google Play internal track
+
+| Secret | Value |
+|---|---|
+| `PLAY_SERVICE_ACCOUNT_JSON_B64` | base64 of a Google Cloud service-account JSON key that has access to the app in Play Console |
+| `ANDROID_UPLOAD_KEYSTORE_B64` etc. | the same upload key as the APKs (above) |
+
+Once:
+
+1. Play Console: create the app `com.UBSEDS.GS26` and enrol it in Play App
+   Signing with the upload key above. Upload the **first** AAB to internal
+   testing by hand; the API cannot create an app. Build that AAB with
+   `python build.py --target android --release --final --package-type aab`.
+2. Google Cloud: in a project, enable the "Google Play Android Developer API",
+   then create a service account and a JSON key for it.
+3. Play Console → Users and permissions: invite the service account's email,
+   with access to `com.UBSEDS.GS26` only and the "Release to testing tracks"
+   permission (plus "View app information").
+4. Set the secret, then delete the JSON file:
+   `base64 -i play-uploader.json | gh secret set PLAY_SERVICE_ACCOUNT_JSON_B64 -R "$R"`.
+
+The `play` job:
+
+1. Builds `build.py --target android --release --final --package-type aab`
+   (arm64-v8a). `_finalize_android_release` signs it with jarsigner and the
+   upload key.
+2. Checks:
+   - with `jarsigner -verify` and `keytool -printcert -jarfile`, that the AAB
+     is signed only by the upload certificate, and that this certificate
+     matches `ANDROID_EXPECTED_CERT_SHA256`;
+   - with bundletool, that the package is `com.UBSEDS.GS26` and the
+     `versionCode` is the one derived from the tag.
+3. Uploads through the Play Developer API directly, with stdlib plus `openssl`
+   for the service-account JWT and no third-party action. In one edit it
+   uploads the bundle, sets the `internal` track to exactly that
+   `versionCode`, and commits.
+
+Special cases:
+
+- If Play still treats the app as a draft (never published), the internal
+  release is created as a draft. Roll it out in Play Console.
+- If the `versionCode` is already on the internal track (a rerun), nothing is
+  uploaded.
+- If the `versionCode` was used on another track, the job fails. Bump the
+  Dioxus build.
+
+### Certificate expiry
+
+| Credential | Expires |
+|---|---|
+| Developer ID Application (`MACOS_DEVELOPER_ID_P12_B64`) | 2027-02-01 |
+| Apple Distribution (`IOS_DISTRIBUTION_P12_B64`) | 2027-02-04 |
+| App Store profile (`IOS_APPSTORE_PROFILE_B64`) | 2027-02-04 |
+| Android upload certificate | printed in the `android` and `play` job summaries |
+
+The jobs warn starting 30 days before expiry. To renew: renew in the developer
+portal, export again and update the secret. Regenerate the App Store profile
+with the new distribution certificate.
 
 ## 3. Cut the release
 
@@ -182,9 +397,23 @@ git tag -a v0.3.1b36 -m "Version 0.3.1 Build 36"
 git push origin v0.3.1b36
 ```
 
-- Re-run, or release a tag without macOS, from Actions → Release → Run
-  workflow, with `tag` set to e.g. `v0.3.1b36` and "skip macOS" as needed. Or:
-  `gh workflow run release.yml -R "$R" -f tag=v0.3.1b36 -f skip_macos=true`.
+- The tag must be on `main` or `dev`, and only an admin can push it (tag
+  ruleset).
+- To re-run, or to release a tag without macOS, use Actions → Release → Run
+  workflow **from `main` or `dev`**, with `tag` set to e.g. `v0.3.1b36`, "skip
+  macOS" as needed and **"dry run" unticked**. Or:
+  `gh workflow run release.yml -R "$R" --ref main -f tag=v0.3.1b36 -f skip_macos=true -f dry_run=false`.
+- A manual run is a **dry run by default**:
+  - it builds and signs: Android, with the apksigner check against
+    `ANDROID_EXPECTED_CERT_SHA256`, and macOS unless skipped;
+  - it keeps the signed assets as the run's `release-<target>` artifacts for
+    7 days;
+  - it does not create or edit a GitHub Release, and does not upload to
+    TestFlight or Play.
+
+  Use it to prove signing:
+  `gh workflow run release.yml -R "$R" --ref dev -f tag=v0.3.1b36 -f skip_macos=true`.
+  A tag push always publishes.
 - A new release is created as a draft, every asset is uploaded, and only then
   is it published. Re-running for an existing release updates the title (and
   the notes, if the notes file exists) and replaces the assets with

@@ -27,6 +27,12 @@ ANDROID_SECRETS = {"ANDROID_UPLOAD_KEYSTORE_B64", "ANDROID_KEYSTORE_PASSWORD", "
 MACOS_SECRETS = {"MACOS_DEVELOPER_ID_P12_B64", "MACOS_DEVELOPER_ID_P12_PASSWORD", "MACOS_SIGNING_IDENTITY",
                  "APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
                  "APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"}
+TESTFLIGHT_SECRETS = {"IOS_DISTRIBUTION_P12_B64", "IOS_DISTRIBUTION_P12_PASSWORD", "IOS_APPSTORE_PROFILE_B64",
+                      "APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID"}
+PLAY_SECRETS = ANDROID_SECRETS | {"PLAY_SERVICE_ACCOUNT_JSON_B64"}
+SIGNING_JOBS = {"android": ANDROID_SECRETS, "macos": MACOS_SECRETS, "testflight": TESTFLIGHT_SECRETS,
+                "play": PLAY_SECRETS}
+STORE_JOBS = ["testflight", "play"]
 SECRET = re.compile(r"secrets\.([A-Za-z0-9_]+)")
 
 
@@ -55,7 +61,7 @@ class ReleaseWorkflow(unittest.TestCase):
     def test_tag_is_checked_against_cargo_and_dioxus_before_any_build(self):
         step = self.step("version", "Tag matches Cargo.toml version and Dioxus.toml build")
         self.assertIn("release-version", step["run"])
-        for job in ["unsigned", "android", "macos"]:
+        for job in ["unsigned", "android", "macos", *STORE_JOBS]:
             self.assertEqual(self.jobs[job]["needs"], "version")
             checkout = self.jobs[job]["steps"][0]
             self.assertEqual(checkout["with"]["ref"], "refs/tags/${{ needs.version.outputs.tag }}")
@@ -63,15 +69,16 @@ class ReleaseWorkflow(unittest.TestCase):
     def test_secrets_only_in_the_signing_steps_of_the_signing_jobs(self):
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
         for name, job in self.jobs.items():
-            allowed = {"android": ANDROID_SECRETS, "macos": MACOS_SECRETS}.get(name, set())
+            allowed = SIGNING_JOBS.get(name, set())
             self.assertLessEqual(secrets_in(job), allowed, name)
             for step in job["steps"]:
                 used = secrets_in(step)
                 if used:
                     self.assertTrue(step.get("run", "").startswith("python scripts/ci/frontend.py release-"), step)
                     self.assertEqual(secrets_in(step.get("env", {})), used, "secrets only via step env")
-        self.assertEqual(secrets_in(self.jobs["android"]), ANDROID_SECRETS)
-        self.assertEqual(secrets_in(self.jobs["macos"]), MACOS_SECRETS)
+        for name, expected in SIGNING_JOBS.items():
+            self.assertEqual(secrets_in(self.jobs[name]), expected, name)
+        self.assertEqual(secrets_in(self.jobs["version"]) | secrets_in(self.jobs["unsigned"]), set())
         self.assertNotIn("secrets", json.dumps(self.workflow.get("env", {})))
 
     def test_only_publish_can_write_and_it_holds_no_secrets(self):
@@ -83,7 +90,7 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertEqual(secrets_in(self.jobs["publish"]), set())
 
     def test_signing_jobs_clean_up_last_and_always(self):
-        for job in ["android", "macos"]:
+        for job in SIGNING_JOBS:
             last = self.jobs[job]["steps"][-1]
             self.assertEqual(last["if"], "always()")
             self.assertEqual(last["run"], "python scripts/ci/frontend.py release-cleanup")
@@ -130,7 +137,9 @@ class ReleaseWorkflow(unittest.TestCase):
         for job in ["version", "unsigned", "android"]:
             self.assertIn(f"needs.{job}.result == 'success'", condition)
         self.assertIn("(inputs.skip_macos && needs.macos.result == 'skipped')", condition)
-        self.assertEqual(self.jobs["macos"]["if"], "${{ !inputs.skip_macos }}")
+        self.assertEqual(self.jobs["macos"]["if"],
+                         "${{ !inputs.skip_macos && needs.version.outputs.guarded == 'true' }}")
+        self.assertIn("needs.version.outputs.guarded == 'true'", condition)
         script = self.step("publish", "Create or update the GitHub Release")["run"]
         self.assertIn('--title "$TITLE"', script)
         self.assertIn("--generate-notes", script)
@@ -138,6 +147,74 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertIn("--verify-tag", script)
         sums = self.step("publish", "Check the asset set and write SHA256SUMS")["run"]
         self.assertIn("release-checksums", sums)
+
+    def test_guard_runs_first_on_full_history_and_gates_every_secret_job(self):
+        version = self.jobs["version"]
+        self.assertEqual(version["steps"][0]["with"]["fetch-depth"], 0)
+        runs = [s.get("run") for s in version["steps"]]
+        guard = runs.index("python scripts/ci/frontend.py release-guard")
+        self.assertLess(guard, runs.index('python scripts/ci/frontend.py release-version --tag "$RELEASE_TAG"'))
+        self.assertEqual(version["steps"][guard]["id"], "guard")
+        self.assertEqual(version["outputs"]["guarded"], "${{ steps.guard.outputs.guarded }}")
+        self.assertEqual(secrets_in(version), set())
+        for name in [*SIGNING_JOBS, "publish"]:
+            with self.subTest(job=name):
+                job = self.jobs[name]
+                self.assertIn("needs.version.outputs.guarded == 'true'", job["if"])
+                self.assertEqual(job["environment"], "release")
+        self.assertNotIn("environment", self.jobs["unsigned"])
+        self.assertNotIn("environment", self.jobs["version"])
+
+    def test_store_jobs_skip_without_secrets_and_never_gate_the_release(self):
+        self.assertEqual(self.jobs["publish"]["needs"], ["version", "unsigned", "android", "macos"])
+        for name, store in [("testflight", "testflight"), ("play", "play")]:
+            with self.subTest(job=name):
+                job = self.jobs[name]
+                self.assertEqual(job["needs"], "version")
+                self.assertNotIn("continue-on-error", job)
+                steps = job["steps"]
+                check = next(i for i, s in enumerate(steps) if s.get("id") == "store")
+                self.assertEqual(steps[check]["run"], f"python scripts/ci/frontend.py release-store-check --store {store}")
+                for step in steps[check + 1:-1]:
+                    self.assertEqual(step.get("if"), "steps.store.outputs.enabled == 'true'", step)
+                for step in steps[:check]:
+                    self.assertEqual(secrets_in(step), set())
+                runs = [s.get("run") for s in steps]
+                order = ["bootstrap", "release-store-build", "release-store-verify", "release-store-upload"]
+                indices = [runs.index(f"python scripts/ci/frontend.py {action}") for action in order]
+                self.assertEqual(indices, sorted(indices))
+                # Store jobs publish nothing as workflow artifacts.
+                self.assertFalse([s for s in steps if "upload-artifact" in s.get("uses", "")])
+                upload = steps[runs.index("python scripts/ci/frontend.py release-store-upload")]
+                self.assertEqual(secrets_in(upload),
+                                 {"PLAY_SERVICE_ACCOUNT_JSON_B64"} if name == "play"
+                                 else {"APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID"})
+        self.assertEqual(self.jobs["testflight"]["runs-on"], "macos-15")
+        self.assertEqual(self.jobs["testflight"]["env"]["CI_FRONTEND_TARGET"], "ios")
+        self.assertEqual(self.jobs["play"]["env"]["CI_FRONTEND_TARGET"], "android")
+        self.assertIn("python scripts/ci/frontend.py release-ios-signing", [s.get("run") for s in self.jobs["testflight"]["steps"]])
+        self.assertIn("python scripts/ci/frontend.py release-android-signing", [s.get("run") for s in self.jobs["play"]["steps"]])
+
+    def test_dry_run_signs_and_keeps_artifacts_but_publishes_nothing(self):
+        dry = self.workflow["on"]["workflow_dispatch"]["inputs"]["dry_run"]
+        self.assertEqual((dry["type"], dry["default"]), ("boolean", True))
+        # Tag pushes have no inputs, so !inputs.dry_run is true and they publish.
+        self.assertIn("!inputs.dry_run", self.jobs["publish"]["if"])
+        for name in STORE_JOBS:
+            self.assertTrue(self.jobs[name]["if"].startswith("${{ !inputs.dry_run && "), name)
+        for name in ["android", "macos", "unsigned"]:
+            self.assertNotIn("dry_run", json.dumps(self.jobs[name]), name)
+        job = self.jobs["dry-run"]
+        self.assertEqual(job["needs"], ["version", "unsigned", "android", "macos"])
+        self.assertIn("inputs.dry_run &&", job["if"])
+        self.assertNotIn("!inputs.dry_run", job["if"])
+        self.assertNotIn("permissions", job)
+        self.assertNotIn("environment", job)
+        self.assertEqual(secrets_in(job), set())
+        raw = json.dumps(job)
+        for forbidden in ["gh release", "GH_TOKEN", "release-store-upload", "upload-artifact"]:
+            self.assertNotIn(forbidden, raw)
+        self.assertIn("release-checksums", raw)
 
     def test_build_only_ci_still_has_no_production_credentials(self):
         raw = (ROOT / ".github/workflows/platforms.yml").read_text()
@@ -237,6 +314,17 @@ class ReleaseDriver(unittest.TestCase):
             with self.subTest(values=sorted(values)), patch.dict(os.environ, values, clear=True):
                 with self.assertRaises(RuntimeError):
                     ci.notary_mode()
+
+    def test_notarization_error_names_the_api_key_set_first(self):
+        for values in [{}, {"APPLE_TEAM_ID": "T"}, {"APPLE_ID": "a", "APPLE_TEAM_ID": "T"}]:
+            with self.subTest(values=sorted(values)), patch.dict(os.environ, values, clear=True):
+                with self.assertRaises(RuntimeError) as raised:
+                    ci.notary_mode()
+                message = str(raised.exception)
+                self.assertIn("APPLE_NOTARY_KEY_P8_B64, APPLE_NOTARY_KEY_ID and APPLE_NOTARY_ISSUER_ID", message)
+                self.assertLess(message.index("APPLE_NOTARY_KEY_P8_B64"), message.index("Fallback"))
+                for name in ci.NOTARY_APPLE_ID_SECRETS:
+                    self.assertEqual(name in message.split("Fallback", 1)[1], name not in values, name)
 
     def test_android_keystore_is_private_outside_checkout_and_password_not_in_argv(self):
         keystore_bytes = b"fixture keystore bytes"

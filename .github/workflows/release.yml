@@ -1,9 +1,12 @@
 name: Release
 # Tag-triggered GitHub Release: Windows, Linux (x86_64 + arm64), Android and
 # macOS, built with the same scripts/ci/frontend.py bootstrap and build.py code
-# paths as the build-only CI (platforms.yml). This is the ONLY workflow that
-# uses production signing material, all of it from repository secrets; see
-# docs/releasing.md. Untrusted pull requests never run it.
+# paths as the build-only CI (platforms.yml), plus optional uploads to
+# TestFlight and the Google Play internal track. This is the ONLY workflow that
+# uses production signing material, all of it from secrets; see
+# docs/releasing.md. Untrusted pull requests never run it. The version job
+# refuses any run that is not from a protected ref, or whose tag is not on
+# main or dev, and every job holding a secret depends on it.
 'on':
   push:
     tags:
@@ -19,6 +22,11 @@ name: Release
         required: false
         type: boolean
         default: false
+      dry_run:
+        description: Build, sign and verify only; keep the signed assets as workflow artifacts. No GitHub Release, TestFlight or Play upload
+        required: false
+        type: boolean
+        default: true
 permissions:
   contents: read
 concurrency:
@@ -37,13 +45,18 @@ jobs:
       name: ${{ steps.version.outputs.name }}
       version: ${{ steps.version.outputs.version }}
       build: ${{ steps.version.outputs.build }}
+      guarded: ${{ steps.guard.outputs.guarded }}
     steps:
     - uses: actions/checkout@v4
       with:
         ref: refs/tags/${{ env.RELEASE_TAG }}
+        fetch-depth: 0
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+    - name: Protected ref, tag on main or dev
+      id: guard
+      run: python scripts/ci/frontend.py release-guard
     - name: Tag matches Cargo.toml version and Dioxus.toml build
       id: version
       run: python scripts/ci/frontend.py release-version --tag "$RELEASE_TAG"
@@ -104,6 +117,8 @@ jobs:
         retention-days: 7
   android:
     needs: version
+    if: ${{ needs.version.outputs.guarded == 'true' }}
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     strategy:
@@ -166,7 +181,8 @@ jobs:
       run: python scripts/ci/frontend.py release-cleanup
   macos:
     needs: version
-    if: ${{ !inputs.skip_macos }}
+    if: ${{ !inputs.skip_macos && needs.version.outputs.guarded == 'true' }}
+    environment: release
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     strategy:
@@ -226,7 +242,8 @@ jobs:
     - unsigned
     - android
     - macos
-    if: ${{ always() && needs.version.result == 'success' && needs.unsigned.result == 'success' && needs.android.result == 'success' && (needs.macos.result == 'success' || (inputs.skip_macos && needs.macos.result == 'skipped')) }}
+    if: ${{ always() && !inputs.dry_run && needs.version.result == 'success' && needs.version.outputs.guarded == 'true' && needs.unsigned.result == 'success' && needs.android.result == 'success' && (needs.macos.result == 'success' || (inputs.skip_macos && needs.macos.result == 'skipped')) }}
+    environment: release
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -279,3 +296,177 @@ jobs:
           cat release-assets/SHA256SUMS
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+  # Manual dry run: the same builds, production signing and verification as a
+  # release, but nothing is published. The signed assets stay downloadable as
+  # the release-<target> workflow artifacts (7 days); this job only checks the
+  # set and records SHA256SUMS in the summary. No secrets, read-only token.
+  dry-run:
+    needs:
+    - version
+    - unsigned
+    - android
+    - macos
+    if: ${{ always() && inputs.dry_run && needs.version.result == 'success' && needs.unsigned.result == 'success' && needs.android.result == 'success' && (needs.macos.result == 'success' || (inputs.skip_macos && needs.macos.result == 'skipped')) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      MACOS_INCLUDED: ${{ needs.macos.result == 'success' }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ needs.version.outputs.tag }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: release-*
+        path: release-assets
+        merge-multiple: true
+    - name: Check the signed asset set (nothing is published)
+      shell: bash
+      run: |
+        targets=linux,linux-arm64,windows,android,android-armv7
+        if [ "$MACOS_INCLUDED" = "true" ]; then targets="$targets,macos,macos-intel"; fi
+        python scripts/ci/frontend.py release-checksums --assets release-assets --release-targets "$targets"
+        {
+          echo "## Dry run: nothing published"
+          echo
+          echo 'Signed assets are the `release-*` artifacts of this run.'
+          echo
+          echo '```'
+          cat release-assets/SHA256SUMS
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
+  # Store uploads: TestFlight (App Store Connect, never submitted for review)
+  # and the Google Play internal testing track only. Each job skips with a
+  # notice when its store secrets are unset; the GitHub Release (publish) does
+  # not depend on either job.
+  testflight:
+    needs: version
+    if: ${{ !inputs.dry_run && needs.version.outputs.guarded == 'true' }}
+    environment: release
+    runs-on: macos-15
+    timeout-minutes: 120
+    env:
+      CI_FRONTEND_TARGET: ios
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ needs.version.outputs.tag }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: TestFlight secrets configured
+      id: store
+      env:
+        IOS_DISTRIBUTION_P12_B64: ${{ secrets.IOS_DISTRIBUTION_P12_B64 }}
+        IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+        IOS_APPSTORE_PROFILE_B64: ${{ secrets.IOS_APPSTORE_PROFILE_B64 }}
+        APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
+        APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+        APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      run: python scripts/ci/frontend.py release-store-check --store testflight
+    - uses: actions/setup-node@v4
+      if: steps.store.outputs.enabled == 'true'
+      with:
+        node-version: '22'
+    - name: Xcode availability
+      if: steps.store.outputs.enabled == 'true'
+      run: xcodebuild -version
+    - name: Pinned frontend tools, warnings fatal
+      if: steps.store.outputs.enabled == 'true'
+      run: python scripts/ci/frontend.py bootstrap
+    - name: App Store distribution keychain and profile from secrets
+      if: steps.store.outputs.enabled == 'true'
+      env:
+        IOS_DISTRIBUTION_P12_B64: ${{ secrets.IOS_DISTRIBUTION_P12_B64 }}
+        IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
+        IOS_APPSTORE_PROFILE_B64: ${{ secrets.IOS_APPSTORE_PROFILE_B64 }}
+      run: python scripts/ci/frontend.py release-ios-signing
+    - name: Release IPA, App Store signing, warnings fatal
+      if: steps.store.outputs.enabled == 'true'
+      run: python scripts/ci/frontend.py release-store-build
+    - name: Verify IPA identity, version and signature
+      if: steps.store.outputs.enabled == 'true'
+      run: python scripts/ci/frontend.py release-store-verify
+    - name: Upload to TestFlight
+      if: steps.store.outputs.enabled == 'true'
+      env:
+        APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
+        APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+        APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      run: python scripts/ci/frontend.py release-store-upload
+    - name: Delete signing material
+      if: always()
+      run: python scripts/ci/frontend.py release-cleanup
+  play:
+    needs: version
+    if: ${{ !inputs.dry_run && needs.version.outputs.guarded == 'true' }}
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      CI_FRONTEND_TARGET: android
+      ANDROID_EXPECTED_CERT_SHA256: ${{ vars.ANDROID_EXPECTED_CERT_SHA256 }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ needs.version.outputs.tag }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Google Play secrets configured
+      id: store
+      env:
+        PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_B64 }}
+        ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      run: python scripts/ci/frontend.py release-store-check --store play
+    - uses: actions/setup-node@v4
+      if: steps.store.outputs.enabled == 'true'
+      with:
+        node-version: '22'
+    - uses: actions/setup-java@v4
+      if: steps.store.outputs.enabled == 'true'
+      with:
+        distribution: temurin
+        java-version: '17'
+    - uses: android-actions/setup-android@v3
+      if: steps.store.outputs.enabled == 'true'
+      with:
+        packages: platform-tools
+    - name: Android SDK and NDK
+      if: steps.store.outputs.enabled == 'true'
+      shell: bash
+      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"'
+    - name: Pinned frontend tools, warnings fatal
+      if: steps.store.outputs.enabled == 'true'
+      run: python scripts/ci/frontend.py bootstrap
+    - name: Upload keystore from secrets
+      if: steps.store.outputs.enabled == 'true'
+      env:
+        ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'upload' }}
+      run: python scripts/ci/frontend.py release-android-signing
+    - name: Release AAB, upload-key signing, warnings fatal
+      if: steps.store.outputs.enabled == 'true'
+      env:
+        ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS || 'upload' }}
+      run: python scripts/ci/frontend.py release-store-build
+    - name: Verify AAB signer, package and versionCode
+      if: steps.store.outputs.enabled == 'true'
+      run: python scripts/ci/frontend.py release-store-verify
+    - name: Upload to the Play internal track
+      if: steps.store.outputs.enabled == 'true'
+      env:
+        PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_B64 }}
+      run: python scripts/ci/frontend.py release-store-upload
+    - name: Delete signing material
+      if: always()
+      run: python scripts/ci/frontend.py release-cleanup

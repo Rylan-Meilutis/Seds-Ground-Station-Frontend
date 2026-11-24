@@ -47,14 +47,45 @@ class PlatformCI(unittest.TestCase):
         self.assertEqual(matrix["include"], [{"target": p["target"], "runner": p["github"]} for p in ci.PLATFORMS])
         self.assertEqual(self.github["jobs"]["build"]["runs-on"], "${{ matrix.runner }}")
 
+    def gitlab_rows(self):
+        return (self.gitlab["frontend-build-docker"]["parallel"]["matrix"]
+                + self.gitlab["frontend-build"]["parallel"]["matrix"])
+
     def test_gitlab_has_all24_real_native_jobs_no_allow_failure(self):
-        job = self.gitlab["frontend-build"]
-        rows = job["parallel"]["matrix"]
-        self.assertEqual([r["CI_FRONTEND_TARGET"] for r in rows], list(targets.TARGETS))
+        rows = self.gitlab_rows()
+        self.assertEqual(sorted(r["CI_FRONTEND_TARGET"] for r in rows), sorted(targets.TARGETS))
+        self.assertEqual(len(rows), len(targets.TARGETS))
         self.assertTrue(all(r["CI_FRONTEND_PROFILE"] == ["debug", "release"] for r in rows))
-        self.assertEqual(job["tags"], ["$UI_RUNNER"])
-        self.assertNotIn("allow_failure", job)
-        self.assertEqual([r["UI_RUNNER"] for r in rows], [p["gitlab"] for p in ci.PLATFORMS])
+        native, docker = self.gitlab["frontend-build"], self.gitlab["frontend-build-docker"]
+        self.assertEqual(native["tags"], ["$UI_RUNNER"])
+        for job in [native, docker, self.gitlab[".frontend-build"]]:
+            self.assertNotIn("allow_failure", job)
+        bindings = {p["target"]: p["gitlab"] for p in ci.PLATFORMS}
+        self.assertEqual({r["CI_FRONTEND_TARGET"]: r["UI_RUNNER"] for r in native["parallel"]["matrix"]},
+                         {t: g for t, g in bindings.items() if g != "docker"})
+        self.assertEqual([r["CI_FRONTEND_TARGET"] for r in docker["parallel"]["matrix"]],
+                         [t for t, g in bindings.items() if g == "docker"])
+
+    def test_gitlab_generic_docker_runners_only_for_container_safe_linux_targets(self):
+        docker = self.gitlab["frontend-build-docker"]
+        self.assertNotIn("tags", docker)
+        self.assertEqual(docker["image"], "python:3.11-bookworm")
+        self.assertEqual(docker["before_script"], [". scripts/ci/gitlab_docker_prereqs.sh"])
+        self.assertTrue(all("UI_RUNNER" not in r for r in docker["parallel"]["matrix"]))
+        names = {r["CI_FRONTEND_TARGET"] for r in docker["parallel"]["matrix"]}
+        self.assertEqual(names, {"web", "android", "android-armv7", "android_sim", "wearos", "wearos_sim"})
+        for p in ci.PLATFORMS:
+            if p["target"] in names:
+                self.assertEqual((p["host"], p["arch"]), ("Linux", "x86_64"))
+        # Desktop Linux packaging (Flatpak, AppImage, Ubuntu makepkg) stays native.
+        self.assertEqual({p["target"]: p["gitlab"] for p in ci.PLATFORMS}["linux"], "gs-ui-linux-x64")
+        self.assertNotIn("tags", self.gitlab["ci-contracts"])
+        prereqs = (ROOT / "scripts/ci/gitlab_docker_prereqs.sh").read_text()
+        self.assertEqual(prereqs.count("sha256sum --check"), 2)
+        self.assertNotIn("secret", prereqs.lower().replace("reads a secret", ""))
+        raw = (ROOT / ".gitlab-ci.yml").read_text()
+        for forbidden in ["--final", "release-", "CI_COMMIT_TAG", "secrets"]:
+            self.assertNotIn(forbidden, raw)
 
     def test_apple_windows_linux_wrong_host_is_error_not_skip(self):
         for name in ["ios", "ios_sim", "ios_sim_intel", "watchos", "watchos_sim", "watchos_sim_intel", "macos", "macos-intel", "windows", "linux-arm64"]:
@@ -358,13 +389,16 @@ class PlatformCI(unittest.TestCase):
         self.assertIn("matrix.target", upload["with"]["name"])
         self.assertIn("matrix.profile", upload["with"]["name"])
         self.assertEqual(upload["with"]["if-no-files-found"], "error")
-        self.assertEqual(self.gitlab["frontend-build"]["artifacts"]["when"], "always")
+        self.assertEqual(self.gitlab[".frontend-build"]["artifacts"]["when"], "always")
 
     def test_both_providers_call_same_checked_bootstrap_and_build(self):
         steps = self.github["jobs"]["build"]["steps"]
         for command in ["python scripts/ci/frontend.py bootstrap", "python scripts/ci/frontend.py build"]:
             self.assertIn(command, [s.get("run") for s in steps])
-            self.assertIn(command, self.gitlab["frontend-build"]["script"])
+            self.assertIn(command, self.gitlab[".frontend-build"]["script"])
+        for job in ["frontend-build", "frontend-build-docker"]:
+            self.assertEqual(self.gitlab[job]["extends"], ".frontend-build")
+            self.assertNotIn("script", self.gitlab[job])
 
 
 if __name__ == "__main__":

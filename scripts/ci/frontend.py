@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import argparse
 import base64
+import datetime
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import plistlib
 import re
 import secrets
 import shutil
@@ -23,6 +25,7 @@ import tarfile
 import tempfile
 import time
 import tomllib
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -205,7 +208,8 @@ def ci_env():
     for key in list(env):
         if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY", "ANDROID_UPLOAD_",
                            "SEDS_GS_CI_ANDROID_", "SEDS_GS_RELEASE_", "SEDS_GS_NOTARY_", "MACOS_SIGNING_",
-                           "MACOS_DEVELOPER_ID_", "APPLE_NOTARY_", "APPLE_APP_SPECIFIC_")) or key in {"APPLE_ID", "APPLE_TEAM_ID"}:
+                           "MACOS_DEVELOPER_ID_", "APPLE_NOTARY_", "APPLE_APP_SPECIFIC_",
+                           "IOS_APPSTORE_", "PLAY_SERVICE_ACCOUNT_")) or key in {"APPLE_ID", "APPLE_TEAM_ID"}:
             env.pop(key)
     bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
@@ -531,6 +535,8 @@ def run(name, profile):
 
 RELEASE_TARGETS = ("linux", "linux-arm64", "windows", "android", "android-armv7", "macos", "macos-intel")
 SIGNED_RELEASE_TARGETS = {"android": "android", "android-armv7": "android", "macos": "macos", "macos-intel": "macos"}
+# Signing kind per store build target (release_env); not GitHub Release assets.
+STORE_SIGNING = {"ios": "ios", "android": "android"}
 RELEASE_TAG = re.compile(r"^v(\d+\.\d+\.\d+)b(\d+)$")
 # Published names match the earlier GitHub releases (GitHub turns spaces in
 # uploaded file names into dots), so existing links keep the same shape.
@@ -562,6 +568,7 @@ RELEASE_SIGNING_ENV = {
     "android": ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_PASSWORD",
                 "ANDROID_KEY_ALIAS", "ANDROID_KEYSTORE_TYPE"),
     "macos": ("MACOS_SIGNING_IDENTITY", "NOTARY_PROFILE", "NOTARY_KEYCHAIN"),
+    "ios": ("IOS_DISTRIBUTION_MOBILEPROVISION",),
 }
 ANDROID_RELEASE_SECRETS = ("ANDROID_UPLOAD_KEYSTORE_B64", "ANDROID_KEYSTORE_PASSWORD")
 MACOS_CERT_SECRETS = ("MACOS_DEVELOPER_ID_P12_B64", "MACOS_DEVELOPER_ID_P12_PASSWORD")
@@ -569,6 +576,27 @@ NOTARY_API_SECRETS = ("APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_N
 NOTARY_APPLE_ID_SECRETS = ("APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID")
 NOTARY_PROFILE_NAME = "seds-gs-release"
 KEYCHAIN_NAME = "release.keychain-db"
+# The release workflow refuses a tag whose commit is not on one of these
+# branches (after fetching them), and any run whose ref GitHub does not report
+# as protected (rulesets in docs/releasing.md).
+RELEASE_BRANCHES = ("main", "dev")
+# Store uploads. They go ONLY to TestFlight (an App Store Connect build, never
+# submitted for review) and to the Play internal testing track. Nothing here
+# can create a public App Store or Play release.
+IOS_BUNDLE_ID = "com.UBSEDS.GS26"
+PLAY_TRACK = "internal"
+PLAY_API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications"
+PLAY_UPLOAD_API = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications"
+PLAY_SCOPE = "https://www.googleapis.com/auth/androidpublisher"
+GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
+IOS_STORE_SECRETS = ("IOS_DISTRIBUTION_P12_B64", "IOS_DISTRIBUTION_P12_PASSWORD", "IOS_APPSTORE_PROFILE_B64")
+PLAY_STORE_SECRETS = ("PLAY_SERVICE_ACCOUNT_JSON_B64",)
+# store -> (build target, secrets whose presence enables the store, every secret it then needs)
+STORES = {
+    "testflight": ("ios", IOS_STORE_SECRETS, IOS_STORE_SECRETS + NOTARY_API_SECRETS),
+    "play": ("android", PLAY_STORE_SECRETS, PLAY_STORE_SECRETS + ANDROID_RELEASE_SECRETS),
+}
+STORE_OUTPUTS = {"ios": Path("dist/ipas/UBSEDS GS.ipa"), "android": Path("dist/SEDS GS.aab")}
 
 
 def release_version(tag):
@@ -662,6 +690,51 @@ def quiet_run(argv, label, *, env=None, capture=False):
     return result.stdout if capture else None
 
 
+EXPIRY_WARNING_DAYS = 30
+
+
+def utc_now():
+    return datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+
+
+def cert_not_after(data, inform="DER"):
+    """notAfter (naive UTC) of a DER or PEM certificate, or None if unreadable."""
+    result = subprocess.run(["openssl", "x509", "-inform", inform, "-noout", "-enddate"], input=data,
+                            capture_output=True)
+    match = re.fullmatch(rb"notAfter=(.+?) GMT\s*", result.stdout) if not result.returncode else None
+    if not match:
+        return None
+    try:
+        return datetime.datetime.strptime(match.group(1).decode(), "%b %d %H:%M:%S %Y")
+    except ValueError:
+        return None
+
+
+def report_expiry(label, expires, now=None):
+    """Job-summary line for a signing credential's expiry; a ::warning:: (never
+    a failure) when it is unknown or under EXPIRY_WARNING_DAYS away."""
+    if expires is None:
+        print(f"::warning title=Signing expiry::Could not read the expiry of the {label}", flush=True)
+        job_summary([f"- {label}: expiry unknown"])
+        return None
+    days = (expires - (now or utc_now())).days
+    if days < EXPIRY_WARNING_DAYS:
+        state = "EXPIRED" if expires <= (now or utc_now()) else f"expires in {days} days"
+        print(f"::warning title=Signing expiry::The {label} {state} ({expires:%Y-%m-%d}). Renew it and update "
+              "the secret; see docs/releasing.md.", flush=True)
+    job_summary([f"- {label}: valid until {expires:%Y-%m-%d} ({days} days)"])
+    return days
+
+
+def keychain_cert_not_after(keychain, identity):
+    try:
+        pem = quiet_run(["security", "find-certificate", "-c", identity, "-p", str(keychain)],
+                        "Reading the signing certificate", capture=True)
+    except RuntimeError:
+        return None
+    return cert_not_after(pem, "PEM")
+
+
 def prepare_android_release_signing():
     require_secrets(ANDROID_RELEASE_SECRETS, "Production Android signing")
     alias = os.environ.get("ANDROID_KEY_ALIAS", "").strip() or "upload"
@@ -679,6 +752,7 @@ def prepare_android_release_signing():
     github_file("GITHUB_ENV", {"ANDROID_KEYSTORE_PATH": str(keystore),
                                "SEDS_GS_RELEASE_ANDROID_CERT_SHA256": fingerprint})
     job_summary([f"Android production keystore loaded (alias `{alias}`), certificate SHA-256 `{colon_hex(fingerprint)}`."])
+    report_expiry("Android upload certificate", cert_not_after(der))
 
 
 def colon_hex(digest):
@@ -695,10 +769,15 @@ def security_keychains():
     return [line.strip().strip('"') for line in out.decode("utf-8", errors="replace").splitlines() if line.strip()]
 
 
-def codesigning_identities(keychain):
+def codesigning_identity_hashes(keychain):
+    """[(SHA-1 of the certificate, identity name)] valid for code signing."""
     out = quiet_run(["security", "find-identity", "-v", "-p", "codesigning", str(keychain)],
                     "Listing code signing identities", capture=True).decode("utf-8", errors="replace")
-    return re.findall(r'^\s*\d+\)\s+[0-9A-F]{40}\s+"([^"]+)"\s*$', out, re.MULTILINE)
+    return re.findall(r'^\s*\d+\)\s+([0-9A-F]{40})\s+"([^"]+)"\s*$', out, re.MULTILINE)
+
+
+def codesigning_identities(keychain):
+    return [name for _sha1, name in codesigning_identity_hashes(keychain)]
 
 
 def notary_mode():
@@ -710,30 +789,31 @@ def notary_mode():
         require_secrets(NOTARY_API_SECRETS, "Notarization with an App Store Connect API key")
     if len(apple_id) == len(NOTARY_APPLE_ID_SECRETS):
         return "apple-id"
-    if apple_id:
-        require_secrets(NOTARY_APPLE_ID_SECRETS, "Notarization with an Apple ID")
-    raise RuntimeError("Apple notarization: missing GitHub secrets. Set APPLE_NOTARY_KEY_P8_B64, "
-                       "APPLE_NOTARY_KEY_ID and APPLE_NOTARY_ISSUER_ID (preferred), or APPLE_ID, "
-                       "APPLE_APP_SPECIFIC_PASSWORD and APPLE_TEAM_ID; see docs/releasing.md. "
+    # Name the preferred App Store Connect API key set first, whatever subset
+    # of the Apple ID fallback happens to exist (e.g. only APPLE_TEAM_ID).
+    fallback = [name for name in NOTARY_APPLE_ID_SECRETS if name not in apple_id]
+    raise RuntimeError("Apple notarization: missing GitHub secrets APPLE_NOTARY_KEY_P8_B64, APPLE_NOTARY_KEY_ID "
+                       "and APPLE_NOTARY_ISSUER_ID (the preferred App Store Connect API key). Fallback only: "
+                       "an Apple ID, which also needs " + ", ".join(fallback) + ". See docs/releasing.md. "
                        "A DMG is never released without notarization.")
 
 
-def prepare_macos_release_signing():
-    require_secrets(MACOS_CERT_SECRETS, "Developer ID signing")
-    mode = notary_mode()
-    directory = release_signing_dir(create=True)
+def create_release_keychain(directory, p12_secret, password_secret, p12_name, what):
+    """A temporary keychain (random password) in the job-local signing
+    directory holding one imported .p12, first in the user search list.
+    `release-cleanup` deletes it, which also drops it from the search list."""
     keychain = directory / KEYCHAIN_NAME
     password = secrets.token_urlsafe(32)
     print(f"::add-mask::{password}", flush=True)
     quiet_run(["security", "create-keychain", "-p", password, str(keychain)], "Creating the temporary keychain")
     quiet_run(["security", "set-keychain-settings", "-lut", "21600", str(keychain)], "Setting the keychain timeout")
     quiet_run(["security", "unlock-keychain", "-p", password, str(keychain)], "Unlocking the temporary keychain")
-    p12 = directory / "developer-id.p12"
-    private_write(p12, decode_secret("MACOS_DEVELOPER_ID_P12_B64"))
+    p12 = directory / p12_name
+    private_write(p12, decode_secret(p12_secret))
     try:
         quiet_run(["security", "import", str(p12), "-k", str(keychain), "-f", "pkcs12",
-                   "-P", os.environ["MACOS_DEVELOPER_ID_P12_PASSWORD"],
-                   "-T", "/usr/bin/codesign", "-T", "/usr/bin/security"], "Importing the Developer ID certificate")
+                   "-P", os.environ[password_secret],
+                   "-T", "/usr/bin/codesign", "-T", "/usr/bin/security"], f"Importing the {what} certificate")
     finally:
         p12.unlink(missing_ok=True)
     quiet_run(["security", "set-key-partition-list", "-S", "apple-tool:,apple:,codesign:", "-s",
@@ -741,6 +821,15 @@ def prepare_macos_release_signing():
     others = [path for path in security_keychains() if Path(path) != keychain]
     quiet_run(["security", "list-keychains", "-d", "user", "-s", str(keychain), *others],
               "Adding the temporary keychain to the search list")
+    return keychain
+
+
+def prepare_macos_release_signing():
+    require_secrets(MACOS_CERT_SECRETS, "Developer ID signing")
+    mode = notary_mode()
+    directory = release_signing_dir(create=True)
+    keychain = create_release_keychain(directory, "MACOS_DEVELOPER_ID_P12_B64", "MACOS_DEVELOPER_ID_P12_PASSWORD",
+                                       "developer-id.p12", "Developer ID")
     identities = codesigning_identities(keychain)
     wanted = os.environ.get("MACOS_SIGNING_IDENTITY", "").strip()
     if wanted:
@@ -773,6 +862,7 @@ def prepare_macos_release_signing():
                   "Storing the notarization Apple ID profile")
     github_file("GITHUB_ENV", {"MACOS_SIGNING_IDENTITY": identity, "NOTARY_PROFILE": NOTARY_PROFILE_NAME,
                                "NOTARY_KEYCHAIN": str(keychain)})
+    report_expiry("Developer ID Application certificate", keychain_cert_not_after(keychain, identity))
     job_summary([f"macOS signing identity: `{identity}`",
                  f"Notarization credentials: {'App Store Connect API key' if mode == 'api-key' else 'Apple ID (app-specific password)'}"])
 
@@ -780,7 +870,7 @@ def prepare_macos_release_signing():
 def release_env(name):
     """ci_env() (which drops every signing variable), plus exactly the signing
     variables build.py needs for this target's platform, and nothing else."""
-    kind = SIGNED_RELEASE_TARGETS.get(name)
+    kind = SIGNED_RELEASE_TARGETS.get(name) or STORE_SIGNING.get(name)
     env = ci_env()
     for key in RELEASE_SIGNING_ENV.get(kind, ()):
         value = os.environ.get(key, "").strip()
@@ -799,6 +889,13 @@ def release_env(name):
             raise RuntimeError("Developer ID signing/notarization is not prepared (missing " + ", ".join(missing)
                                + "); run release-macos-signing with the GitHub secrets first")
         env["SEDS_GS_NOTARY_RECEIPT"] = str(ROOT / "ci-results/notarization.json")
+    elif kind == "ios":
+        profile = env.get("IOS_DISTRIBUTION_MOBILEPROVISION")
+        if not profile:
+            raise RuntimeError("App Store signing is not prepared (missing IOS_DISTRIBUTION_MOBILEPROVISION); "
+                               "run release-ios-signing with the GitHub secrets first")
+        if Path(profile).resolve().parent != release_signing_dir():
+            raise RuntimeError("The App Store profile must be the job-local file written by release-ios-signing")
     return env
 
 
@@ -987,20 +1084,431 @@ def release_cleanup():
     print("Release signing cleanup: " + (", ".join(removed) if removed else "nothing to remove"))
 
 
+# ---------------------------------------------------------------------------
+# Protected-ref guard: every signing/publishing job depends on it.
+
+def git_capture(*args):
+    return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout.strip()
+
+
+def release_guard(tag, branches=RELEASE_BRANCHES):
+    """Refuse a release unless it was started from a protected ref (the pushed
+    tag, or a workflow_dispatch from a release branch) and the tag's commit is
+    on one of the release branches. Returns the first branch containing it."""
+    release_version_tag = RELEASE_TAG.fullmatch(tag or "")
+    if not release_version_tag:
+        raise RuntimeError(f"Not a release tag: {tag!r}")
+    event = os.environ.get("GITHUB_EVENT_NAME", "")
+    ref = os.environ.get("GITHUB_REF", "")
+    if event == "push":
+        if ref != f"refs/tags/{tag}":
+            raise RuntimeError(f"Tag push for {tag} arrived with ref {ref!r}")
+    elif event == "workflow_dispatch":
+        if ref not in {f"refs/heads/{branch}" for branch in branches}:
+            raise RuntimeError(f"Run the release workflow from {' or '.join(branches)}, not {ref!r}")
+    else:
+        raise RuntimeError(f"Releases run only from a tag push or workflow_dispatch, not {event!r}")
+    if os.environ.get("GITHUB_REF_PROTECTED", "").strip().lower() != "true":
+        raise RuntimeError(f"{ref} is not a protected ref (GITHUB_REF_PROTECTED is not true). Add the release tag "
+                           "and branch rulesets from docs/releasing.md before releasing.")
+    commit = git_capture("rev-parse", "--verify", "--quiet", f"refs/tags/{tag}^{{commit}}")
+    found = []
+    for branch in branches:
+        fetched = subprocess.run(["git", "fetch", "--quiet", "--no-tags", "origin",
+                                  f"+refs/heads/{branch}:refs/remotes/origin/{branch}"],
+                                 cwd=ROOT, capture_output=True, text=True)
+        if fetched.returncode:
+            print(f"origin/{branch} could not be fetched; it does not count as containing {tag}", flush=True)
+            continue
+        if subprocess.run(["git", "merge-base", "--is-ancestor", commit, f"refs/remotes/origin/{branch}"],
+                          cwd=ROOT).returncode == 0:
+            found.append(branch)
+    if not found:
+        raise RuntimeError(f"Tag {tag} ({commit}) is not on {' or '.join('origin/' + b for b in branches)}; "
+                           "a release must be tagged on a protected release branch")
+    return {"guarded": "true", "release_branch": found[0], "commit": commit}
+
+
+# ---------------------------------------------------------------------------
+# Store uploads (TestFlight and the Play internal track). Each store job first
+# runs `release-store-check`; with none of its store secrets set it skips with
+# a notice and the GitHub Release is unaffected.
+
+def store_check(store):
+    _target, enabling, required = STORES[store]
+    if not any(os.environ.get(name, "").strip() for name in enabling):
+        title = {"testflight": "TestFlight upload skipped", "play": "Google Play upload skipped"}[store]
+        message = (f"None of {', '.join(enabling)} is set, so this release is not uploaded to "
+                   f"{'TestFlight' if store == 'testflight' else 'the Play internal track'}. "
+                   "See docs/releasing.md to enable it.")
+        print(f"::notice title={title}::{message}", flush=True)
+        job_summary([f"### {title}", message])
+        github_file("GITHUB_OUTPUT", {"enabled": "false"})
+        return False
+    require_secrets(required, {"testflight": "TestFlight upload", "play": "Google Play internal-track upload"}[store])
+    github_file("GITHUB_OUTPUT", {"enabled": "true"})
+    return True
+
+
+def mobileprovision_info(path):
+    out = quiet_run(["security", "cms", "-D", "-i", str(path)], "Decoding the App Store provisioning profile",
+                    capture=True)
+    return plistlib.loads(out)
+
+
+def check_appstore_profile(info, bundle_id=IOS_BUNDLE_ID, now=None):
+    """An App Store distribution profile for exactly this bundle id: no device
+    list (development/ad hoc), not enterprise, no get-task-allow, unexpired."""
+    entitlements = info.get("Entitlements") or {}
+    teams = info.get("TeamIdentifier") or []
+    team = teams[0] if teams else ""
+    if not team or entitlements.get("application-identifier") != f"{team}.{bundle_id}":
+        raise RuntimeError(f"IOS_APPSTORE_PROFILE_B64 is not a profile for {bundle_id} "
+                           f"(application-identifier {entitlements.get('application-identifier')!r})")
+    if info.get("ProvisionedDevices") or info.get("ProvisionsAllDevices"):
+        raise RuntimeError("IOS_APPSTORE_PROFILE_B64 is a development, ad hoc or enterprise profile; "
+                           "TestFlight needs an App Store distribution profile")
+    if entitlements.get("get-task-allow") is True:
+        raise RuntimeError("IOS_APPSTORE_PROFILE_B64 allows get-task-allow; it is not an App Store profile")
+    expires = info.get("ExpirationDate")
+    now = now or utc_now()
+    if not isinstance(expires, datetime.datetime) or expires <= now:
+        raise RuntimeError(f"IOS_APPSTORE_PROFILE_B64 has expired ({expires})")
+    return team
+
+
+def prepare_ios_release_signing():
+    require_secrets(IOS_STORE_SECRETS, "App Store signing")
+    directory = release_signing_dir(create=True)
+    profile = directory / "appstore.mobileprovision"
+    private_write(profile, decode_secret("IOS_APPSTORE_PROFILE_B64"))
+    info = mobileprovision_info(profile)
+    team = check_appstore_profile(info)
+    keychain = create_release_keychain(directory, "IOS_DISTRIBUTION_P12_B64", "IOS_DISTRIBUTION_P12_PASSWORD",
+                                       "ios-distribution.p12", "Apple Distribution")
+    distribution = [(sha1, name) for sha1, name in codesigning_identity_hashes(keychain)
+                    if name.startswith(("Apple Distribution:", "iPhone Distribution:"))]
+    if len(distribution) != 1:
+        raise RuntimeError("Expected exactly one Apple Distribution identity in IOS_DISTRIBUTION_P12_B64; found "
+                           + str(len(distribution)))
+    allowed = {hashlib.sha1(bytes(cert)).hexdigest().upper() for cert in info.get("DeveloperCertificates") or []}
+    if distribution[0][0] not in allowed:
+        raise RuntimeError("The App Store profile does not include the IOS_DISTRIBUTION_P12_B64 certificate; "
+                           "regenerate the profile with that certificate")
+    github_file("GITHUB_ENV", {"IOS_DISTRIBUTION_MOBILEPROVISION": str(profile)})
+    report_expiry("Apple Distribution certificate", keychain_cert_not_after(keychain, distribution[0][1]))
+    expires = info.get("ExpirationDate")
+    report_expiry("App Store provisioning profile", expires if isinstance(expires, datetime.datetime) else None)
+    job_summary([f"App Store signing: `{distribution[0][1]}`, profile `{info.get('Name')}` "
+                 f"(team {team}, expires {info.get('ExpirationDate')}). The Apple Watch app is not embedded."])
+
+
+def store_command(name):
+    if name == "ios":
+        return [sys.executable, "build.py", "--target", "ios", "--release", "--final"]
+    if name == "android":
+        return [sys.executable, "build.py", "--target", "android", "--release", "--final", "--package-type", "aab"]
+    raise ValueError(f"{name} is not a store target")
+
+
+def store_build(name):
+    validate_host(name)
+    env = release_env(name)
+    env["CARGO_NET_OFFLINE"] = "true"
+    if name == "android":
+        verify_bundletool(env)
+    for tool in ["dx", "wasm-bindgen", "wasm-opt", "esbuild"]:
+        if not shutil.which(tool, path=env["PATH"]):
+            raise RuntimeError(f"Missing prepared tool: {tool}")
+    if (ROOT / "artifacts" / name).exists():
+        raise RuntimeError("Refusing stale platform artifact directory; use a fresh checkout")
+    (ROOT / "ci-results").mkdir(exist_ok=True)
+    checked(store_command(name), env, "store-" + name, dioxus_progress=True,
+            android_upstream_r8=name == "android")
+    output = ROOT / STORE_OUTPUTS[name]
+    if output.is_symlink() or not output.is_file():
+        raise RuntimeError(f"Store build produced no {output.relative_to(ROOT)}")
+
+
+def bundletool_value(aab, xpath):
+    jar = ROOT / ".ci-tools/bundletool/bundletool.jar"
+    out = subprocess.run(["java", "-jar", str(jar), "dump", "manifest", "--bundle", str(aab), "--xpath", xpath],
+                         capture_output=True, text=True)
+    if out.returncode:
+        raise RuntimeError(f"bundletool dump manifest {xpath} failed:\n{out.stdout}{out.stderr}")
+    return out.stdout.strip()
+
+
+def jar_signer_sha256(output):
+    """SHA-256 fingerprints of the signer certificates in `keytool -printcert -jarfile` output."""
+    return [normalized_digest(d) for d in re.findall(r"^\s*SHA256:\s*([0-9A-Fa-f:]{95})\s*$", output, re.MULTILINE)]
+
+
+def verify_store_android(info):
+    aab = ROOT / STORE_OUTPUTS["android"]
+    env = ci_env()
+    verify_bundletool(env)
+    jar = subprocess.run(["jarsigner", "-verify", str(aab)], capture_output=True, text=True)
+    if jar.returncode or "jar verified." not in jar.stdout or "unsigned entries" in jar.stdout:
+        raise RuntimeError("The AAB is not completely signed:\n" + jar.stdout + jar.stderr)
+    certs = subprocess.run(["keytool", "-printcert", "-jarfile", str(aab)], capture_output=True, text=True)
+    signers = set(jar_signer_sha256(certs.stdout))
+    expected = normalized_digest(os.environ.get("SEDS_GS_RELEASE_ANDROID_CERT_SHA256"))
+    if certs.returncode or not expected or signers != {expected}:
+        raise RuntimeError("The AAB is not signed by exactly the upload keystore certificate")
+    pinned = normalized_digest(os.environ.get("ANDROID_EXPECTED_CERT_SHA256"))
+    if pinned and pinned != expected:
+        raise RuntimeError("The upload certificate does not match ANDROID_EXPECTED_CERT_SHA256")
+    package = bundletool_value(aab, "/manifest/@package")
+    version_code = bundletool_value(aab, "/manifest/@android:versionCode")
+    if package != IOS_BUNDLE_ID:
+        raise RuntimeError(f"AAB package is {package!r}, expected {IOS_BUNDLE_ID}")
+    if version_code != str(info["version_code"]):
+        raise RuntimeError(f"AAB versionCode is {version_code!r}, expected {info['version_code']} for {info['tag']}")
+    job_summary([f"### Play AAB", f"- Package `{package}`, versionCode {version_code}",
+                 f"- Upload certificate SHA-256: `{colon_hex(expected)}`"])
+
+
+def verify_store_ios(info):
+    ipa = ROOT / STORE_OUTPUTS["ios"]
+    with tempfile.TemporaryDirectory(prefix="ipa-verify-") as temp:
+        quiet_run(["ditto", "-x", "-k", str(ipa), temp], "Unpacking the IPA")
+        apps = sorted((Path(temp) / "Payload").glob("*.app"))
+        if len(apps) != 1:
+            raise RuntimeError(f"Expected one app in the IPA Payload, found {len(apps)}")
+        app = apps[0]
+        plist = plistlib.loads((app / "Info.plist").read_bytes())
+        found = (plist.get("CFBundleIdentifier"), plist.get("CFBundleShortVersionString"), plist.get("CFBundleVersion"))
+        if found != (IOS_BUNDLE_ID, info["version"], info["build"]):
+            raise RuntimeError(f"IPA identity/version {found} != ({IOS_BUNDLE_ID}, {info['version']}, {info['build']})")
+        check_appstore_profile(mobileprovision_info(app / "embedded.mobileprovision"))
+        verify = subprocess.run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)],
+                                capture_output=True, text=True)
+        print(verify.stdout + verify.stderr)
+        if verify.returncode:
+            raise RuntimeError("codesign could not verify the IPA's app")
+        details = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True)
+        authority = re.search(r"^Authority=((?:Apple|iPhone) Distribution: .+)$", details.stdout + details.stderr,
+                              re.MULTILINE)
+        if details.returncode or not authority:
+            raise RuntimeError("The IPA's app is not signed with an Apple Distribution identity")
+    job_summary([f"### TestFlight IPA", f"- `{IOS_BUNDLE_ID}` {info['version']} ({info['build']})",
+                 f"- Signed by `{authority.group(1)}`, App Store profile embedded"])
+
+
+def store_verify(name, tag):
+    info = release_version(tag)
+    if name == "android":
+        verify_store_android(info)
+    elif name == "ios":
+        verify_store_ios(info)
+    else:
+        raise RuntimeError(f"{name} is not a store target")
+
+
+def appstore_key_dir():
+    """altool looks for AuthKey_<id>.p8 under ~/.appstoreconnect/private_keys
+    (or API_PRIVATE_KEYS_DIR); keep that home inside the signing directory."""
+    home = release_signing_dir() / "appstoreconnect-home"
+    return home, home / ".appstoreconnect" / "private_keys"
+
+
+def upload_testflight(info):
+    require_secrets(NOTARY_API_SECRETS, "TestFlight upload")
+    key_id = os.environ["APPLE_NOTARY_KEY_ID"].strip()
+    issuer = os.environ["APPLE_NOTARY_ISSUER_ID"].strip()
+    if not re.fullmatch(r"[A-Z0-9]{6,20}", key_id):
+        raise RuntimeError("APPLE_NOTARY_KEY_ID does not look like an App Store Connect key ID")
+    print(f"::add-mask::{issuer}", flush=True)
+    home, keys = appstore_key_dir()
+    keys.mkdir(mode=0o700, parents=True)
+    for directory in (home, home / ".appstoreconnect", keys):
+        directory.chmod(0o700)
+    key = keys / f"AuthKey_{key_id}.p8"
+    private_write(key, decode_secret("APPLE_NOTARY_KEY_P8_B64"))
+    env = dict(os.environ, HOME=str(home), API_PRIVATE_KEYS_DIR=str(keys))
+    for name in [*IOS_STORE_SECRETS, *NOTARY_API_SECRETS]:
+        env.pop(name, None)
+    ipa = ROOT / STORE_OUTPUTS["ios"]
+    try:
+        result = subprocess.run(["xcrun", "altool", "--upload-app", "--type", "ios", "--file", str(ipa),
+                                 "--apiKey", key_id, "--apiIssuer", issuer, "--output-format", "json"],
+                                cwd=home, env=env, capture_output=True, text=True)
+    finally:
+        key.unlink(missing_ok=True)
+    output = (result.stdout + result.stderr).replace(issuer, "***")
+    print(output)
+    if result.returncode:
+        if re.search(r"Redundant Binary Upload|already (?:been )?uploaded a build", output, re.IGNORECASE):
+            job_summary([f"### TestFlight", f"Build {info['build']} of {info['version']} was already uploaded; nothing to do."])
+            return "already-uploaded"
+        raise RuntimeError(f"altool upload failed (exit {result.returncode})")
+    job_summary([f"### TestFlight", f"Uploaded {info['name']} to App Store Connect. After processing it is "
+                 "available to TestFlight testers; it is not submitted for App Store review."])
+    return "uploaded"
+
+
+def b64url(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def google_access_token(account, key_path):
+    """OAuth2 service-account JWT bearer grant, signed by openssl (no extra
+    Python packages). The token is masked in the log."""
+    token_uri = account.get("token_uri") or GOOGLE_TOKEN_URI
+    if token_uri != GOOGLE_TOKEN_URI:
+        raise RuntimeError("PLAY_SERVICE_ACCOUNT_JSON_B64 names an unexpected token_uri")
+    now = int(time.time())
+    header = b64url(json.dumps({"alg": "RS256", "typ": "JWT"}).encode())
+    claims = b64url(json.dumps({"iss": account["client_email"], "scope": PLAY_SCOPE, "aud": token_uri,
+                                "iat": now, "exp": now + 3600}).encode())
+    unsigned = f"{header}.{claims}".encode()
+    signature = subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key_path)], input=unsigned,
+                               capture_output=True)
+    if signature.returncode or not signature.stdout:
+        raise RuntimeError("Could not sign the Google service-account assertion with its private key")
+    body = urllib.parse.urlencode({"grant_type": "urn:ietf:params:oauth:grant-type:jwt-bearer",
+                                   "assertion": unsigned.decode() + "." + b64url(signature.stdout)}).encode()
+    request = urllib.request.Request(token_uri, data=body, method="POST",
+                                     headers={"Content-Type": "application/x-www-form-urlencoded"})
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            token = json.loads(response.read())["access_token"]
+    except urllib.error.HTTPError as error:
+        raise RuntimeError(f"Google OAuth token request failed: HTTP {error.code} "
+                           f"{play_error_message(error.read())}") from None
+    print(f"::add-mask::{token}", flush=True)
+    return token
+
+
+def play_error_message(raw):
+    try:
+        error = json.loads(raw).get("error")
+    except (ValueError, AttributeError):
+        return raw[:500].decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)[:500]
+    if isinstance(error, dict):
+        return str(error.get("message") or error.get("status") or error)
+    return str(error)
+
+
+class PlayError(RuntimeError):
+    def __init__(self, status, message):
+        super().__init__(f"Google Play API HTTP {status}: {message}")
+        self.status, self.message = status, message
+
+
+def play_call(token, method, url, *, body=None, data=None, content_type="application/json", timeout=120):
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        data = json.dumps(body).encode()
+    if data is not None:
+        headers["Content-Type"] = content_type
+    request = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read()
+    except urllib.error.HTTPError as error:
+        raise PlayError(error.code, play_error_message(error.read())) from None
+    return json.loads(raw) if raw.strip() else {}
+
+
+def play_release(version_code, name, status):
+    return {"track": PLAY_TRACK, "releases": [{"name": name, "versionCodes": [str(version_code)], "status": status}]}
+
+
+def upload_play(info, call=play_call):
+    """One edit: upload the AAB, put exactly its versionCode on the internal
+    track, commit. A versionCode Play has already seen is not re-uploaded."""
+    require_secrets(PLAY_STORE_SECRETS, "Google Play internal-track upload")
+    try:
+        account = json.loads(decode_secret("PLAY_SERVICE_ACCOUNT_JSON_B64"))
+        private_key = account["private_key"].encode()
+        account["client_email"]
+    except (ValueError, KeyError, TypeError, AttributeError):
+        raise RuntimeError("PLAY_SERVICE_ACCOUNT_JSON_B64 is not a base64 service-account JSON key") from None
+    key_path = release_signing_dir() / "play-service-account.pem"
+    private_write(key_path, private_key)
+    try:
+        token = google_access_token(account, key_path)
+    finally:
+        key_path.unlink(missing_ok=True)
+    package = IOS_BUNDLE_ID
+    aab = ROOT / STORE_OUTPUTS["android"]
+    base = f"{PLAY_API}/{package}/edits"
+    edit = call(token, "POST", base, body={})["id"]
+    committed = False
+    try:
+        try:
+            uploaded = call(token, "POST", f"{PLAY_UPLOAD_API}/{package}/edits/{edit}/bundles?uploadType=media",
+                            data=aab.read_bytes(), content_type="application/octet-stream", timeout=1800)
+        except PlayError as error:
+            if not re.search(r"version code .*already been used|apkUpgradeVersionConflict", error.message, re.IGNORECASE):
+                raise
+            track = call(token, "GET", f"{base}/{edit}/tracks/{PLAY_TRACK}")
+            codes = {code for release in track.get("releases", []) for code in release.get("versionCodes", [])}
+            if str(info["version_code"]) not in codes:
+                raise RuntimeError(f"versionCode {info['version_code']} was already used on Play but is not on the "
+                                   f"{PLAY_TRACK} track; bump Dioxus.toml build") from None
+            job_summary(["### Google Play", f"versionCode {info['version_code']} is already on the {PLAY_TRACK} track."])
+            return "already-uploaded"
+        if str(uploaded.get("versionCode")) != str(info["version_code"]):
+            raise RuntimeError(f"Play reports versionCode {uploaded.get('versionCode')}, expected {info['version_code']}")
+        status = "completed"
+        for attempt in range(2):
+            call(token, "PUT", f"{base}/{edit}/tracks/{PLAY_TRACK}",
+                 body=play_release(info["version_code"], info["name"], status))
+            try:
+                call(token, "POST", f"{base}/{edit}:commit")
+                committed = True
+                break
+            except PlayError as error:
+                # An app that has never been published accepts only draft releases.
+                if attempt or "draft" not in error.message.lower():
+                    raise
+                status = "draft"
+    finally:
+        if not committed:
+            try:
+                call(token, "DELETE", f"{base}/{edit}")
+            except PlayError:
+                pass
+    job_summary(["### Google Play", f"Uploaded versionCode {info['version_code']} ({info['name']}) to the "
+                 f"**{PLAY_TRACK}** testing track as a {status} release."
+                 + (" Roll it out from Play Console (the app has never been published)." if status == "draft" else "")])
+    return "uploaded"
+
+
+def store_upload(name, tag):
+    info = release_version(tag)
+    if name == "ios":
+        return upload_testflight(info)
+    if name == "android":
+        return upload_play(info)
+    raise RuntimeError(f"{name} is not a store target")
+
+
 def main():
     configure_utf8_console()
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["bootstrap", "build", "release-version", "release-android-signing",
-                                           "release-macos-signing", "release-build", "release-verify",
-                                           "release-stage", "release-checksums", "release-cleanup"])
+    parser.add_argument("action", choices=["bootstrap", "build", "release-version", "release-guard",
+                                           "release-android-signing", "release-macos-signing", "release-ios-signing",
+                                           "release-build", "release-verify", "release-stage", "release-checksums",
+                                           "release-store-check", "release-store-build", "release-store-verify",
+                                           "release-store-upload", "release-cleanup"])
     parser.add_argument("--target", choices=[p["target"] for p in PLATFORMS], default=os.environ.get("CI_FRONTEND_TARGET"))
     parser.add_argument("--profile", choices=["debug", "release"], default=os.environ.get("CI_FRONTEND_PROFILE", "release"))
     parser.add_argument("--tag", help="release-version: the pushed tag, e.g. v0.3.1b36")
     parser.add_argument("--assets", help="release-checksums: directory holding every downloaded asset")
     parser.add_argument("--release-targets", help="release-checksums: comma-separated targets that were built")
+    parser.add_argument("--store", choices=sorted(STORES), help="release-store-check: testflight or play")
     args = parser.parse_args()
-    if args.action in {"bootstrap", "build", "release-build", "release-verify", "release-stage"} and not args.target:
+    if args.action in {"bootstrap", "build", "release-build", "release-verify", "release-stage",
+                       "release-store-build", "release-store-verify", "release-store-upload"} and not args.target:
         parser.error(f"{args.action} needs --target or CI_FRONTEND_TARGET")
+    if args.action in {"release-guard", "release-store-verify", "release-store-upload"}:
+        args.tag = args.tag or os.environ.get("RELEASE_TAG")
+        if not args.tag:
+            parser.error(f"{args.action} needs --tag or RELEASE_TAG")
     if args.action == "bootstrap":
         bootstrap(args.target)
     elif args.action == "build":
@@ -1009,6 +1517,23 @@ def main():
         info = release_version(args.tag)
         github_file("GITHUB_OUTPUT", info)
         job_summary([f"## {info['name']}", f"Tag `{info['tag']}`, Android versionCode {info['version_code']}."])
+    elif args.action == "release-guard":
+        result = release_guard(args.tag)
+        github_file("GITHUB_OUTPUT", result)
+        job_summary([f"Release tag `{args.tag}` is commit `{result['commit']}` on `origin/{result['release_branch']}`, "
+                     "from a protected ref."])
+    elif args.action == "release-store-check":
+        if not args.store:
+            parser.error("release-store-check needs --store")
+        store_check(args.store)
+    elif args.action == "release-ios-signing":
+        prepare_ios_release_signing()
+    elif args.action == "release-store-build":
+        store_build(args.target)
+    elif args.action == "release-store-verify":
+        store_verify(args.target, args.tag)
+    elif args.action == "release-store-upload":
+        store_upload(args.target, args.tag)
     elif args.action == "release-android-signing":
         prepare_android_release_signing()
     elif args.action == "release-macos-signing":

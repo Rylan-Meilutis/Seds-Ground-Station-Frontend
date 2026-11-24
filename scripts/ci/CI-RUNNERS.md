@@ -2,15 +2,59 @@
 
 Both providers run the SAME actual `build.py --target <target> --debug|--release --no-sign` through `scripts/ci/frontend.py`. Coverage is every12 target in `scripts/build_targets.py`,24jobs/provider. This means supported architecture/build variants, not every historical OS/Xcode version. iOSdevice builds an unsigned app; simulators are built, never launched. Android builds APK variants signed with a fresh job-local development certificate. Each Android artifact includes `CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt`; the private key is never uploaded. These APKs are not production releases or an identity for updating installed releases. Local user signing settings remain unchanged. This is not distribution signing, notarization, device acceptance or store upload. Missing platform capability is a failed/pending gate, never successful Linux emulation.
 
-GitHub uses real hosted labels Ubuntu24.04 x64/ARM64, Windows2022/MSVC, macOS15 ARM64 and macOS15-intel. Native host+architecture is checked before bootstrap and build. GitLab needs these provisioned tags (unavailable runners remain pending):
+GitHub uses real hosted labels Ubuntu24.04 x64/ARM64, Windows2022/MSVC, macOS15 ARM64 and macOS15-intel. Native host+architecture is checked before bootstrap and build.
+
+### GitLab runners (gitlab.rylanswebsite.com, project 80)
+
+The instance has only generic, untagged instance runners: 9 and 10, plus 4,
+which is stale. They use the Docker executor (SEDSnet's jobs run on them with
+`image:`). The runner API needs a token, so this was worked out from the
+configuration, not read from the server. The binding is in the `gitlab` column
+of `platforms.json`.
+
+- **Generic Docker runners, no tags:** `ci-contracts`, plus
+  `frontend-build-docker` for web, android, android-armv7, android_sim,
+  wearos and wearos_sim. These jobs use `python:3.11-bookworm` and source
+  `scripts/ci/gitlab_docker_prereqs.sh`, which installs the build packages,
+  Node 22.23.5, rustup, JDK 17 and Android cmdline-tools 13114758 with the
+  SDK/NDK packages. Every download is pinned by SHA-256, except that
+  rustup-init is checked against its own published checksum. The runner must
+  be x86_64; the script and `validate_host` refuse anything else.
+- **Tagged native runners, `frontend-build`:** these jobs stay pending until a
+  runner with the tag is registered.
+  - Desktop Linux packages (Flatpak, AppImage/FUSE, Ubuntu 24.04
+    makepkg/pacman 6.0.2) do not work in an unprivileged Debian container.
+  - Windows and Apple targets need their own OS.
 
 | Tag | Required native host |
 |---|---|
-| gs-ui-linux-x64 | Linux x86_64, plus AndroidSDK for Android jobs |
+| gs-ui-linux-x64 | Linux x86_64 Ubuntu 24.04 (desktop `linux` target only) |
 | gs-ui-linux-arm64 | Linux aarch64 |
 | gs-ui-windows-x64 | Windows x86_64 with MSVC environment/WindowsSDK/WebView2 tooling |
 | gs-ui-macos-arm64 | AppleSilicon macOS15+full Xcode/device+simulatorSDKs |
 | gs-ui-macos-x64 | Intel macOS15+full Xcode/device+simulatorSDKs |
+
+Register them as shell runners on the machine that provides the host, with a
+runner authentication token from Admin → CI/CD → Runners → New instance runner
+(or project 80 → Settings → CI/CD → Runners), created with the matching tags
+and "Run untagged jobs" **off**:
+
+```sh
+# Apple silicon Mac (macos, ios, watchos, ios_sim, watchos_sim)
+gitlab-runner register --non-interactive --url https://gitlab.rylanswebsite.com \
+  --token "$RUNNER_TOKEN" --executor shell --description gs-ui-macos-arm64
+# Intel Mac (macos-intel, ios_sim_intel, watchos_sim_intel): same with gs-ui-macos-x64
+# Ubuntu 24.04 x86_64 (linux): --executor shell, gs-ui-linux-x64
+# Ubuntu 24.04 aarch64 (linux-arm64): --executor shell, gs-ui-linux-arm64
+# Windows x64 (windows): --executor shell --shell pwsh, gs-ui-windows-x64
+```
+
+With the current runner flow the tags belong to the token (set when creating
+the runner in the UI, `tag_list` in the API), not to `register`. On a legacy
+registration token, add `--tag-list gs-ui-macos-arm64 --run-untagged=false`
+to `register`. Keep these runners off any workstation holding signing
+material. GitLab project 80 publishes nothing: releases, signing and store
+uploads exist only in GitHub's `release.yml`.
 
 These GitLab registrations have NOT been inspected or executed by this patch. Configure isolated ephemeral shell runners with Python3.11 (`python` on PATH), Rustup/Cargo, Node22/npm and git. No hardware/devices, Apple signing identities, provisioning profiles, upload/signing/notary credentials or production secrets should be installed. Untrusted merge requests must not execute on a privileged persistent crew workstation. Jobs deliberately contain no signing/deployment secrets or token printing. Both normaljob andfailure logs/artifacts are retained7days; inspect before sharing if upstream tools unexpectedly print sensitive host state.
 
