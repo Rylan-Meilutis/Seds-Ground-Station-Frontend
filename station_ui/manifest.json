@@ -72,6 +72,11 @@
       "kind": "bytes"
     },
     {
+      "name": "TERRAIN_JS",
+      "path": "station_ui/rendering/three/terrain.js",
+      "kind": "bytes"
+    },
+    {
       "name": "SOFTWARE_RENDERER_JS",
       "path": "station_ui/rendering/three/software-renderer.js",
       "kind": "bytes"
