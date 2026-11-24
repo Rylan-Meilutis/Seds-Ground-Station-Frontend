@@ -540,6 +540,20 @@ pub(super) fn RecordingStorePanel(
                                             });
                                         }
                                     }, "Download database" }
+                                    button { disabled: busy(), title: "Everything needed to replay this recording with no station: rows, layout, calibration, diagrams, vehicle geometry, summaries and the CSV. Open it with Explore offline → Open replay file.", onclick: {
+                                        let id = capture.id.clone();
+                                        move |_| {
+                                            let id = id.clone();
+                                            let owner = match super::recording_download::ExportOwner::capture() { Ok(owner) => owner, Err(error) => { message.set(error); return; } };
+                                            busy.set(true);
+                                            spawn(async move {
+                                                let name = format!("{}.gsreplay", id.trim_end_matches(".db"));
+                                                let result = super::recording_download::download_csv_path_owned(&format!("/api/recordings/{id}/bundle"), &name, owner.clone()).await;
+                                                if owner.is_current() { message.set(result.unwrap_or_else(|error| format!("Download failed: {error}"))); }
+                                                busy.set(false);
+                                            });
+                                        }
+                                    }, "Download replay bundle" }
                                     if current.is_admin {
                                         if pending_delete.read().as_deref() == Some(capture.id.as_str()) {
                                             button { disabled: busy(), onclick: {
