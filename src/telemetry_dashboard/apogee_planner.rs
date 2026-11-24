@@ -61,10 +61,17 @@ pub(crate) struct Settings {
     pub launch_time_ms: Option<i64>,
     pub manual_weather: ManualWeather,
     pub tank_temp_c: Option<f64>,
-    pub tank_volume_l: f64,
-    pub min_ullage_frac: f64,
-    pub min_fill_kg: f64,
-    pub meop_psi: f64,
+    // Tank and limit values come from the station. One it omits is shown as
+    // "not set" (never an invented value) and is left out when saving, so
+    // the station keeps its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tank_volume_l: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_ullage_frac: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min_fill_kg: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meop_psi: Option<f64>,
     pub nominal_supercharge_psi: Option<f64>,
 }
 impl Default for Settings {
@@ -77,10 +84,10 @@ impl Default for Settings {
             launch_time_ms: None,
             manual_weather: ManualWeather::default(),
             tank_temp_c: None,
-            tank_volume_l: 12.0,
-            min_ullage_frac: 0.15,
-            min_fill_kg: 3.0,
-            meop_psi: 750.0,
+            tank_volume_l: None,
+            min_ullage_frac: None,
+            min_fill_kg: None,
+            meop_psi: None,
             nominal_supercharge_psi: None,
         }
     }
@@ -478,6 +485,11 @@ fn opt_text(value: Option<f64>) -> String {
     value.map(|v| format!("{v}")).unwrap_or_default()
 }
 
+/// A required tank or limit value the station did not send reads "not set".
+fn limit_placeholder(value: &str, optional: bool) -> &'static str {
+    if value.is_empty() && !optional { "not set" } else { "" }
+}
+
 /// Empty text is None; anything else must be a finite number.
 pub(crate) fn parse_optional(text: &str) -> Result<Option<f64>, ()> {
     let text = text.trim();
@@ -700,10 +712,10 @@ pub(super) fn ApogeePlannerView(theme: super::layout::ThemeConfig, admin: bool, 
     ];
     let limit_fields: Vec<(&'static str, &'static str, String, NumberSetter, bool)> = vec![
         ("tank_temp", "Tank temperature override (°C, empty = ambient)", opt_text(d.tank_temp_c), |s, v| s.tank_temp_c = v, true),
-        ("tank_volume", "Run tank volume (L)", format!("{}", d.tank_volume_l), |s, v| s.tank_volume_l = v.unwrap_or_default(), false),
-        ("ullage", "Minimum ullage (fraction)", format!("{}", d.min_ullage_frac), |s, v| s.min_ullage_frac = v.unwrap_or_default(), false),
-        ("min_fill", "Minimum fill (kg)", format!("{}", d.min_fill_kg), |s, v| s.min_fill_kg = v.unwrap_or_default(), false),
-        ("meop", "Max supercharge / MEOP (psi)", format!("{}", d.meop_psi), |s, v| s.meop_psi = v.unwrap_or_default(), false),
+        ("tank_volume", "Run tank volume (L)", opt_text(d.tank_volume_l), |s, v| s.tank_volume_l = v, false),
+        ("ullage", "Minimum ullage (fraction)", opt_text(d.min_ullage_frac), |s, v| s.min_ullage_frac = v, false),
+        ("min_fill", "Minimum fill (kg)", opt_text(d.min_fill_kg), |s, v| s.min_fill_kg = v, false),
+        ("meop", "Max supercharge / MEOP (psi)", opt_text(d.meop_psi), |s, v| s.meop_psi = v, false),
         ("nominal_sc", "Nominal supercharge (psi, empty = current target)", opt_text(d.nominal_supercharge_psi), |s, v| s.nominal_supercharge_psi = v, true),
     ];
     let input_style = "font:inherit;min-height:36px;width:12ch;padding:4px 8px;";
@@ -782,6 +794,7 @@ pub(super) fn ApogeePlannerView(theme: super::layout::ThemeConfig, admin: bool, 
                         for (key, label, value, set, optional) in limit_fields {
                             label { key: "{key}", style: label_style, "{label}"
                                 input { r#type: "text", inputmode: "decimal", initial_value: "{value}", style: input_style,
+                                    placeholder: limit_placeholder(&value, optional),
                                     oninput: move |e| number_field(key, e.value(), set, optional) }
                             }
                         }
@@ -1012,6 +1025,25 @@ mod tests {
         s.last_plan = plan;
         s.apply_gate = ApplyGate { allowed: gate.0, reason: gate.1.map(str::to_owned) };
         s
+    }
+
+    #[test]
+    fn omitted_tank_and_limit_settings_are_not_set_rather_than_invented() {
+        let empty: Settings = serde_json::from_value(json!({})).unwrap();
+        assert_eq!((empty.tank_volume_l, empty.min_ullage_frac, empty.min_fill_kg, empty.meop_psi), (None, None, None, None));
+        assert_eq!(opt_text(empty.tank_volume_l), "");
+        assert_eq!(limit_placeholder(&opt_text(empty.tank_volume_l), false), "not set");
+        assert_eq!(limit_placeholder("", true), "", "optional overrides explain themselves");
+        // Saving leaves them out, so the station keeps its own values.
+        let saved = serde_json::to_value(&empty).unwrap();
+        for field in ["tank_volume_l", "min_ullage_frac", "min_fill_kg", "meop_psi"] {
+            assert!(saved.get(field).is_none(), "{field} must not be sent when not set");
+        }
+        // Values the station sends are shown and saved unchanged.
+        let station: Settings = serde_json::from_value(json!({"tank_volume_l": 15.8537, "min_ullage_frac": 0.15, "min_fill_kg": 3.0, "meop_psi": 750.0})).unwrap();
+        assert_eq!(station.tank_volume_l, Some(15.8537));
+        assert_eq!(opt_text(station.tank_volume_l), "15.8537");
+        assert_eq!(serde_json::to_value(&station).unwrap()["meop_psi"], 750.0);
     }
 
     #[test]
