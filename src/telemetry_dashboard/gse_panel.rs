@@ -333,16 +333,10 @@ pub(super) async fn delay() {
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
 }
 fn sync_scene(status: &Status) {
-    let url = serde_json::to_string(&format!(
-        "{}/assets/models/gse-site.glb",
-        UrlConfig::base_http()
-    ))
-    .unwrap();
-    let renderer = serde_json::to_string(&format!(
-        "{}/assets/model-viewer.min.js",
-        UrlConfig::base_http()
-    ))
-    .unwrap();
+    // With a local station the UI's own copies of the shared assets serve.
+    let base = if super::station_link::is_local() { String::new() } else { UrlConfig::base_http() };
+    let url = serde_json::to_string(&format!("{base}/assets/models/gse-site.glb")).unwrap();
+    let renderer = serde_json::to_string(&format!("{base}/assets/model-viewer.min.js")).unwrap();
     let animation = match status.phase.as_str() {
         "raising" | "settling" | "holding" => "nitrogen-test",
         "filling" => "nitrous-fill",

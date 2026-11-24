@@ -1,61 +1,120 @@
-//! The demo and replay sessions answer the station contract in the shapes the
-//! live dashboard decodes, and the demo scenario is internally consistent.
+//! The local station answers the station contract in the shapes the live
+//! dashboard decodes, pushes the station's frames as its clock runs, answers
+//! every write itself, and the demo scenario is internally consistent.
 use super::*;
-use crate::telemetry_dashboard::{AlertMsg, layout::LayoutConfig, mission_phase::FlightStateReply, types, vehicle_replay};
+use crate::telemetry_dashboard::{AlertMsg, ActionPolicyMsg, WsInMsg, layout::LayoutConfig, mission_phase::FlightStateReply, types, vehicle_replay};
 
 const EPOCH: i64 = 1_767_225_600_000;
 
-fn decode<T: serde::de::DeserializeOwned>(session: &Session, path: &str, at: i64) -> T {
-    let value = session.get(path, at).unwrap_or_else(|| panic!("{path} not served"));
-    serde_json::from_value(value).unwrap_or_else(|e| panic!("{path} does not decode with the UI type: {e}"))
+fn decode<T: serde::de::DeserializeOwned>(station: &LocalStation, path: &str) -> T {
+    let reply = station.request_at("GET", path, None, EPOCH);
+    assert_eq!(reply.status, 200, "{path}: {}", reply.text());
+    serde_json::from_slice(&reply.body).unwrap_or_else(|e| panic!("{path} does not decode with the UI type: {e}"))
+}
+
+fn frames(station: &LocalStation, wall: i64) -> Vec<WsInMsg> {
+    station.frames(wall).iter().map(|f| serde_json::from_str(f).unwrap_or_else(|e| panic!("frame {f:.80} does not decode: {e}"))).collect()
 }
 
 #[test]
 fn demo_routes_decode_with_the_live_dashboard_types() {
-    let s = demo::session(EPOCH);
-    let at = demo::OPEN_AT_MS;
-    let layout: LayoutConfig = decode(&s, "/api/layout", at);
+    let station = LocalStation::new(demo::session(0), EPOCH);
+    let layout: LayoutConfig = decode(&station, "/api/layout");
     assert!(!layout.data_tab.tabs.is_empty());
     assert!(!layout.state_tab.states.is_empty());
-    let boards: types::BoardStatusMsg = decode(&s, "/api/boards", at);
+    let boards: types::BoardStatusMsg = decode(&station, "/api/boards");
     assert_eq!(boards.boards.len(), 7);
     assert!(boards.boards.iter().all(|b| b.seen && b.age_ms.is_some_and(|a| a <= 1_000)), "every demo board is fresh");
-    let (state, _) = decode::<FlightStateReply>(&s, "/flightstate", at).into_parts();
+    let (state, _) = decode::<FlightStateReply>(&station, "/flightstate").into_parts();
     assert_eq!(state, "NitrousFill");
-    let recent: Vec<types::TelemetryRow> = decode(&s, "/api/recent", at);
+    let recent: Vec<types::TelemetryRow> = decode(&station, "/api/recent?display=true&max_rows=12000");
     assert!(recent.len() > 100);
-    assert!(recent.iter().all(|r| r.timestamp_ms >= EPOCH && r.timestamp_ms <= EPOCH + at));
-    let alerts: Vec<AlertMsg> = decode(&s, "/api/alerts", 400_000);
-    assert_eq!(alerts.len(), 4);
-    let recordings: Vec<vehicle_replay::Recording> = decode(&s, "/api/recordings", at);
-    assert_eq!(recordings.len(), 3);
-    let session: crate::auth::SessionStatus = decode(&s, "/api/auth/session", at);
-    assert!(!session.authenticated);
-    assert!(s.get("/api/gps", at).unwrap()["rocket"]["lat"].as_f64().is_some());
-    assert!(s.get("/api/calibration", at).unwrap()["extra_channels"].as_object().is_some_and(|c| !c.is_empty()));
-    assert!(s.get("/api/firmware/targets", at).is_none(), "unserved routes are not invented");
+    assert!(recent.iter().all(|r| r.timestamp_ms <= EPOCH && r.timestamp_ms >= EPOCH - demo::OPEN_AT_MS), "history is the scenario so far, stamped as received");
+    let alerts: Vec<AlertMsg> = decode(&station, "/api/alerts?minutes=20");
+    assert_eq!(alerts.len(), 2, "the warnings raised before the demo opens");
+    let recordings: Vec<vehicle_replay::Recording> = decode(&station, "/api/recordings");
+    assert_eq!(recordings.len(), 1);
+    let replay: Value = decode(&station, "/api/recordings/demo-flight.db/replay/export");
+    assert_eq!(replay["format"], "seds-replay");
+    let session: crate::auth::SessionStatus = decode(&station, "/api/auth/session");
+    assert!(session.permissions.view_data && session.permissions.send_commands && session.anonymous);
+    assert_eq!(session.station_name.as_deref(), Some("Demo rocket"));
+    let policy: ActionPolicyMsg = decode(&station, "/api/action_policy");
+    assert!(policy.controls.iter().any(|c| c.cmd == "Launch" && c.enabled), "the layout's actions are offered");
+    let _: types::NetworkTopologyMsg = decode(&station, "/api/network_topology");
+    assert!(station.request("GET", "/api/calibration", None).ok());
+    let missing = station.request("GET", "/api/firmware/targets", None);
+    assert_eq!(missing.status, 404, "unserved routes are not invented");
 }
 
 #[test]
-fn every_dashboard_widget_in_the_demo_layout_has_data() {
-    let s = demo::session(EPOCH);
-    for state in s.layout["state_tab"]["states"].as_array().unwrap() {
-        for section in state["sections"].as_array().unwrap() {
-            for w in section["widgets"].as_array().unwrap() {
-                let types: Vec<&str> = match w["kind"].as_str().unwrap() {
-                    "summary" | "valve_state" => vec![w["data_type"].as_str().unwrap()],
-                    "chart" => w["chart_series"].as_array().unwrap().iter().map(|c| c["data_type"].as_str().unwrap()).collect(),
-                    _ => vec![],
-                };
-                for ty in types {
-                    assert!(s.latest(ty, None, demo::LOOP_MS).is_some(), "{ty} in the demo layout has no samples");
-                }
-            }
-        }
+fn the_clock_pushes_station_frames_in_order() {
+    let station = LocalStation::new(demo::session(0), EPOCH);
+    assert!(frames(&station, EPOCH).iter().any(|f| matches!(f, WsInMsg::BoardStatus(_))));
+    // 40 s on: the fill completes, the station arms and Launch is pressed.
+    let later = frames(&station, EPOCH + 40_000);
+    let rows: usize = later.iter().map(|f| match f { WsInMsg::TelemetryBatch(rows) => rows.len(), _ => 0 }).sum();
+    assert!(rows > 500, "{rows} rows in 40 s");
+    let batches: Vec<&Vec<types::TelemetryRow>> = later.iter().filter_map(|f| match f { WsInMsg::TelemetryBatch(rows) => Some(rows), _ => None }).collect();
+    assert!(batches.iter().flat_map(|b| b.iter()).all(|r| r.timestamp_ms > EPOCH && r.timestamp_ms <= EPOCH + 40_000), "rows are stamped as received now");
+    assert!(later.iter().any(|f| matches!(f, WsInMsg::FlightState(m) if m.state == "Launch")));
+    assert!(frames(&station, EPOCH + 40_000).iter().all(|f| !matches!(f, WsInMsg::TelemetryBatch(_))), "nothing is sent twice");
+    // Ten times faster: 10 s of wall time covers 100 s of the scenario.
+    station.set_speed(10.0, false, EPOCH + 40_000);
+    assert_eq!(station.playback(EPOCH + 50_000).position, demo::OPEN_AT_MS + 140_000);
+    // The demo loops; a replay stops at its end.
+    assert_eq!(station.playback(EPOCH + 90_000).position, (demo::OPEN_AT_MS + 40_000 + 500_000) % demo::LOOP_MS);
+    let replay = LocalStation::new(bundle::open("flight.gsreplay", BUNDLE).unwrap(), EPOCH);
+    let end = replay.session.end_ms();
+    assert_eq!(replay.playback(EPOCH + 10_000_000).position, end);
+    assert!(replay.playback(EPOCH + 10_000_000).paused);
+    replay.seek(replay.session.start_ms() + 60_000, EPOCH);
+    assert_eq!(replay.playback(EPOCH).position, replay.session.start_ms() + 60_000);
+    let recent: Vec<types::TelemetryRow> = decode(&replay, "/api/recent");
+    assert!(!recent.is_empty() && recent.iter().all(|r| r.timestamp_ms <= EPOCH), "history up to the new position");
+    assert!(recent.iter().any(|r| r.timestamp_ms > EPOCH - 1_000));
+}
+
+#[test]
+fn commands_and_writes_are_answered_here_and_never_sent() {
+    let station = LocalStation::new(demo::session(0), EPOCH);
+    station.command(r#"{"cmd":"Launch"}"#);
+    let acks: Vec<String> = frames(&station, EPOCH).into_iter().filter_map(|f| match f { WsInMsg::Notification(n) => Some(n.message), _ => None }).collect();
+    assert_eq!(acks, ["Demo: “Launch” acknowledged. Nothing was sent; no station is connected."]);
+    for (method, path) in [("POST", "/api/command"), ("POST", "/api/calibration"), ("PUT", "/api/layout"), ("DELETE", "/api/recordings/x"), ("PATCH", "/api/fill_targets")] {
+        let reply = station.request(method, path, Some(br#"{"cmd":"Dump"}"#));
+        assert_eq!(reply.status, 409, "{method} {path} is refused, not applied");
+        assert!(reply.text().contains("Nothing was sent"));
     }
-    for c in s.channels() {
-        assert!(s.series(&c, 0, demo::LOOP_MS, 10).len() > 1, "{} {} has no history", c.group, c.label);
+    let replay = LocalStation::new(replay_file::open("f.json", include_str!("../../../tests/fixtures/offline-flight.json")).unwrap(), EPOCH);
+    replay.command(r#"{"cmd":"Abort"}"#);
+    let acks: Vec<String> = frames(&replay, EPOCH).into_iter().filter_map(|f| match f { WsInMsg::Notification(n) => Some(n.message), _ => None }).collect();
+    assert_eq!(acks, ["Replay is read-only: “Abort” was not sent."]);
+    assert!(replay.request("POST", "/api/fill_targets", None).text().contains("read-only"));
+}
+
+#[test]
+fn selecting_a_local_station_reroutes_and_releases_everything() {
+    use crate::telemetry_dashboard::{UrlConfig, persist, station_link};
+    let before = live_sessions();
+    persist::set_string("local-station-test-key", "station");
+    {
+        let station = std::rc::Rc::new(LocalStation::new(demo::session(0), EPOCH));
+        let _selected = station_link::LocalSelection::install(station.clone());
+        assert!(station_link::is_local());
+        assert_eq!(UrlConfig::base_http(), station_link::LOCAL_BASE);
+        assert_eq!(station_link::request("GET", "/flightstate", None).unwrap().status, 200);
+        assert!(station_link::request_url("GET", "https://elsewhere/api/layout", None).is_none(), "only the local base is answered");
+        persist::set_string("local-station-test-key", "demo");
+        assert_eq!(persist::get_string("local-station-test-key").as_deref(), Some("demo"), "the dashboard sees its own writes");
+        assert!(station_link::native_local_tile(10, 1, 1).is_some_and(|t| t.is_none()), "the map never asks a station for tiles");
     }
+    assert!(!station_link::is_local());
+    assert!(station_link::request("GET", "/flightstate", None).is_none());
+    assert_eq!(persist::get_string("local-station-test-key").as_deref(), Some("station"), "stored preferences are untouched");
+    assert!(station_link::native_local_tile(10, 1, 1).is_none());
+    assert_eq!(live_sessions(), before, "the station and its rows are freed");
+    persist::_remove("local-station-test-key");
 }
 
 #[test]
@@ -63,18 +122,15 @@ fn the_demo_scenario_is_consistent() {
     let s = demo::session(EPOCH);
     let order: Vec<&str> = s.states.iter().map(|(_, n)| n.as_str()).collect();
     assert_eq!(order, ["Idle", "PreFill", "NitrogenFill", "NitrousFill", "Armed", "Launch", "Ascent", "Coast", "Descent", "Landed"]);
-    let mass = s.first_channel("LOADCELL_50_WEIGHT_KG", 0).unwrap();
-    let pressure = s.first_channel("OX_TANK_PRESSURE", 0).unwrap();
-    let altitude = s.first_channel("BAROMETER_DATA", 0).unwrap();
-    let (m_open, _) = s.value(&mass, demo::OPEN_AT_MS).unwrap();
+    let v = |ty: &str, index: usize, at: i64| s.latest(ty, None, at).and_then(|r| r.values[index]).unwrap();
+    let m_open = v("LOADCELL_50_WEIGHT_KG", 0, demo::OPEN_AT_MS);
     assert!((5.0..10.5).contains(&m_open), "the demo opens partway through the fill: {m_open}");
-    let (m_armed, _) = s.value(&mass, 120_000).unwrap();
-    assert!((10.3..10.6).contains(&m_armed));
-    assert!(s.value(&pressure, 120_000).unwrap().0 > 700.0);
-    assert!(s.value(&altitude, 120_000).unwrap().0.abs() < 2.0, "on the pad before launch");
-    let apogee = s.series(&altitude, 0, demo::LOOP_MS, usize::MAX).into_iter().map(|p| p.1).fold(0.0f32, f32::max);
+    assert!((10.3..10.6).contains(&v("LOADCELL_50_WEIGHT_KG", 0, 120_000)));
+    assert!(v("OX_TANK_PRESSURE", 0, 120_000) > 700.0);
+    assert!(v("BAROMETER_DATA", 0, 120_000).abs() < 2.0, "on the pad before launch");
+    let apogee = s.samples.iter().filter(|r| r.data_type == "BAROMETER_DATA").filter_map(|r| r.values[0]).fold(0.0f32, f32::max);
     assert!((3_000.0..3_100.0).contains(&apogee), "nominal 10k ft flight: {apogee} m");
-    assert!(s.value(&mass, 200_000).unwrap().0.abs() < 0.1, "tank empty after the burn");
+    assert!(v("LOADCELL_50_WEIGHT_KG", 0, 200_000).abs() < 0.1, "tank empty after the burn");
     assert_eq!(s.state_at(170_000), "Descent");
     // Valve states agree with the phase.
     let valves = s.latest("VALVE_STATE", None, 60_500).unwrap();
@@ -82,21 +138,7 @@ fn the_demo_scenario_is_consistent() {
     let valves = s.latest("VALVE_STATE", None, 120_000).unwrap();
     assert!(valves.values[..6].iter().all(|v| *v == Some(0.0)), "armed: outputs closed");
     assert!(s.samples.iter().all(|r| r.values.iter().flatten().all(|v| v.is_finite())));
-    let track = s.track(demo::LOOP_MS);
-    assert!(track.len() > 400);
-    let summary = s.summary();
-    assert!(summary.iter().any(|(k, v)| k == "Apogee (barometer)" && v.contains("ft")), "{summary:?}");
-    assert!(summary.iter().any(|(k, _)| k.starts_with("Burn")));
-}
-
-#[test]
-fn demo_commands_are_acknowledged_and_replays_are_read_only() {
-    let s = demo::session(EPOCH);
-    let (ok, message) = s.command("Launch");
-    assert!(ok && message.contains("Nothing was sent"));
-    let r = replay_file::open("f.json", include_str!("../../../tests/fixtures/offline-flight.json")).unwrap();
-    let (ok, message) = r.command("Launch");
-    assert!(!ok && message.contains("read-only"));
+    assert!(s.track(demo::LOOP_MS).len() > 400);
 }
 
 #[test]
@@ -130,7 +172,6 @@ fn replay_files_open_in_every_mode_and_degrade_without_config() {
         file.as_object_mut().unwrap().remove(field);
     }
     let s = replay_file::open("old.json", &file.to_string()).unwrap();
-    assert!(!s.channels().is_empty(), "recorded types are listed under their own names");
     assert!(s.boards.iter().any(|b| b.sender == "VB"));
     assert!(s.vehicle_geometry.is_none());
     assert!(s.notes.iter().any(|n| n.contains("generic rocket")));
@@ -154,45 +195,6 @@ fn replay_flight_state_rows_become_the_state_timeline() {
     assert_eq!(s.mode, Mode::Flight, "FC rows imply a flight");
 }
 
-#[test]
-fn diagram_inputs_follow_the_session_clock() {
-    use crate::telemetry_dashboard::live_diagrams::{derive, topology};
-    let s = demo::session(EPOCH);
-    let fill = topology::bundled().into_iter().find(|t| t.id == "fill").unwrap();
-    let filling = derive::derive(&fill, &DiagramInputs { session: &s, at: 60_500 });
-    let armed = derive::derive(&fill, &DiagramInputs { session: &s, at: 120_000 });
-    assert_ne!(format!("{filling:?}"), format!("{armed:?}"), "the fill diagram changes between filling and armed");
-}
-
-/// Live telemetry ingest cost: decode WebSocket-sized batches with the live
-/// `TelemetryRow` type and intern their ids, as every live row is. Used to
-/// show the offline workspace adds nothing to the live path:
-/// `cargo test --release --bin groundstation_frontend live_row_ingest_cost -- --ignored --nocapture`
-#[test]
-#[ignore]
-fn live_row_ingest_cost() {
-    let batch: Vec<Value> = (0..256)
-        .map(|i: i64| {
-            let (data_type, sender) = [("OX_TANK_PRESSURE", "VB"), ("VALVE_STATE", "VB"), ("GPS_DATA", "FC"), ("BATTERY_VOLTAGE", "PB")][i as usize % 4];
-            json!({"timestamp_ms": EPOCH + i * 20, "received_timestamp_ms": EPOCH + i * 20, "data_type": data_type, "sender_id": sender, "values": [1.5, 2.5, 3.5]})
-        })
-        .collect();
-    let text = Value::Array(batch).to_string();
-    let rounds = 2_000;
-    let started = std::time::Instant::now();
-    let mut rows_seen = 0usize;
-    for _ in 0..rounds {
-        let mut rows: Vec<types::TelemetryRow> = serde_json::from_str(&text).unwrap();
-        for row in &mut rows {
-            row.refresh_interned_ids();
-        }
-        rows_seen += rows.len();
-    }
-    let per_row_ns = started.elapsed().as_nanos() as f64 / rows_seen as f64;
-    println!("live_row_ingest_cost: {rows_seen} rows, {per_row_ns:.0} ns/row; offline sessions alive: {}", live_sessions());
-    assert_eq!(live_sessions(), 0);
-}
-
 const BUNDLE: &[u8] = include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/flight.gsreplay");
 const STATION_CSV: &[u8] = include_bytes!("../../../tests/fixtures/backend-contract/replay-bundle/flight.csv");
 
@@ -203,8 +205,6 @@ fn a_station_bundle_opens_with_everything_and_exports_the_station_csv() {
     assert_eq!(s.samples.len(), 601);
     assert!(s.layout["state_tab"].is_object(), "layout from the bundle");
     assert!(s.vehicle_geometry.is_some(), "vehicle geometry from the bundle");
-    assert!(!s.diagrams.is_empty(), "station diagrams from the bundle");
-    assert!(!s.derived.is_empty(), "flight review figures from the bundle");
     assert!(s.boards.iter().any(|b| b.sender == "FC" && b.label != "FC"), "board names from the bundle");
     assert!(s.track(i64::MAX).len() > 100);
     // The flight replay player gets the backend track, the flight review and the predicted flag.
@@ -217,6 +217,16 @@ fn a_station_bundle_opens_with_everything_and_exports_the_station_csv() {
     assert_eq!(s.csv.as_deref().map(Vec::as_slice), Some(STATION_CSV));
     assert!(std::str::from_utf8(STATION_CSV).unwrap().starts_with("id,"));
     assert_eq!(s.manifest.as_ref().unwrap()["version"], 1);
+    // Served as the station served it: the recording's CSV route and its snapshots.
+    let station = LocalStation::new(s, EPOCH);
+    let id = station.session.manifest.as_ref().unwrap()["source"]["recording"].as_str().unwrap().to_string();
+    let csv = station.request("GET", &format!("/api/recordings/{id}/csv"), None);
+    assert_eq!(csv.body, STATION_CSV);
+    for route in ["/api/calibration", "/api/diagrams", "/api/vehicle/geometry", &format!("/api/recordings/{id}/replay/export")] {
+        assert!(station.request("GET", route, None).ok(), "{route} from the bundle");
+    }
+    let recordings: Vec<vehicle_replay::Recording> = decode(&station, "/api/recordings");
+    assert_eq!(recordings[0].id, id);
 }
 
 #[test]

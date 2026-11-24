@@ -189,6 +189,10 @@ pub(super) async fn post_primary(owner: &CommandOwner) -> Result<auth::CommandPr
         { web_sys::window().ok_or("Window unavailable")?.location().origin().map_err(|_| "Origin unavailable")? }
     } else { owner.base().trim_end_matches('/').to_owned() };
     let body = serde_json::to_string(owner.command()).map_err(|e| e.to_string())?;
+    // A local station acknowledges the command itself; nothing is sent.
+    if let Some(reply) = super::station_link::request("POST", "/api/command", Some(body.as_bytes())) {
+        return Err(format!("HTTP {}: {}", reply.status, reply.text().chars().take(200).collect::<String>()));
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let (status, text) = {
         let client = auth::build_native_http_client(owner.skip_tls,

@@ -111,8 +111,9 @@ async fn save_to_source(context: &SourceContext, body: &Value) -> Result<Value, 
     }
     let owner = context.owner.as_ref().map_err(Clone::clone)?;
     owner.check_ordinary()?;
+    let local = super::station_link::request("POST", "/api/actuator/plumbing/settings", Some(body.to_string().as_bytes()));
     #[cfg(target_arch = "wasm32")]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let base = if context.base.is_empty() {
             web_sys::window()
                 .ok_or("No window")?
@@ -157,7 +158,7 @@ async fn save_to_source(context: &SourceContext, body: &Value) -> Result<Value, 
         }
     };
     #[cfg(not(target_arch = "wasm32"))]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let base = if context.base.is_empty() {
             "http://localhost:3000"
         } else {

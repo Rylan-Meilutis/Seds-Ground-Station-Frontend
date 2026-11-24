@@ -81,6 +81,18 @@ pub(super) async fn download_csv_path_owned(
     use wasm_bindgen::JsCast;
     owner.check()?;
     let url = export_url(&owner, path)?;
+    if let Some(reply) = super::station_link::request("GET", path, None) {
+        if !reply.ok() {
+            return Err(format!("Export failed ({}): {}", reply.status, reply.text().chars().take(200).collect::<String>()));
+        }
+        let array = js_sys::Uint8Array::from(reply.body.as_slice());
+        let options = web_sys::BlobPropertyBag::new();
+        options.set_type(&reply.content_type);
+        let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&js_sys::Array::of1(&array), &options)
+            .map_err(|_| "Cannot create the export")?;
+        save_browser_blob(&owner, &blob, filename)?;
+        return Ok("Export ready. Check your downloads.".into());
+    }
     let controller =
         web_sys::AbortController::new().map_err(|_| "Export cancellation is unavailable")?;
     let _cancel = super::HttpAbortOnDrop(controller.clone());
@@ -177,6 +189,17 @@ async fn download_csv_to_directory(
     directory: &std::path::Path,
 ) -> Result<String, String> {
     owner.check()?;
+    if let Some(reply) = super::station_link::request("GET", path, None) {
+        if !reply.ok() {
+            return Err(format!("Export failed ({}): {}", reply.status, reply.text().chars().take(200).collect::<String>()));
+        }
+        let mut output = local_file::Output::create(directory, filename).map_err(|e| e.to_string())?;
+        output.write(&reply.body).map_err(|e| e.to_string())?;
+        let target = output
+            .finish(|| owner.check().map_err(std::io::Error::other))
+            .map_err(|e| format!("Cannot publish export without replacing an existing file: {e}"))?;
+        return Ok(format!("Saved export to {}", target.display()));
+    }
     let base = if owner.base().is_empty() {
         "http://localhost:3000"
     } else {
@@ -362,8 +385,10 @@ fn saved_json_captured<T: serde::de::DeserializeOwned>(
     owner.check()?;
     if let Some(context) = &context { context.check_current()?; }
     let url = export_url(&owner, &path)?;
+    // A local station (demo, replay file) answers here; nothing is fetched.
+    let local = super::station_link::request("GET", &path, None);
     #[cfg(not(target_arch = "wasm32"))]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let (connect, timeout) = super::native_http_timeouts(&path);
         let client = auth::build_native_http_client(owner.skip_tls(), connect, timeout)?;
         let mut request = client.get(url);
@@ -390,7 +415,7 @@ fn saved_json_captured<T: serde::de::DeserializeOwned>(
         (status, text)
     };
     #[cfg(target_arch = "wasm32")]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let controller =
             web_sys::AbortController::new().map_err(|_| "Export cancellation is unavailable")?;
         let _cancel = super::HttpAbortOnDrop(controller.clone());

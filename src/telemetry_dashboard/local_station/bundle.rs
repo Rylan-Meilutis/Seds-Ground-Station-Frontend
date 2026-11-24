@@ -4,10 +4,12 @@
 //! `GET /api/recordings/{id}/bundle`. Every entry is the body of one station
 //! route, and `manifest.json` lists them with their SHA-256. This module reads
 //! the archive (stored or deflated entries, no ZIP64), checks the manifest and
-//! the hashes, and builds the same [`Session`] a replay file gives. The extra
-//! entries (calibration, alerts, diagrams, map tiles, derived summaries and
-//! the recording CSV) fill the pages a replay file leaves empty.
-use super::{CalibrationCurve, Session, replay_file};
+//! the hashes, and builds the same [`Session`] a replay file gives. Every
+//! other entry is kept under the station route it snapshots
+//! ([`Session::route_entry`]), so the local station answers those routes
+//! (calibration, alerts, diagrams, map tiles, derived summaries, the
+//! recording CSV) with the station's own bytes.
+use super::{RouteEntry, Session, replay_file};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -105,49 +107,44 @@ fn json(files: &BTreeMap<String, Vec<u8>>, path: &str) -> Option<Value> {
     serde_json::from_slice(files.get(path)?).ok()
 }
 
-/// Calibration curves from `config/calibration.json` (`extra_channels`, and
-/// the load-cell `points`) as the station serves `GET /api/calibration`.
-fn calibration(document: &Value) -> Vec<CalibrationCurve> {
-    let mut curves = Vec::new();
-    for (name, channel) in document["extra_channels"].as_object().into_iter().flatten() {
-        let points: Vec<(f32, f32)> = channel["points"].as_array().into_iter().flatten().filter_map(|p| Some((p["raw"].as_f64()? as f32, p["expected"].as_f64()? as f32))).collect();
-        curves.push(CalibrationCurve {
-            label: name.clone(),
-            raw_unit: if document["version"].as_u64() == Some(2) { "V".into() } else { "raw".into() },
-            unit: "value".into(),
-            points,
-            slope: channel["linear"]["m"].as_f64().unwrap_or(1.0) as f32,
-            offset: channel["linear"]["b"].as_f64().unwrap_or(0.0) as f32,
-        });
-    }
-    for (key, raw, label, fit) in [("points", "ch0_raw", "Loadcell channel 0", "ch0"), ("points_ch1", "ch1_raw", "Loadcell channel 1", "ch1")] {
-        let points: Vec<(f32, f32)> = document[key].as_array().into_iter().flatten().filter_map(|p| Some((p[raw].as_f64()? as f32, p["kg"].as_f64()? as f32))).collect();
-        if !points.is_empty() {
-            curves.push(CalibrationCurve {
-                label: label.into(),
-                raw_unit: "V".into(),
-                unit: "kg".into(),
-                points,
-                slope: document[fit]["m"].as_f64().unwrap_or(1.0) as f32,
-                offset: document[fit]["b"].as_f64().unwrap_or(0.0) as f32,
-            });
-        }
-    }
-    curves
+/// The station route an entry snapshots. Bundles list it per entry
+/// (`entries[].route`); older bundles are mapped by entry path.
+fn route_of(path: &str, recording: &str) -> Option<String> {
+    let id = super::station::percent_component(recording);
+    Some(match path {
+        "replay.json" => format!("/api/recordings/{id}/replay/export"),
+        "data/telemetry.csv" => format!("/api/recordings/{id}/csv"),
+        "config/calibration.json" => "/api/calibration".into(),
+        "config/calibration_config.json" => "/api/calibration_config".into(),
+        "config/diagrams.json" => "/api/diagrams".into(),
+        "config/map_config.json" => "/api/map_config".into(),
+        "config/vehicle_visualization.json" => "/api/vehicle_visualization".into(),
+        "models/vehicle_geometry.json" => "/api/vehicle/geometry".into(),
+        "derived/context.json" => format!("/api/recordings/{id}/replay/context"),
+        "derived/alerts.json" => format!("/api/recordings/{id}/replay/alerts"),
+        "derived/trajectory.json" => format!("/api/recordings/{id}/replay/trajectory"),
+        "derived/flight_review.json" => format!("/api/flight_review/recording/{id}"),
+        "derived/apogee_planner.json" => "/api/apogee_planner".into(),
+        "derived/burn_reports.json" => "/api/burn_reports".into(),
+        "derived/fire_archive.json" => "/api/fire_archive".into(),
+        other if other.starts_with("tiles/") => format!("/{other}"),
+        _ => return None,
+    })
 }
 
-/// Scalar figures of a derived document, for the summary page.
-fn figures(prefix: &str, value: &Value, out: &mut Vec<(String, String)>) {
-    for (key, item) in value.as_object().into_iter().flatten() {
-        let label = format!("{prefix}{}", key.replace('_', " "));
-        match item {
-            Value::Number(n) => out.push((label, n.as_f64().map(|f| format!("{f:.6}").trim_end_matches('0').trim_end_matches('.').to_string()).unwrap_or_default())),
-            Value::String(s) if s.len() <= 80 => out.push((label, s.clone())),
-            Value::Bool(b) => out.push((label, b.to_string())),
-            Value::Object(_) if prefix.is_empty() && matches!(key.as_str(), "summary" | "flight" | "motor" | "maxima") => figures(&format!("{} · ", key.replace('_', " ")), item, out),
-            _ => {}
-        }
+fn routes(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<String, RouteEntry> {
+    let recording = manifest["source"]["recording"].as_str().unwrap_or_default();
+    let mut out = BTreeMap::new();
+    for (path, body) in files {
+        let listed = manifest["entries"].as_array().into_iter().flatten().find(|e| e["path"] == path.as_str());
+        let route = listed.and_then(|e| e["route"].as_str()).map(|r| r.split('?').next().unwrap_or(r).to_string()).or_else(|| route_of(path, recording));
+        let Some(route) = route else { continue };
+        let media_type = listed.and_then(|e| e["media_type"].as_str()).map(str::to_owned).unwrap_or_else(|| {
+            if path.ends_with(".csv") { "text/csv; charset=utf-8" } else if path.ends_with(".jpg") { "image/jpeg" } else if path.ends_with(".zip") { "application/zip" } else { "application/json" }.to_owned()
+        });
+        out.insert(route, RouteEntry { body: std::rc::Rc::new(body.clone()), media_type });
     }
+    out
 }
 
 /// The plan of a plan bundle and the recent plans a recording bundle carries.
@@ -216,40 +213,11 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
     let text = serde_json::to_string(&document).map_err(|e| e.to_string())?;
     let mut session = replay_file::open(file_name, &text)?;
     session.title = manifest["source"]["recording"].as_str().unwrap_or(file_name).to_string();
-    if let Some(cal) = json(&files, "config/calibration.json") {
-        session.calibration = calibration(&cal);
-    }
-    if let Some(diagrams) = json(&files, "config/diagrams.json") {
-        session.diagrams = diagrams["diagrams"].as_array().cloned().unwrap_or_default();
-    }
-    let mut derived = Vec::new();
-    // Station settings that shaped the recorded values.
-    if let Some(cal) = json(&files, "config/calibration.json") {
-        if let Some(vref) = cal["mcp_vref_v"].as_f64() {
-            derived.push(("DAQ MCP3564R reference (at export)".to_string(), format!("{vref} V")));
-        }
-        if let Some(input) = cal["kg50_input"].as_str() {
-            derived.push(("50 kg loadcell input (at export)".to_string(), input.to_string()));
-        }
-    }
-    for (path, prefix) in [("derived/flight_review.json", ""), ("derived/burn_reports.json", "burn report · ")] {
-        if let Some(value) = json(&files, path) {
-            let value = value.as_array().and_then(|a| a.first().cloned()).unwrap_or(value);
-            figures(prefix, &value, &mut derived);
-        }
-    }
-    session.derived = derived.into_iter().take(24).collect();
-    for (path, data) in &files {
-        let Some(rest) = path.strip_prefix("tiles/").and_then(|p| p.strip_suffix(".jpg")) else { continue };
-        let parts: Vec<u32> = rest.split('/').filter_map(|p| p.parse().ok()).collect();
-        if let [z, x, y] = parts[..] {
-            session.tiles.insert((z, x, y), data.clone());
-        }
-    }
     session.csv = files.get("data/telemetry.csv").cloned().map(std::rc::Rc::new);
     session.terrain = json(&files, "terrain/heightmap.json").filter(|t| t["available"] == true);
     session.trajectory = json(&files, "derived/trajectory.json");
     session.recovery_search = json(&files, "derived/recovery_search.json").filter(|v| v["overlay"].is_object());
+    session.routes = routes(&manifest, &files);
     session.notes.push(format!(
         "Bundle from {} ({}), {} entries, made {}.",
         manifest["source"]["station_name"].as_str().unwrap_or("a station"),

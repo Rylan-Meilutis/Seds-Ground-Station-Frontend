@@ -499,7 +499,8 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                     let catalog = if eligible { super::catalog_actions() } else { Vec::new() };
                     let policy = crate::telemetry_dashboard::ACTION_POLICY_SIGNAL.peek().clone();
                     let input = Inputs {
-                        mode: Mode::Live,
+                        // A local station (demo, replay file) is marked demo on the watch.
+                        mode: if crate::telemetry_dashboard::station_link::is_local() { Mode::Demo } else { Mode::Live },
                         seq,
                         now_ms: current_wallclock_ms(),
                         station: station(*crate::telemetry_dashboard::WS_CONNECTED_SIGNAL.peek()),
@@ -524,43 +525,6 @@ pub(in crate::telemetry_dashboard) fn use_live_publisher(
                 if now - last_map >= MAP_TICK_MS {
                     last_map = now;
                     super::map_sync::tick(eligible, link, &settings).await;
-                }
-            }
-            sleep_ms(LOOP_MS).await;
-        }
-    });
-}
-
-/// Hook for the offline preview: example data, marked demo, no station traffic.
-#[cfg(not(target_arch = "wasm32"))]
-pub(in crate::telemetry_dashboard) fn use_demo_publisher() {
-    use_drop(publish_no_station);
-    let _mounted = use_hook(|| std::rc::Rc::new(ScreenPublisher::mount()));
-    use_future(move || async move {
-        bridge::start();
-        let mut rate = Rate {
-            force: true,
-            ..Rate::default()
-        };
-        loop {
-            let now = monotonic_now_ms();
-            // The offline preview has no signed-in user, so the watch gets
-            // the default settings and its edits are not stored.
-            rate.handle_incoming(now, false);
-            let link = bridge::link_state();
-            if link.supported && link.paired {
-                let settings = super::effective_settings(false);
-                let active = rate.active(now, link);
-                if rate.due(now, active, &settings) {
-                    let seq = next_seq();
-                    let account = Account {
-                        signed_in: false,
-                        sync: super::SyncState::LocalOnly.wire(),
-                    };
-                    publish(
-                        &snapshot::demo(seq, current_wallclock_ms(), &settings, account),
-                        active,
-                    );
                 }
             }
             sleep_ms(LOOP_MS).await;

@@ -816,6 +816,13 @@ pub async fn logout(base: &str, skip_tls_verify: bool) -> Result<(), String> {
     Ok(())
 }
 
+
+/// A local station (demo, replay file) answers its own session routes.
+fn local_auth(method: &str, url: &str, body: Option<&str>) -> Option<Result<String, String>> {
+    let reply = crate::telemetry_dashboard::station_link::request_url(method, url, body.map(str::as_bytes))?;
+    Some(if reply.ok() { Ok(reply.text()) } else { Err(format!("HTTP {}: {}", reply.status, reply.text())) })
+}
+
 #[cfg(target_arch = "wasm32")]
 async fn auth_request_get(
     url: &str,
@@ -823,6 +830,9 @@ async fn auth_request_get(
     include_token: bool,
     clear_on_unauthorized: bool,
 ) -> Result<String, String> {
+    if let Some(result) = local_auth("GET", url, None) {
+        return result;
+    }
     use gloo_net::http::Request;
 
     let mut request = Request::get(url);
@@ -848,6 +858,9 @@ async fn auth_request_get(
     include_token: bool,
     clear_on_unauthorized: bool,
 ) -> Result<String, String> {
+    if let Some(result) = local_auth("GET", url, None) {
+        return result;
+    }
     let client = build_native_auth_client(skip_tls_verify)?;
     let mut request = client.get(url.to_string());
     if include_token && let Some(token) = current_token() {
@@ -874,6 +887,9 @@ async fn auth_request_post_json(
     body: &str,
     _skip_tls_verify: bool,
 ) -> Result<String, String> {
+    if let Some(result) = local_auth("POST", url, Some(body)) {
+        return result;
+    }
     use gloo_net::http::Request;
 
     let mut request = Request::post(url).header("Content-Type", "application/json");
@@ -903,6 +919,9 @@ async fn auth_request_post_json(
     body: &str,
     skip_tls_verify: bool,
 ) -> Result<String, String> {
+    if let Some(result) = local_auth("POST", url, Some(body)) {
+        return result;
+    }
     let client = build_native_auth_client(skip_tls_verify)?;
     let mut request = client
         .post(url.to_string())
@@ -928,6 +947,9 @@ async fn auth_request_post_json(
 
 #[cfg(target_arch = "wasm32")]
 async fn auth_request_post_empty(url: &str, _skip_tls_verify: bool) -> Result<(), String> {
+    if let Some(result) = local_auth("POST", url, None) {
+        return result.map(|_| ());
+    }
     use gloo_net::http::Request;
 
     let mut request = Request::post(url);
@@ -948,6 +970,9 @@ async fn auth_request_post_empty(url: &str, _skip_tls_verify: bool) -> Result<()
 
 #[cfg(not(target_arch = "wasm32"))]
 async fn auth_request_post_empty(url: &str, skip_tls_verify: bool) -> Result<(), String> {
+    if let Some(result) = local_auth("POST", url, None) {
+        return result.map(|_| ());
+    }
     let client = build_native_auth_client(skip_tls_verify)?;
     let mut request = client.post(url.to_string());
     if let Some(token) = current_token() {

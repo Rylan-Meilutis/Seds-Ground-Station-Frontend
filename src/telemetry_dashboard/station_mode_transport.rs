@@ -73,6 +73,11 @@ fn url(owner: &ExportOwner, route: Route) -> Result<String, String> {
         route.path()
     ))
 }
+/// A local station (demo, replay file) answers mode reads and refuses changes.
+fn local(route: Route, body: Option<&str>) -> Option<super::station_link::Reply> {
+    let method = if matches!(route, Route::Capabilities) { "GET" } else { "POST" };
+    super::station_link::request(method, route.path(), body.map(str::as_bytes))
+}
 #[cfg(not(target_arch = "wasm32"))]
 async fn request(
     owner: Rc<ExportOwner>,
@@ -80,6 +85,9 @@ async fn request(
     body: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let url = url(&owner, route)?;
+    if let Some(reply) = local(route, body.as_deref()) {
+        return decode(reply.status, &reply.text());
+    }
     let (connect, timeout) = super::native_http_timeouts(route.path());
     // The shared native client rejects redirects rather than forwarding an
     // authorization header or confirmation ticket to a redirect destination.
@@ -119,6 +127,9 @@ async fn request(
     body: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let url = url(&owner, route)?;
+    if let Some(reply) = local(route, body.as_deref()) {
+        return decode(reply.status, &reply.text());
+    }
     let controller =
         web_sys::AbortController::new().map_err(|_| "Mode request cancellation unavailable")?;
     let _cancel = super::HttpAbortOnDrop(controller.clone());

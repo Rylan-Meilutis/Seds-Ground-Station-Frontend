@@ -69,6 +69,7 @@ mod network_health;
 mod network_topology_tab;
 mod notifications_tab;
 pub(crate) mod local_station;
+pub(crate) mod station_link;
 pub(crate) mod offline_preview;
 mod paired_settings;
 mod plumbing_drive;

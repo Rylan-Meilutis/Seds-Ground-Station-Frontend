@@ -451,6 +451,13 @@ fn handle_gs26_protocol(request: HttpRequest<Vec<u8>>) -> HttpResponse<Cow<'stat
         Err(_) => return build_response(400, None, Vec::new()),
     };
 
+    // Demo mode and replay files: the local station's tiles only, never the station's.
+    if let Some(local) = telemetry_dashboard::station_link::native_local_tile(z, x, y) {
+        return match local {
+            Some(bytes) => build_response(200, Some("image/jpeg"), bytes),
+            None => build_response(404, None, Vec::new()),
+        };
+    }
     let base = telemetry_dashboard::persisted_base_http_for_native_io();
     let skip_tls = telemetry_dashboard::persisted_skip_tls_for_base_for_native_io(&base);
     let tile_url = format!("{}/tiles/{z}/{x}/{y}.jpg", base.trim_end_matches('/'));

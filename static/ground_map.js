@@ -1393,6 +1393,12 @@ function ensureMapProtocolOnce() {
             if (!coords) {
                 return {data: await transparentTileArrayBuffer()};
             }
+            const local = localStationTiles();
+            if (local) {
+                const bytes = local.get(`${coords.z}/${coords.x}/${coords.y}`);
+                maybeFinishMapFirstPaintFromTile(coords);
+                return {data: bytes ? bytes.slice().buffer : await transparentTileArrayBuffer()};
+            }
             url = resolveTileUrl(coords.z, coords.x, coords.y);
             if (!url) {
                 return {data: await transparentTileArrayBuffer()};
@@ -4912,12 +4918,18 @@ function isGroundMapVisibleForPrefetch() {
     }
 }
 
+// Set by the app while a local station (demo, replay bundle) is selected:
+// tiles come from it ("z/x/y" -> bytes) and nothing is fetched or cached.
+function localStationTiles() {
+    return window.__gs26LocalTiles instanceof Map ? window.__gs26LocalTiles : null;
+}
+
 function shouldRunBrowserMapPrefetch() {
-    return true;
+    return !localStationTiles();
 }
 
 function shouldRunHighResBrowserMapPrefetch() {
-    return true;
+    return !localStationTiles();
 }
 
 function highResPrefetchConcurrencyLimit() {

@@ -28,8 +28,6 @@ pub(crate) mod snapshot;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod voice_relay;
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(super) use publisher::use_demo_publisher;
 pub(super) use publisher::use_live_publisher;
 pub(crate) use phone_status::{PhonePhase, set_phone_phase};
 pub(crate) use publisher::use_status_publisher;

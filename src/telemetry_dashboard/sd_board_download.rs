@@ -176,8 +176,9 @@ async fn post_json(path: &str, body: String, owner: Rc<ExportOwner>) -> Result<S
         return Err("Command permission is required.".into());
     }
     let url = station_url(&owner, path)?;
+    let local = super::station_link::request("POST", path, Some(body.as_bytes()));
     #[cfg(not(target_arch = "wasm32"))]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let client = auth::build_native_http_client(
             owner.skip_tls(),
             std::time::Duration::from_secs(10),
@@ -199,7 +200,7 @@ async fn post_json(path: &str, body: String, owner: Rc<ExportOwner>) -> Result<S
         (status, text)
     };
     #[cfg(target_arch = "wasm32")]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let controller = web_sys::AbortController::new().map_err(|_| "Request cancellation unavailable")?;
         let _cancel = super::HttpAbortOnDrop(controller.clone());
         let signal = controller.signal();

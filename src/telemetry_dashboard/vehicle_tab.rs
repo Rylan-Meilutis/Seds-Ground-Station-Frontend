@@ -149,6 +149,10 @@ fn backend_url(path: &str) -> String {
     if path.starts_with("http://") || path.starts_with("https://") {
         return path.to_string();
     }
+    // With a local station the UI's own copies of the shared assets serve.
+    if path.starts_with("/assets/") && super::station_link::is_local() {
+        return path.to_string();
+    }
     let base = UrlConfig::base_http();
     if base.is_empty() {
         path.to_string()

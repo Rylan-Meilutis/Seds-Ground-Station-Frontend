@@ -110,6 +110,12 @@ impl Grant {
 #[cfg(not(target_arch = "wasm32"))]
 async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String> {
     owner.check_ordinary()?;
+    if let Some(reply) = super::super::station_link::request("POST", "/api/gse/config", Some(body.to_string().as_bytes())) {
+        if !reply.ok() {
+            return Err(format!("HTTP {}: {}", reply.status, reply.text().chars().take(200).collect::<String>()));
+        }
+        return serde_json::from_slice(&reply.body).map_err(|error| error.to_string());
+    }
     let base = if owner.base().is_empty() {
         "http://localhost:3000"
     } else {
@@ -152,6 +158,12 @@ async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String
 #[cfg(target_arch = "wasm32")]
 async fn post_owned(body: Value, owner: Rc<ExportOwner>) -> Result<Value, String> {
     owner.check_ordinary()?;
+    if let Some(reply) = super::super::station_link::request("POST", "/api/gse/config", Some(body.to_string().as_bytes())) {
+        if !reply.ok() {
+            return Err(format!("HTTP {}: {}", reply.status, reply.text().chars().take(200).collect::<String>()));
+        }
+        return serde_json::from_slice(&reply.body).map_err(|error| error.to_string());
+    }
     let base = if owner.base().is_empty() {
         web_sys::window()
             .ok_or("Window unavailable")?

@@ -301,13 +301,11 @@ fn calibration() -> Vec<CalibrationCurve> {
 fn recordings() -> Vec<Recording> {
     vec![
         Recording { id: "demo-flight.db".into(), label: "Demo flight (this scenario)".into(), kind: "capture".into(), bytes: 18_400_000, start_ms: 0, end_ms: LOOP_MS },
-        Recording { id: "demo-cold-flow.db".into(), label: "Demo cold flow".into(), kind: "capture".into(), bytes: 6_100_000, start_ms: -86_400_000, end_ms: -86_100_000 },
-        Recording { id: "demo-rolling.db".into(), label: "Rolling history".into(), kind: "rolling".into(), bytes: 412_000_000, start_ms: -172_800_000, end_ms: LOOP_MS },
     ]
 }
 
 pub(crate) fn session(epoch_ms: i64) -> Session {
-    Session::new(SessionParts {
+    let mut session = Session::new(SessionParts {
         source: Source::Demo,
         title: "Demo rocket".into(),
         mode: Mode::Flight,
@@ -323,7 +321,9 @@ pub(crate) fn session(epoch_ms: i64) -> Session {
         vehicle_geometry: None,
         notes: vec!["Flight profile: GroundStation26 IGT nominal_10k mock flight; fill and pad data are synthetic.".into()],
         epoch_ms,
-    })
+    });
+    session.replay_document = Some(replay_document(&session));
+    session
 }
 
 /// The demo as a portable replay document, for the 3D player.
@@ -336,7 +336,7 @@ pub(crate) fn replay_document(session: &Session) -> Value {
         .map(|(id, s)| json!({"id": id + 1, "timestamp_ms": s.t_ms, "sender_id": s.sender, "data_type": s.data_type, "values": s.values}))
         .collect();
     json!({
-        "format": "seds-replay", "version": 1, "recording": "demo", "mode": "flight",
+        "format": "seds-replay", "version": 1, "recording": "demo-flight.db", "mode": "flight",
         "configuration_provenance": "Demo scenario generated on this device",
         "schema": {"types": []},
         "layout": session.layout,

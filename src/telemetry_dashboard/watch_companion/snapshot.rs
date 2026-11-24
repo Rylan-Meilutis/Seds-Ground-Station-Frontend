@@ -411,6 +411,7 @@ pub fn build(input: &Inputs<'_>) -> Snapshot {
 #[cfg(any(test, not(target_arch = "wasm32")))]
 /// Example data for the offline preview. Every value is plainly fake and
 /// the targets sit at fixed offsets from wherever the watch is.
+#[cfg(test)]
 pub fn demo(seq: u64, now_ms: i64, settings: &WatchSettings, account: Account) -> Snapshot {
     let t = (now_ms / 1000).rem_euclid(600);
     let demo_values = move |dt: &str, _: Option<&str>, index: usize| -> Option<Sample> {

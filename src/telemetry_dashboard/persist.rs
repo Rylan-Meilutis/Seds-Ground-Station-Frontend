@@ -1,5 +1,83 @@
+/// While a local station (demo or replay) is selected, preferences and caches
+/// are written to a scratch overlay instead of browser or native storage, so
+/// exploring offline never changes what a real station's dashboard restores.
+/// Reads see the overlay first, then the stored values.
+mod scratch {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    #[derive(Default)]
+    struct Scratch {
+        values: HashMap<String, Option<String>>,
+        removed_prefixes: Vec<String>,
+        cleared: bool,
+    }
+    static ACTIVE: AtomicBool = AtomicBool::new(false);
+    static SCRATCH: Mutex<Option<Scratch>> = Mutex::new(None);
+
+    pub(super) fn begin() {
+        if let Ok(mut slot) = SCRATCH.lock() {
+            *slot = Some(Scratch::default());
+            ACTIVE.store(true, Ordering::Release);
+        }
+    }
+    pub(super) fn end() {
+        if let Ok(mut slot) = SCRATCH.lock() {
+            ACTIVE.store(false, Ordering::Release);
+            *slot = None;
+        }
+    }
+    fn with<R>(f: impl FnOnce(&mut Scratch) -> R) -> Option<R> {
+        if !ACTIVE.load(Ordering::Acquire) {
+            return None;
+        }
+        SCRATCH.lock().ok()?.as_mut().map(f)
+    }
+    /// `Some(value)` when the overlay decides the read.
+    pub(super) fn get(key: &str) -> Option<Option<String>> {
+        with(|s| match s.values.get(key) {
+            Some(value) => Some(value.clone()),
+            None if s.cleared || s.removed_prefixes.iter().any(|p| key.starts_with(p.as_str())) => Some(None),
+            None => None,
+        })
+        .flatten()
+    }
+    /// Whether the write went to the overlay.
+    pub(super) fn set(key: &str, value: Option<&str>) -> bool {
+        with(|s| {
+            s.values.insert(key.to_owned(), value.map(str::to_owned));
+        })
+        .is_some()
+    }
+    pub(super) fn remove_prefix(prefix: &str) -> bool {
+        with(|s| {
+            s.values.retain(|k, _| !k.starts_with(prefix));
+            s.removed_prefixes.push(prefix.to_owned());
+        })
+        .is_some()
+    }
+    pub(super) fn clear() -> bool {
+        with(|s| {
+            s.values.clear();
+            s.cleared = true;
+        })
+        .is_some()
+    }
+}
+
+pub(crate) fn begin_scratch() {
+    scratch::begin();
+}
+pub(crate) fn end_scratch() {
+    scratch::end();
+}
+
 /// Reads a persisted string value from browser storage or the native JSON store.
 pub fn get_string(key: &str) -> Option<String> {
+    if let Some(value) = scratch::get(key) {
+        return value;
+    }
     #[cfg(target_arch = "wasm32")]
     {
         use web_sys::window;
@@ -22,6 +100,9 @@ pub fn get_string(key: &str) -> Option<String> {
 
 /// Persists a string value across app launches.
 pub fn set_string(key: &str, value: &str) {
+    if scratch::set(key, Some(value)) {
+        return;
+    }
     #[cfg(target_arch = "wasm32")]
     {
         use web_sys::window;
@@ -42,6 +123,9 @@ pub fn set_string(key: &str, value: &str) {
 
 /// Removes a persisted key when the current platform supports it.
 pub fn _remove(key: &str) {
+    if scratch::set(key, None) {
+        return;
+    }
     #[cfg(target_arch = "wasm32")]
     {
         use web_sys::window;
@@ -60,6 +144,9 @@ pub fn _remove(key: &str) {
 
 /// Removes all persisted keys that share the provided prefix.
 pub fn remove_prefix(prefix: &str) {
+    if scratch::remove_prefix(prefix) {
+        return;
+    }
     #[cfg(target_arch = "wasm32")]
     {
         use web_sys::window;
@@ -89,6 +176,9 @@ pub fn remove_prefix(prefix: &str) {
 
 /// Removes all persisted app keys from the current storage backend.
 pub fn clear_all() {
+    if scratch::clear() {
+        return;
+    }
     #[cfg(target_arch = "wasm32")]
     {
         use web_sys::window;
@@ -112,6 +202,9 @@ pub fn get_or(key: &str, default: &str) -> String {
 
 /// Returns the UTF-8 byte size of a persisted string value.
 pub fn byte_len(key: &str) -> usize {
+    if let Some(value) = scratch::get(key) {
+        return value.map_or(0, |v| v.len());
+    }
     #[cfg(target_arch = "wasm32")]
     {
         get_string(key).map(|value| value.len()).unwrap_or(0)

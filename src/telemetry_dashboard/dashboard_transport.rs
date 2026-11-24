@@ -217,6 +217,14 @@ async fn fetch_recent_rows_raw(seed: &telemetry_reseed_continuity::Seed) -> Resu
     let context = seed.read_context();
     owner.check()?; context.check_current()?;
     let path = "/api/recent?display=true&max_rows=12000".to_string();
+    if let Some(reply) = station_link::request("GET", &path, None) {
+        if !reply.ok() {
+            return Err(format!("HTTP {}: {}", reply.status, reply.text().chars().take(200).collect::<String>()));
+        }
+        let mut rows = serde_json::from_slice::<Vec<TelemetryRow>>(&reply.body).map_err(|e| format!("invalid JSON ({e})"))?;
+        normalize_telemetry_rows_for_runtime(&mut rows);
+        return Ok(rows);
+    }
     let base = owner.base().to_owned();
     let url = if base.is_empty() {
         format!("http://localhost:3000{path}")
@@ -353,6 +361,10 @@ fn http_post_empty(path: &str) -> impl std::future::Future<Output=Result<(),Stri
     async move {
         let owner=owner?;
         owner.check()?;
+        if let Some(reply)=station_link::request("POST",&path,None) {
+            if !reply.ok(){return Err(format!("HTTP {}: {}",reply.status,reply.text().chars().take(200).collect::<String>()));}
+            return Ok(());
+        }
         let base=if owner.base().is_empty() {
             #[cfg(not(target_arch="wasm32"))] {"http://localhost:3000".to_owned()}
             #[cfg(target_arch="wasm32")] {web_sys::window().ok_or("Window unavailable")?.location().origin().map_err(|_|"Origin unavailable")?}
@@ -1088,6 +1100,21 @@ async fn connect_ws_supervisor(
         return Ok(());
     }
 
+    // The connection's station is chosen here, once: a local station (demo,
+    // replay file) feeds the same message handlers below; otherwise the
+    // station's socket, unchanged.
+    if let Some(station) = station_link::local() {
+        return connect_local_station(
+            epoch, station, warnings, errors, ack_warning_ts, ack_error_ts, remote_alert_acks_enabled,
+            notifications, notification_history, message_history, dismissed_notifications, unread_notification_ids,
+            action_policy, recording_status, fill_targets, network_time, launch_clock, network_topology,
+            warning_event_counter, error_event_counter, flight_state, board_status, rocket_gps, rocket_gps_altitude_m,
+            user_gps, user_gps_altitude_m, layout_config, layout_loading, layout_error, layout_error_dismissed,
+            layout_request_base, calibration_has_sensors, calibration_request_base, alive,
+        )
+        .await;
+    }
+
     log!("[WS] supervisor starting connection (epoch={epoch})");
     #[cfg(not(target_arch = "wasm32"))]
     let mut last_station_sweep = std::time::Instant::now() - std::time::Duration::from_secs(5);
@@ -1234,6 +1261,129 @@ async fn connect_ws_supervisor(
     Ok(())
 }
 
+
+/// The live connection to a local station (demo, replay file): its frames go
+/// through the same handlers as a station socket's, commands go to the local
+/// station, which answers them itself. Runs until the dashboard reconnects
+/// (a new epoch, e.g. after a seek) or unmounts.
+#[allow(clippy::too_many_arguments)]
+async fn connect_local_station(
+    epoch: u64,
+    station: std::rc::Rc<local_station::LocalStation>,
+    warnings: Signal<Vec<AlertMsg>>,
+    errors: Signal<Vec<AlertMsg>>,
+    ack_warning_ts: Signal<i64>,
+    ack_error_ts: Signal<i64>,
+    remote_alert_acks_enabled: Signal<bool>,
+    notifications: Signal<Vec<PersistentNotification>>,
+    notification_history: Signal<Vec<PersistentNotification>>,
+    message_history: Signal<Vec<PersistentNotification>>,
+    dismissed_notifications: Signal<Vec<DismissedNotification>>,
+    unread_notification_ids: Signal<Vec<u64>>,
+    action_policy: Signal<ActionPolicyMsg>,
+    recording_status: Signal<RecordingStatusMsg>,
+    fill_targets: Signal<Option<FillTargetsConfig>>,
+    network_time: Signal<Option<NetworkTimeSync>>,
+    launch_clock: Signal<Option<LaunchClockMsg>>,
+    network_topology: Signal<NetworkTopologyMsg>,
+    warning_event_counter: Signal<u64>,
+    error_event_counter: Signal<u64>,
+    flight_state: Signal<FlightState>,
+    board_status: Signal<Vec<BoardStatusEntry>>,
+    rocket_gps: Signal<Option<(f64, f64)>>,
+    rocket_gps_altitude_m: Signal<Option<f64>>,
+    user_gps: Signal<Option<(f64, f64)>>,
+    user_gps_altitude_m: Signal<Option<f64>>,
+    layout_config: Signal<Option<LayoutConfig>>,
+    layout_loading: Signal<bool>,
+    layout_error: Signal<Option<String>>,
+    layout_error_dismissed: Signal<Option<String>>,
+    layout_request_base: Signal<String>,
+    calibration_has_sensors: Signal<Option<bool>>,
+    calibration_request_base: Signal<String>,
+    alive: Arc<AtomicBool>,
+) -> Result<(), String> {
+    use futures_util::StreamExt;
+    let mut notifications = notifications;
+    let mut notification_history = notification_history;
+    let mut unread_notification_ids = unread_notification_ids;
+    let ws_url = station_link::LOCAL_BASE.to_string();
+    let condition_connection = ALERT_CONDITION_VIEW.write().begin_connection();
+    let (tx, mut commands) = futures_channel::mpsc::unbounded::<QueuedCommand>();
+    #[cfg(target_arch = "wasm32")]
+    {
+        *WS_SENDER.write() = Some(WsSender { ws: None, local: Some(tx) });
+        queue_ws_open_event(epoch, ws_url.clone());
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // The native sender is a tokio channel; forward it to this loop.
+        let (native_tx, mut native_rx) = tokio::sync::mpsc::unbounded_channel::<QueuedCommand>();
+        *WS_SENDER.write() = Some(WsSender { tx: native_tx });
+        spawn(async move {
+            while let Some(queued) = native_rx.recv().await {
+                if tx.unbounded_send(queued).is_err() {
+                    break;
+                }
+            }
+        });
+        note_ws_connected_and_restore_data_flow(ws_url.clone(), epoch, &mut notifications, &mut notification_history, &mut unread_notification_ids);
+        refresh_flight_state_after_ws_reconnect(flight_state, epoch);
+        refresh_layout_after_ws_reconnect(
+            layout_config, layout_loading, layout_error, layout_error_dismissed, layout_request_base,
+            calibration_has_sensors, calibration_request_base, action_policy,
+        );
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (warnings, errors, ack_warning_ts, ack_error_ts, remote_alert_acks_enabled, message_history, dismissed_notifications,
+        recording_status, fill_targets, network_time, launch_clock, network_topology, warning_event_counter, error_event_counter,
+        board_status, rocket_gps, rocket_gps_altitude_m, user_gps, user_gps_altitude_m, layout_config, layout_loading,
+        layout_error, layout_error_dismissed, layout_request_base, calibration_has_sensors, calibration_request_base, action_policy);
+    log!("[WS] local station connected (epoch={epoch})");
+    while alive.load(Ordering::Relaxed) && *WS_EPOCH.peek() == epoch && station_link::local().is_some_and(|s| std::rc::Rc::ptr_eq(&s, &station)) {
+        while let Ok(queued) = commands.try_recv() {
+            if queued.owner.is_current() {
+                station.command(&queued.wire);
+            }
+        }
+        for frame in station.frames(current_wallclock_ms()) {
+            LAST_WS_ACTIVITY_MONO_MS.store(monotonic_now_ms() as i64, Ordering::Relaxed);
+            #[cfg(target_arch = "wasm32")]
+            if !queue_live_telemetry_from_ws_message(&frame) {
+                queue_ws_message_event(epoch, condition_connection, frame);
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            handle_ws_message(
+                &frame, condition_connection, warnings, errors, ack_warning_ts, ack_error_ts, remote_alert_acks_enabled,
+                notifications, notification_history, message_history, dismissed_notifications, unread_notification_ids,
+                action_policy, recording_status, fill_targets, network_time, launch_clock, network_topology,
+                warning_event_counter, error_event_counter, flight_state, board_status, rocket_gps, rocket_gps_altitude_m,
+                user_gps, user_gps_altitude_m,
+            );
+        }
+        let tick = futures_util::future::select(
+            commands.next(),
+            Box::pin(async {
+                #[cfg(target_arch = "wasm32")]
+                gloo_timers::future::TimeoutFuture::new(100).await;
+                #[cfg(not(target_arch = "wasm32"))]
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }),
+        )
+        .await;
+        if let futures_util::future::Either::Left((Some(queued), _)) = tick
+            && queued.owner.is_current()
+        {
+            station.command(&queued.wire);
+        }
+    }
+    if *WS_EPOCH.peek() == epoch {
+        *WS_SENDER.write() = None;
+    }
+    ALERT_CONDITION_VIEW.write().disconnect(condition_connection);
+    Ok(())
+}
+
 #[cfg(target_arch = "wasm32")]
 #[allow(clippy::too_many_arguments)]
 async fn connect_ws_once_wasm(
@@ -1295,7 +1445,7 @@ async fn connect_ws_once_wasm(
     let last_activity_ms = std::rc::Rc::new(std::cell::Cell::new(monotonic_now_ms()));
 
     *WS_RAW.write() = Some(ws.clone());
-    *WS_SENDER.write() = Some(WsSender { ws: ws.clone() });
+    *WS_SENDER.write() = Some(WsSender { ws: Some(ws.clone()), local: None });
 
     let (closed_tx, closed_rx) = oneshot::channel::<()>();
     let closed_tx = std::rc::Rc::new(std::cell::RefCell::new(Some(closed_tx)));

@@ -18,6 +18,24 @@ impl Verb {
     fn empty_ok(self) -> bool {
         !matches!(self, Verb::Post)
     }
+    fn name(self) -> &'static str {
+        match self {
+            Verb::Post => "POST",
+            Verb::Put => "PUT",
+            Verb::Patch => "PATCH",
+            Verb::Delete => "DELETE",
+        }
+    }
+}
+
+/// A local station's answer, read exactly as a station response.
+fn local_result<T: DeserializeOwned>(verb: Verb, reply: super::station_link::Reply) -> Result<T, String> {
+    let text = reply.text();
+    if !reply.ok() {
+        return Err(format!("HTTP {}: {}", reply.status, text.chars().take(200).collect::<String>()));
+    }
+    let text = if verb.empty_ok() && text.trim().is_empty() { "null" } else { text.as_str() };
+    serde_json::from_str(text).map_err(|e| e.to_string())
 }
 
 #[derive(Clone, Copy)]
@@ -177,6 +195,9 @@ async fn send_owned_class<T: DeserializeOwned>(
     verb: Verb, path: &str, content_type: &str, body: Vec<u8>, owner: Rc<ExportOwner>, require_ordinary: bool,
 ) -> Result<T, String> {
     if require_ordinary { owner.check_ordinary()?; } else { owner.check()?; }
+    if let Some(reply) = super::station_link::request(verb.name(), path, Some(&body)) {
+        return local_result(verb, reply);
+    }
     let base = if owner.base().is_empty() {
         "http://localhost:3000"
     } else {
@@ -258,6 +279,9 @@ async fn send_owned_policy<T: DeserializeOwned>(
     require_ordinary: bool,
 ) -> Result<T, String> {
     if require_ordinary { owner.check_ordinary()?; } else { owner.check()?; }
+    if let Some(reply) = super::station_link::request(verb.name(), path, Some(&body)) {
+        return local_result(verb, reply);
+    }
     let base = if owner.base().is_empty() {
         web_sys::window()
             .ok_or("Window unavailable")?

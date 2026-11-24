@@ -108,8 +108,9 @@ async fn firmware_post(
         return Err("FirmwareUpdate permission is required.".into());
     }
     let url = firmware_url(&owner, path)?;
+    let local = super::station_link::request("POST", path, Some(&bytes));
     #[cfg(not(target_arch = "wasm32"))]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let client = auth::build_native_http_client(
             owner.skip_tls(),
             std::time::Duration::from_secs(10),
@@ -142,7 +143,7 @@ async fn firmware_post(
         (status, text)
     };
     #[cfg(target_arch = "wasm32")]
-    let (status, text) = {
+    let (status, text) = if let Some(reply) = &local { (reply.status, reply.text()) } else {
         let controller = web_sys::AbortController::new()
             .map_err(|_| "Firmware request cancellation unavailable")?;
         let _cancel = super::HttpAbortOnDrop(controller.clone());

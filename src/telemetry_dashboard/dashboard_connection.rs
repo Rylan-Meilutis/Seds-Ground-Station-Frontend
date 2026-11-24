@@ -353,6 +353,9 @@ impl UrlConfig {
 
     /// Returns the current HTTP base URL, including platform-specific defaults.
     pub fn base_http() -> String {
+        if station_link::is_local() {
+            return station_link::LOCAL_BASE.to_string();
+        }
         // Track the live signal even when an address is saved, so a verified
         // native handover also refreshes the auth gate and station branding.
         let live_base = BASE_URL.read().clone();
@@ -378,6 +381,9 @@ impl UrlConfig {
 
     /// Returns ws/wss scheme + host[:port] (no path).
     pub fn base_ws() -> String {
+        if station_link::is_local() {
+            return station_link::LOCAL_BASE.to_string();
+        }
         #[cfg(target_arch = "wasm32")]
         {
             let base_http = BASE_URL.read().clone();
@@ -580,11 +586,26 @@ pub fn hard_reload_dashboard_data() {
     }
 }
 
+/// Clears everything the previous station showed and reconnects: used when
+/// a local station (demo, replay file) starts, jumps or ends.
+pub(crate) fn reset_dashboard_for_new_station() {
+    clear_telemetry_runtime_buffers();
+    clear_visible_telemetry_history_without_bridge();
+    set_reseed_status_running();
+    charts_cache_request_refit();
+    bump_seed_epoch();
+    bump_ws_epoch();
+}
+
 // ---------- Cross-platform WS handle ----------
 #[derive(Clone)]
 struct WsSender {
+    /// The station's socket; `None` when a local station is selected.
     #[cfg(target_arch = "wasm32")]
-    ws: web_sys::WebSocket,
+    ws: Option<web_sys::WebSocket>,
+    /// Commands for a local station (demo, replay file), which answers them itself.
+    #[cfg(target_arch = "wasm32")]
+    local: Option<futures_channel::mpsc::UnboundedSender<QueuedCommand>>,
 
     #[cfg(not(target_arch = "wasm32"))]
     tx: tokio::sync::mpsc::UnboundedSender<QueuedCommand>,
@@ -601,11 +622,14 @@ impl WsSender {
 
         #[cfg(target_arch = "wasm32")]
         {
-            if self.ws.ready_state() != web_sys::WebSocket::OPEN {
+            if let Some(local) = &self.local {
+                return local.unbounded_send(queued).map_err(|_| "ws channel closed".to_string());
+            }
+            let ws = self.ws.as_ref().ok_or("connection is not open")?;
+            if ws.ready_state() != web_sys::WebSocket::OPEN {
                 return Err("connection is not open".into());
             }
-            self.ws
-                .send_with_str(&queued.wire)
+            ws.send_with_str(&queued.wire)
                 .map_err(|_| "ws send failed".to_string())?;
         }
 
