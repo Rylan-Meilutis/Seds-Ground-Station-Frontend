@@ -4878,6 +4878,8 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
                 maxzoom: sourceMaxZoom,
             }, [OVERLAY_SOURCE_ID]: {
                 type: "geojson", data: emptyFeatureCollection(),
+            }, [MAP_OVERLAYS_SOURCE_ID]: {
+                type: "geojson", data: emptyFeatureCollection(),
             },
         }, layers: [{
             id: MAP_BACKGROUND_LAYER_ID, type: "background", paint: {
@@ -4895,7 +4897,7 @@ function makeMapStyle(tilesUrl, effectiveMaxNativeZoom) {
             paint: {
                 "line-color": "#ef4444", "line-width": 3, "line-opacity": 0.95,
             },
-        }, {
+        }, ...mapOverlayLayerSpecs(), {
             id: SIM_TRACK_LAYER_ID,
             type: "line",
             source: OVERLAY_SOURCE_ID,
@@ -5112,6 +5114,14 @@ function renderRasterFallbackMap() {
         layers.markers.push(overlay.lastChild);
     };
 
+    const overlaySvg = rasterFallbackOverlaySvg((lat, lon) => {
+        const point = latLonToWorldPointAtZoom(lat, lon, zoom);
+        return [point.x - topLeftX, point.y - topLeftY];
+    }, width, height);
+    if (overlaySvg) {
+        overlay.appendChild(overlaySvg);
+        layers.markers.push(overlaySvg);
+    }
     for (const station of stationMarkers) {
         addMarkerIfVisible(station.latLng, STATION_LABELS[station.role], "#0f766e", station);
     }
@@ -5492,6 +5502,8 @@ function installMapHooks() {
         restorePendingZoomIfPossible();
         updateZoomControlAppearance();
         syncOverlaySourcesNow();
+        mapOverlaySyncedKey = "";
+        syncMapOverlaysNow();
         setTimeout(safeMapCallback("map load deferred prefetch", () => {
             scheduleTrackingTilePrefetch();
             scheduleHighResTilePrefetch();
@@ -6127,6 +6139,402 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     }
 }
 
+// ---------------------------------------------------------------------------
+// Map overlays (CONTRACT: MapOverlay). Providers ("flight_plan", "los",
+// "search", ...) each own a list of overlays; the merged list is published as
+// window.__gs26_map_overlays with a "gs26-map-overlays" event so the 3D view
+// can draw the same data. The 2D map draws them from its own GeoJSON source;
+// labels are DOM markers because the style carries no glyphs.
+// ---------------------------------------------------------------------------
+const MAP_OVERLAYS_SOURCE_ID = "gs26-map-overlays-source";
+const MAP_OVERLAYS_AREA_FILL_LAYER_ID = "gs26-map-overlays-area-fill";
+const MAP_OVERLAYS_AREA_LINE_LAYER_ID = "gs26-map-overlays-area-line";
+const MAP_OVERLAYS_AREA_DASH_LAYER_ID = "gs26-map-overlays-area-dash";
+const MAP_OVERLAYS_TRACK_LAYER_ID = "gs26-map-overlays-track";
+const MAP_OVERLAYS_TRACK_DASH_LAYER_ID = "gs26-map-overlays-track-dash";
+const MAP_OVERLAYS_MARKER_LAYER_ID = "gs26-map-overlays-marker";
+const MAP_OVERLAY_ROLE_AREA = "ov-area";
+const MAP_OVERLAY_ROLE_TRACK = "ov-track";
+const MAP_OVERLAY_ROLE_MARKER = "ov-marker";
+const MAP_OVERLAY_MAX_OVERLAYS = 32;
+const MAP_OVERLAY_MAX_TRACKS = 64;
+const MAP_OVERLAY_MAX_POINTS = 5000;
+const MAP_OVERLAY_MAX_MARKERS = 64;
+const MAP_OVERLAY_MAX_AREAS = 32;
+const MAP_OVERLAY_MAX_RING = 512;
+const MAP_OVERLAY_PHASE_COLORS = {
+    pad: "#94a3b8", boost: "#f97316", coast: "#facc15", apogee: "#ffffff",
+    drogue: "#38bdf8", main: "#22c55e", landed: "#a78bfa", unknown: "#64748b",
+};
+const MAP_OVERLAY_LOS_COLOR = "#f472b6";
+const MAP_OVERLAY_PLAN_AREA_COLOR = "#a78bfa";
+const MAP_OVERLAY_SEARCH_COVERED_COLOR = "#22c55e";
+const MAP_OVERLAY_SEARCH_UNCOVERED_COLOR = "#ef4444";
+const MAP_OVERLAY_SEARCHER_COLORS = ["#0ea5e9", "#eab308", "#ec4899", "#14b8a6", "#f97316", "#8b5cf6"];
+const mapOverlayProviders = new Map();
+let mapOverlayLabelMarkers = [];
+let mapOverlayLabelMap = null;
+let mapOverlaySyncedKey = "";
+
+function mapOverlayText(value, fallback) {
+    if (typeof value !== "string") return fallback;
+    const text = value.trim().slice(0, 120);
+    return text || fallback;
+}
+
+function mapOverlayLatLng(lat, lon) {
+    const la = Number(lat);
+    const lo = Number(lon);
+    return isUsableLatLng(la, lo) ? [la, lo] : null;
+}
+
+function normalizeMapOverlayPoint(entry) {
+    if (!Array.isArray(entry)) return null;
+    const point = mapOverlayLatLng(entry[0], entry[1]);
+    if (!point) return null;
+    const alt = entry.length > 2 && entry[2] !== null && entry[2] !== undefined ? Number(entry[2]) : NaN;
+    return [point[0], point[1], Number.isFinite(alt) ? alt : null];
+}
+
+/// One MapOverlay as the contract defines it, with invalid parts dropped.
+function normalizeMapOverlay(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const id = mapOverlayText(raw.id, "");
+    if (!id) return null;
+    const kind = mapOverlayText(raw.kind, "overlay");
+    const overlay = {
+        id, kind,
+        label: mapOverlayText(raw.label, ""),
+        predicted: raw.predicted === true,
+        tracks: [], markers: [], areas: [],
+    };
+    let budget = MAP_OVERLAY_MAX_POINTS;
+    for (const track of Array.isArray(raw.tracks) ? raw.tracks.slice(0, MAP_OVERLAY_MAX_TRACKS) : []) {
+        if (!track || typeof track !== "object") continue;
+        const points = [];
+        for (const entry of Array.isArray(track.points) ? track.points : []) {
+            if (budget <= 0) break;
+            const point = normalizeMapOverlayPoint(entry);
+            if (point) { points.push(point); budget -= 1; }
+        }
+        if (points.length === 0) continue;
+        overlay.tracks.push({
+            id: mapOverlayText(track.id, `track${overlay.tracks.length}`),
+            phase: mapOverlayText(track.phase, "unknown"),
+            label: mapOverlayText(track.label, ""),
+            style: mapOverlayText(track.style, overlay.predicted ? "predicted" : "actual"),
+            points,
+        });
+    }
+    for (const marker of Array.isArray(raw.markers) ? raw.markers.slice(0, MAP_OVERLAY_MAX_MARKERS) : []) {
+        if (!marker || typeof marker !== "object") continue;
+        const point = mapOverlayLatLng(marker.lat_deg, marker.lon_deg);
+        if (!point) continue;
+        const alt = Number(marker.alt_msl_m);
+        overlay.markers.push({
+            id: mapOverlayText(marker.id, `marker${overlay.markers.length}`),
+            kind: mapOverlayText(marker.kind, "event"),
+            label: mapOverlayText(marker.label, ""),
+            lat_deg: point[0], lon_deg: point[1],
+            alt_msl_m: marker.alt_msl_m !== null && Number.isFinite(alt) ? alt : null,
+        });
+    }
+    for (const area of Array.isArray(raw.areas) ? raw.areas.slice(0, MAP_OVERLAY_MAX_AREAS) : []) {
+        if (!area || typeof area !== "object") continue;
+        const ring = [];
+        for (const entry of Array.isArray(area.polygon) ? area.polygon.slice(0, MAP_OVERLAY_MAX_RING) : []) {
+            const point = Array.isArray(entry) ? mapOverlayLatLng(entry[0], entry[1]) : null;
+            if (point) ring.push(point);
+        }
+        // A closed ring per the contract: drop a repeated first point.
+        if (ring.length > 1 && ring[0][0] === ring[ring.length - 1][0] && ring[0][1] === ring[ring.length - 1][1]) ring.pop();
+        if (ring.length < 3) continue;
+        overlay.areas.push({
+            id: mapOverlayText(area.id, `area${overlay.areas.length}`),
+            kind: mapOverlayText(area.kind, "area"),
+            label: mapOverlayText(area.label, ""),
+            polygon: ring,
+        });
+    }
+    return overlay;
+}
+
+function normalizeMapOverlays(list) {
+    const out = [];
+    for (const raw of Array.isArray(list) ? list : []) {
+        const overlay = normalizeMapOverlay(raw);
+        if (overlay && !out.some(existing => existing.id === overlay.id)) out.push(overlay);
+        if (out.length >= MAP_OVERLAY_MAX_OVERLAYS) break;
+    }
+    return out;
+}
+
+/// Colour, opacity and dash of one overlay element, from the shared palette.
+function mapOverlayElementStyle(overlay, part, element, index) {
+    const los = overlay.kind === "los_prediction";
+    const search = overlay.kind === "search_coverage";
+    if (part === "track") {
+        if (los) return {color: MAP_OVERLAY_LOS_COLOR, opacity: 0.9, dashed: true, width: 3};
+        if (search || element.style === "search") {
+            return {color: MAP_OVERLAY_SEARCHER_COLORS[index % MAP_OVERLAY_SEARCHER_COLORS.length], opacity: 0.95, dashed: false, width: 3};
+        }
+        const color = MAP_OVERLAY_PHASE_COLORS[element.phase] || MAP_OVERLAY_PHASE_COLORS.unknown;
+        const predicted = element.style === "predicted" || overlay.predicted;
+        return {color, opacity: predicted ? 0.55 : 0.95, dashed: predicted, width: predicted ? 3 : 4};
+    }
+    if (part === "area") {
+        if (element.kind === "search_swath") return {color: MAP_OVERLAY_SEARCH_COVERED_COLOR, fillOpacity: 0.30, opacity: 0.9, dashed: false};
+        if (element.kind === "uncovered") return {color: MAP_OVERLAY_SEARCH_UNCOVERED_COLOR, fillOpacity: 0.25, opacity: 0.9, dashed: false};
+        if (los) return {color: MAP_OVERLAY_LOS_COLOR, fillOpacity: 0.15, opacity: 0.9, dashed: true};
+        return {color: MAP_OVERLAY_PLAN_AREA_COLOR, fillOpacity: 0.12, opacity: 0.9, dashed: overlay.predicted || element.kind === "landing_ellipse"};
+    }
+    // Markers.
+    if (element.kind === "apogee") return {color: "#111827", fill: MAP_OVERLAY_PHASE_COLORS.apogee, fillOpacity: 1, radius: 6, strokeWidth: 2};
+    if (los) {
+        if (element.kind === "predicted_position") return {color: MAP_OVERLAY_LOS_COLOR, fill: MAP_OVERLAY_LOS_COLOR, fillOpacity: 0, radius: 9, strokeWidth: 3};
+        if (element.kind === "last_fix") return {color: "#111827", fill: MAP_OVERLAY_LOS_COLOR, fillOpacity: 1, radius: 5, strokeWidth: 2};
+        return {color: "#111827", fill: MAP_OVERLAY_LOS_COLOR, fillOpacity: 0.85, radius: 7, strokeWidth: 2};
+    }
+    if (element.kind === "landing") return {color: "#111827", fill: MAP_OVERLAY_PLAN_AREA_COLOR, fillOpacity: 0.95, radius: 7, strokeWidth: 2};
+    if (element.kind === "predicted_position") return {color: MAP_OVERLAY_PLAN_AREA_COLOR, fill: MAP_OVERLAY_PLAN_AREA_COLOR, fillOpacity: 0, radius: 8, strokeWidth: 3};
+    return {color: "#111827", fill: "#cbd5e1", fillOpacity: 0.9, radius: 5, strokeWidth: 2};
+}
+
+/// The text shown beside an element: its own label, else the overlay's.
+function mapOverlayElementLabel(overlay, element) {
+    const own = element.label || "";
+    if (overlay.kind === "los_prediction" && overlay.label && own && !own.includes(overlay.label) && element.kind !== "last_fix") {
+        return `${overlay.label} · ${own}`;
+    }
+    return own || overlay.label || "";
+}
+
+function mapOverlayCentroid(ring) {
+    let lat = 0;
+    let lon = 0;
+    for (const point of ring) { lat += point[0]; lon += point[1]; }
+    return [lat / ring.length, lon / ring.length];
+}
+
+/// GeoJSON for the 2D map plus the labels to place.
+function mapOverlayFeatureCollection(overlays) {
+    const features = [];
+    const labels = [];
+    for (const overlay of Array.isArray(overlays) ? overlays : []) {
+        overlay.areas.forEach((area, index) => {
+            const style = mapOverlayElementStyle(overlay, "area", area, index);
+            const ring = area.polygon.map(point => [point[1], point[0]]);
+            ring.push(ring[0]);
+            features.push({
+                type: "Feature",
+                geometry: {type: "Polygon", coordinates: [ring]},
+                properties: {role: MAP_OVERLAY_ROLE_AREA, overlay: overlay.id, id: area.id, kind: area.kind, color: style.color, opacity: style.opacity, fillOpacity: style.fillOpacity, dashed: style.dashed},
+            });
+            const label = area.label || overlay.kind === "los_prediction" ? mapOverlayElementLabel(overlay, area) : "";
+            if (label) labels.push({latLng: mapOverlayCentroid(area.polygon), text: label, color: style.color, kind: "area", overlay: overlay.id});
+        });
+        let longest = null;
+        overlay.tracks.forEach((track, index) => {
+            const style = mapOverlayElementStyle(overlay, "track", track, index);
+            if (track.points.length >= 2) {
+                features.push({
+                    type: "Feature",
+                    geometry: {type: "LineString", coordinates: track.points.map(point => [point[1], point[0]])},
+                    properties: {role: MAP_OVERLAY_ROLE_TRACK, overlay: overlay.id, id: track.id, phase: track.phase, color: style.color, opacity: style.opacity, dashed: style.dashed, width: style.width},
+                });
+            }
+            if (overlay.kind === "search_coverage" && track.label) {
+                const last = track.points[track.points.length - 1];
+                labels.push({latLng: [last[0], last[1]], text: track.label, color: style.color, kind: "track", overlay: overlay.id});
+            }
+            if (!longest || track.points.length > longest.points.length) longest = track;
+        });
+        if (longest && overlay.label && overlay.kind !== "search_coverage") {
+            const mid = longest.points[Math.floor(longest.points.length / 2)];
+            const color = overlay.kind === "los_prediction" ? MAP_OVERLAY_LOS_COLOR : (MAP_OVERLAY_PHASE_COLORS[longest.phase] || MAP_OVERLAY_PHASE_COLORS.unknown);
+            labels.push({latLng: [mid[0], mid[1]], text: overlay.label, color, kind: "overlay", overlay: overlay.id});
+        }
+        overlay.markers.forEach((marker, index) => {
+            const style = mapOverlayElementStyle(overlay, "marker", marker, index);
+            features.push({
+                type: "Feature",
+                geometry: {type: "Point", coordinates: [marker.lon_deg, marker.lat_deg]},
+                properties: {role: MAP_OVERLAY_ROLE_MARKER, overlay: overlay.id, id: marker.id, kind: marker.kind, color: style.color, fill: style.fill, fillOpacity: style.fillOpacity, radius: style.radius, strokeWidth: style.strokeWidth},
+            });
+            const label = mapOverlayElementLabel(overlay, marker);
+            if (label) labels.push({latLng: [marker.lat_deg, marker.lon_deg], text: label, color: style.fillOpacity > 0 ? style.fill : style.color, kind: "marker", overlay: overlay.id});
+        });
+    }
+    return {collection: {type: "FeatureCollection", features}, labels};
+}
+
+function mergedMapOverlays() {
+    const out = [];
+    for (const list of mapOverlayProviders.values()) {
+        for (const overlay of list) {
+            if (!out.some(existing => existing.id === overlay.id)) out.push(overlay);
+        }
+    }
+    return out;
+}
+
+function mapOverlayLayerSpecs() {
+    const src = MAP_OVERLAYS_SOURCE_ID;
+    const role = (name) => ["==", ["get", "role"], name];
+    const dashed = ["==", ["get", "dashed"], true];
+    return [{
+        id: MAP_OVERLAYS_AREA_FILL_LAYER_ID, type: "fill", source: src, filter: role(MAP_OVERLAY_ROLE_AREA),
+        paint: {"fill-color": ["get", "color"], "fill-opacity": ["get", "fillOpacity"]},
+    }, {
+        id: MAP_OVERLAYS_AREA_LINE_LAYER_ID, type: "line", source: src, filter: ["all", role(MAP_OVERLAY_ROLE_AREA), ["!", dashed]],
+        paint: {"line-color": ["get", "color"], "line-opacity": ["get", "opacity"], "line-width": 2},
+    }, {
+        id: MAP_OVERLAYS_AREA_DASH_LAYER_ID, type: "line", source: src, filter: ["all", role(MAP_OVERLAY_ROLE_AREA), dashed],
+        paint: {"line-color": ["get", "color"], "line-opacity": ["get", "opacity"], "line-width": 2, "line-dasharray": [2, 2]},
+    }, {
+        id: MAP_OVERLAYS_TRACK_LAYER_ID, type: "line", source: src, filter: ["all", role(MAP_OVERLAY_ROLE_TRACK), ["!", dashed]],
+        layout: {"line-cap": "round", "line-join": "round"},
+        paint: {"line-color": ["get", "color"], "line-opacity": ["get", "opacity"], "line-width": ["get", "width"]},
+    }, {
+        id: MAP_OVERLAYS_TRACK_DASH_LAYER_ID, type: "line", source: src, filter: ["all", role(MAP_OVERLAY_ROLE_TRACK), dashed],
+        layout: {"line-join": "round"},
+        paint: {"line-color": ["get", "color"], "line-opacity": ["get", "opacity"], "line-width": ["get", "width"], "line-dasharray": [2, 1.5]},
+    }, {
+        id: MAP_OVERLAYS_MARKER_LAYER_ID, type: "circle", source: src, filter: role(MAP_OVERLAY_ROLE_MARKER),
+        paint: {
+            "circle-radius": ["get", "radius"], "circle-color": ["get", "fill"], "circle-opacity": ["get", "fillOpacity"],
+            "circle-stroke-color": ["get", "color"], "circle-stroke-width": ["get", "strokeWidth"],
+        },
+    }];
+}
+
+function createMapOverlayLabelElement(label) {
+    const el = document.createElement("div");
+    el.className = "gs26-map-overlay-label";
+    el.dataset.overlay = label.overlay;
+    el.dataset.kind = label.kind;
+    el.textContent = label.text;
+    el.style.cssText = "pointer-events:none;white-space:nowrap;font:700 11px/1.2 system-ui,sans-serif;"
+        + "padding:2px 6px;border-radius:6px;background:rgba(15,23,42,0.82);color:#f8fafc;"
+        + `border:1px solid ${label.color};transform:translateY(-16px);`;
+    return el;
+}
+
+function clearMapOverlayLabels() {
+    for (const marker of mapOverlayLabelMarkers) {
+        try { marker.remove(); } catch (e) {}
+    }
+    mapOverlayLabelMarkers = [];
+}
+
+function syncMapOverlaysNow() {
+    if (!groundMap || !mapReady || typeof groundMap.getSource !== "function") return;
+    const source = groundMap.getSource(MAP_OVERLAYS_SOURCE_ID);
+    if (!source) return;
+    const overlays = mergedMapOverlays();
+    const key = JSON.stringify(overlays);
+    if (key === mapOverlaySyncedKey && mapOverlayLabelMap === groundMap) return;
+    mapOverlaySyncedKey = key;
+    const {collection, labels} = mapOverlayFeatureCollection(overlays);
+    source.setData(collection);
+    clearMapOverlayLabels();
+    mapOverlayLabelMap = groundMap;
+    let MarkerClass = null;
+    try { MarkerClass = getMapLibre().Marker; } catch (e) {}
+    if (typeof MarkerClass !== "function") return;
+    for (const label of labels) {
+        try {
+            const marker = new MarkerClass({element: createMapOverlayLabelElement(label), anchor: "bottom"})
+                .setLngLat([label.latLng[1], label.latLng[0]])
+                .addTo(groundMap);
+            mapOverlayLabelMarkers.push(marker);
+        } catch (e) {}
+    }
+}
+
+function publishMapOverlays() {
+    const merged = mergedMapOverlays();
+    window.__gs26_map_overlays = merged;
+    try {
+        window.dispatchEvent(new CustomEvent("gs26-map-overlays", {detail: {overlays: merged}}));
+    } catch (e) {}
+    return merged;
+}
+
+/// Replace one provider's overlays ([] clears it); returns the merged list.
+function setGroundMapOverlays(providerId, overlays) {
+    const provider = typeof providerId === "string" ? providerId.trim().slice(0, 64) : "";
+    if (!provider) return mergedMapOverlays();
+    const next = normalizeMapOverlays(overlays);
+    if (next.length === 0) mapOverlayProviders.delete(provider);
+    else mapOverlayProviders.set(provider, next);
+    const merged = publishMapOverlays();
+    try {
+        if (usingRasterFallback()) renderRasterFallbackMap();
+        syncMapOverlaysNow();
+    } catch (e) {}
+    return merged;
+}
+
+/// SVG for the raster fallback map. `project(lat, lon)` gives container pixels.
+function rasterFallbackOverlaySvg(project, width, height) {
+    const overlays = mergedMapOverlays();
+    if (overlays.length === 0) return null;
+    const ns = "http://www.w3.org/2000/svg";
+    const svg = document.createElementNS(ns, "svg");
+    svg.setAttribute("width", String(width));
+    svg.setAttribute("height", String(height));
+    svg.setAttribute("class", "gs26-map-overlay-svg");
+    svg.style.cssText = "position:absolute;inset:0;pointer-events:none;overflow:visible;";
+    const {collection, labels} = mapOverlayFeatureCollection(overlays);
+    const path = (coords, close) => coords.map((c, i) => {
+        const [x, y] = project(c[1], c[0]);
+        return `${i === 0 ? "M" : "L"}${x.toFixed(1)} ${y.toFixed(1)}`;
+    }).join("") + (close ? "Z" : "");
+    for (const feature of collection.features) {
+        const p = feature.properties;
+        if (p.role === MAP_OVERLAY_ROLE_MARKER) {
+            const [x, y] = project(feature.geometry.coordinates[1], feature.geometry.coordinates[0]);
+            const circle = document.createElementNS(ns, "circle");
+            circle.setAttribute("cx", x.toFixed(1));
+            circle.setAttribute("cy", y.toFixed(1));
+            circle.setAttribute("r", String(p.radius));
+            circle.setAttribute("fill", p.fill);
+            circle.setAttribute("fill-opacity", String(p.fillOpacity));
+            circle.setAttribute("stroke", p.color);
+            circle.setAttribute("stroke-width", String(p.strokeWidth));
+            svg.appendChild(circle);
+            continue;
+        }
+        const el = document.createElementNS(ns, "path");
+        const area = p.role === MAP_OVERLAY_ROLE_AREA;
+        el.setAttribute("d", path(area ? feature.geometry.coordinates[0] : feature.geometry.coordinates, area));
+        el.setAttribute("fill", area ? p.color : "none");
+        if (area) el.setAttribute("fill-opacity", String(p.fillOpacity));
+        el.setAttribute("stroke", p.color);
+        el.setAttribute("stroke-opacity", String(p.opacity));
+        el.setAttribute("stroke-width", String(area ? 2 : p.width));
+        if (p.dashed) el.setAttribute("stroke-dasharray", "8 6");
+        svg.appendChild(el);
+    }
+    for (const label of labels) {
+        const [x, y] = project(label.latLng[0], label.latLng[1]);
+        const text = document.createElementNS(ns, "text");
+        text.setAttribute("x", x.toFixed(1));
+        text.setAttribute("y", (y - 12).toFixed(1));
+        text.setAttribute("text-anchor", "middle");
+        text.setAttribute("fill", "#f8fafc");
+        text.setAttribute("stroke", "#0f172a");
+        text.setAttribute("stroke-width", "3");
+        text.setAttribute("paint-order", "stroke");
+        text.setAttribute("font-size", "11");
+        text.setAttribute("font-weight", "700");
+        text.textContent = label.text;
+        svg.appendChild(text);
+    }
+    return svg;
+}
+
 (function pinGroundStation26() {
     const api = (window.GS26 = window.GS26 || {});
     setStoredTileCacheUsageBytes(storedTileCacheUsageBytes());
@@ -6243,6 +6651,13 @@ function setGroundMapPrefetchContext(tilesUrl, maxNativeZoom, rocketLat, rocketL
     window.setGroundMapTileCacheEnabled = api.setTileCacheEnabled;
     window.setGroundMapCacheBudgetBytes = api.setCacheBudgetBytes;
     window.clearGroundMapTileCaches = api.clearGroundMapTileCaches;
+    api.setGroundMapOverlays = setGroundMapOverlays;
+    window.setGroundMapOverlays = setGroundMapOverlays;
+    if (window.__gs26_pending_map_overlays && typeof window.__gs26_pending_map_overlays === "object") {
+        for (const [provider, overlays] of Object.entries(window.__gs26_pending_map_overlays)) {
+            setGroundMapOverlays(provider, overlays);
+        }
+    }
 
     if (Array.isArray(window.__gs26_pending_stations)) {
         api.setGroundMapStations(window.__gs26_pending_stations);

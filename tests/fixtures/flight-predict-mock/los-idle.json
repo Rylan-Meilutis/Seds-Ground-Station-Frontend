@@ -1,0 +1,21 @@
+{
+ "state": "idle",
+ "label": "Predicted: no signal",
+ "advisory": true,
+ "settings": {
+  "enabled": true,
+  "timeout_s": 5
+ },
+ "last_fix": null,
+ "signal_lost_ms": null,
+ "since_fix_s": null,
+ "phase": null,
+ "predicted_now": null,
+ "landing": null,
+ "station": null,
+ "from_station": null,
+ "wind_source": null,
+ "overlay": null,
+ "comparison": null,
+ "history": []
+}

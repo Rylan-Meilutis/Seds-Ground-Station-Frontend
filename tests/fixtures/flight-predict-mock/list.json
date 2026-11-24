@@ -1,0 +1,74 @@
+{
+ "plans": [
+  {
+   "id": "fp-1767225600000-1a2b3c4d",
+   "label": "8.5 kg nominal",
+   "kind": "flight",
+   "created_ms": 1767225600000,
+   "created_by": "operator",
+   "fill_kg": 8.5,
+   "apogee_m": 3050.2,
+   "landing": {
+    "lat_deg": 31.7584032,
+    "lon_deg": -102.0353316,
+    "drift_m": 1012.0,
+    "bearing_deg": 87.0
+   },
+   "dispersion_samples": 50,
+   "warnings": 1
+  },
+  {
+   "id": "fp-1767229200000-5e6f7a8b",
+   "label": "Burn at 6 kg",
+   "kind": "burn",
+   "created_ms": 1767229200000,
+   "created_by": "admin",
+   "fill_kg": 6.0,
+   "apogee_m": null,
+   "landing": null,
+   "dispersion_samples": 0,
+   "warnings": 0
+  }
+ ],
+ "defaults": {
+  "kind": "flight",
+  "label": "8.5 kg nominal",
+  "fill_kg": 8.5,
+  "target_apogee_m": null,
+  "supercharge_psi": 750,
+  "tank_temp_c": null,
+  "motor_model": "physics",
+  "weather": {
+   "source": "manual",
+   "manual": {
+    "surface_temp_c": 20,
+    "surface_pressure_hpa": null,
+    "wind_mps": 4,
+    "wind_from_deg": 300,
+    "gust_mps": 1,
+    "wind_1km_mps": null,
+    "wind_1km_from_deg": null,
+    "wind_3km_mps": null,
+    "wind_3km_from_deg": null
+   }
+  },
+  "launch": {
+   "rail_length_m": 5.18,
+   "tilt_deg": 2.0,
+   "azimuth_deg": 0.0
+  },
+  "site": {
+   "lat_deg": 31.758,
+   "lon_deg": -102.046,
+   "alt_msl_m": 890.0
+  },
+  "dispersion": {
+   "samples": 50,
+   "seed": 1
+  }
+ },
+ "limits": {
+  "max_samples": 500,
+  "max_plans": 50
+ }
+}
