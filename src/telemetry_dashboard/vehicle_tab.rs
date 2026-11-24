@@ -667,6 +667,14 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
         .and_then(|(_, _, _, t)| t.source_sender_id.clone())
         .unwrap_or_else(|| "FC".into());
     let gps = frame.gps_for(&gps_sender);
+    let replay_track: Vec<super::los_prediction::TrackPoint> = trajectory
+        .read()
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|r| r.as_ref())
+        .filter(|(o, i, _, _)| o == &UrlConfig::base_http() && i == &*selected.read())
+        .map(|(_, _, _, t)| t.points.iter().map(|p| (p.timestamp_ms, p.latitude, p.longitude, p.altitude_m)).collect())
+        .unwrap_or_default();
     let error = recordings
         .read()
         .as_ref()
@@ -792,6 +800,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
                 if roll.is_none() || pitch.is_none() || yaw.is_none(){span {"Attitude unavailable"}}
                 if error.is_some(){span {"Replay unavailable"}}else if !available && !selected.read().is_empty(){span {"Loading saved samples…"}}
             }
+            super::los_prediction::ReplayPredictionTools {theme:theme.clone(),viewer_element:format!("gs26-vehicle-model-{viewer_id}"),track:replay_track.clone(),at_ms:absolute,flight_state:phase.clone()}
             div {role:"group",aria_label:"Replay camera",style:"display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;",
                 for (action,label) in [("follow","Follow rocket"),("overview","Flight path"),("reset","Reset view"),("zoom-in","Zoom in"),("zoom-out","Zoom out")] {
                     button {style:"{button}",onclick:move |_|js_eval(&format!("document.getElementById('gs26-vehicle-model-{viewer_id}')?.cameraAction?.('{action}');")),"{label}"}

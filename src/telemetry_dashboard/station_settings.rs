@@ -100,6 +100,7 @@ fn StationSettingsBody(
                 super::launch_site::LaunchSiteSettings {theme:theme.clone()}
                 super::apogee_planner::ApogeePlannerSettings {theme:theme.clone()}
                 super::flight_plans_view::FlightSimSettings {theme:theme.clone()}
+                super::los_prediction::LosSettingsPanel {theme:theme.clone()}
                 super::fire_archive_view::FireArchiveSettings {theme:theme.clone()}
             },
             StationSection::Loadcells=>rsx! {

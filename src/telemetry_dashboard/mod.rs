@@ -89,6 +89,7 @@ mod launch_site;
 mod apogee_planner;
 mod flight_plans;
 mod flight_plans_view;
+mod los_prediction;
 mod burn_report_view;
 mod flight_review_view;
 mod fire_archive_view;
