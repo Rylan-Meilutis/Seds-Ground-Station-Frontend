@@ -139,10 +139,90 @@ fn saves_echo_the_loaded_volts_version_and_legacy_payloads_stay_legacy() {
     assert_eq!(CalibrationFile::default().version, CALIBRATION_VERSION);
     assert_eq!(CALIBRATION_VERSION, 2);
     let loaded: CalibrationFile = serde_json::from_str(r#"{"version":2,"kg50_input":"amp2","full_mass_kg":10.0,"extra_channels":{"ch1":{"linear":{"m":545.8,"b":0.0},"zero_raw":0.2126,"points":[]}}}"#).unwrap();
-    let request = CalibrationSaveRequest { channel: "ch1".into(), calibration: loaded };
+    let request = CalibrationSaveRequest::new("ch1".into(), loaded);
     let body = serde_json::to_value(&request).unwrap();
     assert_eq!(body["calibration"]["version"], 2);
     // A payload without a version is a legacy raw-scale file; never relabel it.
     let legacy: CalibrationFile = serde_json::from_str(r#"{"full_mass_kg":10.0}"#).unwrap();
     assert_eq!(legacy.version, 1);
+}
+
+fn loaded_document() -> CalibrationFile {
+    serde_json::from_str(r#"{"version":2,"kg50_input":"amp2","full_mass_kg":10.0,"revision":41,"mcp_vref_v":2.2,"mcp_vref_note":"measured","extra_channels":{"ch1":{"linear":{"m":545.8,"b":0.0},"zero_raw":0.2126,"points":[],"fitted_mcp_vref_v":2.2}}}"#).unwrap()
+}
+
+#[test]
+fn a_save_names_the_revision_and_reference_the_draft_was_edited_from() {
+    let mut draft = loaded_document();
+    assert_eq!((draft.revision, draft.mcp_vref_v), (41, Some(2.2)));
+    draft.channels.get_mut("ch1").unwrap().linear.m = Some(600.0);
+    let body = serde_json::to_value(CalibrationSaveRequest::new("ch1".into(), draft)).unwrap();
+    assert_eq!(body["channel"], "ch1");
+    assert_eq!(body["revision"], 41);
+    assert_eq!(body["fitted_mcp_vref_v"].as_f64().unwrap() as f32, 2.2);
+    assert_eq!(body["calibration"]["extra_channels"]["ch1"]["linear"]["m"], 600.0);
+    // A draft survives a reload of the page with the revision it came from.
+    let draft = CalibrationDraft { calibration: loaded_document(), fit_mode: "best".into(), preserve_regression_on_zero_change: true };
+    let restored: CalibrationDraft = serde_json::from_str(&serde_json::to_string(&draft).unwrap()).unwrap();
+    assert_eq!((restored.calibration.revision, restored.calibration.mcp_vref_v), (41, Some(2.2)));
+    // A document from before revisions is revision 0 with no reference; the
+    // save then names none and the station decides (it refuses a load cell).
+    let older: CalibrationFile = serde_json::from_str(r#"{"version":2,"full_mass_kg":10.0}"#).unwrap();
+    let body = serde_json::to_value(CalibrationSaveRequest::new("ch1".into(), older)).unwrap();
+    assert_eq!(body["revision"], 0);
+    assert!(body.get("fitted_mcp_vref_v").is_none());
+}
+
+#[test]
+fn a_conflict_is_stale_only_when_the_station_document_moved_on() {
+    let submitted = loaded_document();
+    let reason = "Calibration changed on the station since it was loaded (loaded revision 41, station revision 42). Nothing was saved: reload the calibration and re-apply your changes.";
+    let error = format!("HTTP 409: {reason}");
+    assert_eq!(http_error(&error), Some((409, reason)));
+    assert_eq!(http_error("HTTP 503"), Some((503, "")));
+    assert_eq!(http_error("Settings request timed out"), None);
+    assert!(save_refusal_needs_station(&error));
+    assert!(!save_refusal_needs_station("HTTP 503: Service Unavailable"));
+
+    let mut moved = submitted.clone();
+    moved.revision = 42;
+    assert_eq!(save_refusal(&error, &submitted, Some(&moved)), SaveRefusal::Stale(reason.into()));
+    let mut converted = submitted.clone();
+    converted.mcp_vref_v = Some(2.4);
+    assert!(matches!(save_refusal("HTTP 409: reference", &submitted, Some(&converted)), SaveRefusal::Stale(_)));
+    let mut input = submitted.clone();
+    input.kg50_input = "p6_differential".into();
+    assert!(matches!(save_refusal("HTTP 409: input", &submitted, Some(&input)), SaveRefusal::Stale(_)));
+    // A conflict about the edit itself (a railed point) keeps the draft saveable.
+    let railed = "HTTP 409: KG1000 point 100 kg has 2.4 V at the ADC/amplifier rail";
+    assert_eq!(save_refusal(railed, &submitted, Some(&submitted)), SaveRefusal::Failed(railed.into()));
+    assert!(matches!(save_refusal(&error, &submitted, None), SaveRefusal::Failed(_)), "unverified: reported, not reloaded");
+    assert!(matches!(save_refusal("HTTP 428: say which revision", &submitted, None), SaveRefusal::Stale(_)));
+    assert!(matches!(save_refusal("HTTP 503: down", &submitted, Some(&moved)), SaveRefusal::Failed(_)));
+
+    let message = stale_save_message(reason);
+    assert!(message.starts_with("Not saved. Calibration changed on the station") && message.contains("reload"), "{message}");
+    assert!(stale_save_message("  ").contains("changed since it was loaded"));
+}
+
+#[test]
+fn newer_local_edits_move_to_the_revision_the_station_just_wrote() {
+    let submitted = loaded_document();
+    let mut current = submitted.clone();
+    current.channels.get_mut("ch1").unwrap().zero_raw = Some(0.3);
+    let mut saved = submitted.clone();
+    saved.revision = 42;
+    assert!(!accept_calibration_save(&mut current, &submitted, saved.clone()));
+    assert_eq!(current.revision, 42, "edits made on top of the save are based on its revision");
+    assert_eq!(current.channels["ch1"].zero_raw, Some(0.3));
+    // A reply that skipped revisions means someone else wrote: stay stale.
+    let mut current = submitted.clone();
+    current.channels.get_mut("ch1").unwrap().zero_raw = Some(0.3);
+    saved.revision = 44;
+    assert!(!accept_calibration_save(&mut current, &submitted, saved.clone()));
+    assert_eq!(current.revision, 41);
+    // Nothing newer: the station's document replaces the draft.
+    let mut current = submitted.clone();
+    assert!(accept_calibration_save(&mut current, &submitted, saved.clone()));
+    assert_eq!(current, saved);
 }

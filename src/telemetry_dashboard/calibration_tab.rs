@@ -75,12 +75,92 @@ struct CalibrationFile {
     weights_kg: Vec<f32>,
     #[serde(default, rename = "extra_channels")]
     channels: BTreeMap<String, GenericCalibrationChannel>,
+    /// The station's revision of this document. A save names the revision it
+    /// was edited from and the station refuses it once the calibration has
+    /// moved on. Missing (a station or cached copy from before revisions): 0.
+    #[serde(default)]
+    revision: u64,
+    /// The station's DAQ MCP3564R reference (V) the load-cell volts in this
+    /// document are in; a save names it as the reference its fit was made at.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    mcp_vref_v: Option<f32>,
 }
 
+/// `POST /api/calibration`: the edited document plus where it came from.
 #[derive(Serialize)]
 struct CalibrationSaveRequest {
     channel: String,
     calibration: CalibrationFile,
+    /// Revision of the station document the edit started from.
+    revision: u64,
+    /// Reference the edited points and fit were captured and fitted at: the
+    /// one of the document they were captured into, never a newer setting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fitted_mcp_vref_v: Option<f32>,
+}
+
+impl CalibrationSaveRequest {
+    fn new(channel: String, calibration: CalibrationFile) -> Self {
+        Self {
+            channel,
+            revision: calibration.revision,
+            fitted_mcp_vref_v: calibration.mcp_vref_v,
+            calibration,
+        }
+    }
+}
+
+/// Why a save failed, as the editor reports it.
+#[derive(Debug, Clone, PartialEq)]
+enum SaveRefusal {
+    /// The station's calibration is no longer the one this draft was edited
+    /// from (another save, a capture, a DAQ input or reference change): the
+    /// draft cannot be saved as it is; reload and re-apply.
+    Stale(String),
+    Failed(String),
+}
+
+/// Status and body of a settings request error (`HTTP 409: text`).
+fn http_error(error: &str) -> Option<(u16, &str)> {
+    let rest = error.strip_prefix("HTTP ")?;
+    let (status, body) = rest.split_once(": ").unwrap_or((rest, ""));
+    Some((status.trim().parse().ok()?, body))
+}
+
+/// Whether a refused save needs the station's current document to classify.
+fn save_refusal_needs_station(error: &str) -> bool {
+    matches!(http_error(error), Some((409, _)))
+}
+
+/// Classify a refused save. 428 means the station wants a revision this
+/// client did not send. A 409 is stale only when the station's document is
+/// really another one than the draft was edited from (other 409s, such as a
+/// railed point or closed admission, keep the draft and are just reported).
+fn save_refusal(error: &str, submitted: &CalibrationFile, station: Option<&CalibrationFile>) -> SaveRefusal {
+    match http_error(error) {
+        Some((428, body)) => SaveRefusal::Stale(body.to_string()),
+        Some((409, body))
+            if station.is_some_and(|station| {
+                station.revision != submitted.revision
+                    || station.mcp_vref_v != submitted.mcp_vref_v
+                    || station.kg50_input != submitted.kg50_input
+            }) =>
+        {
+            SaveRefusal::Stale(body.to_string())
+        }
+        _ => SaveRefusal::Failed(error.to_string()),
+    }
+}
+
+/// Operator text for a stale save: the station's reason, then what to do.
+fn stale_save_message(reason: &str) -> String {
+    let reason = reason.trim();
+    let reason = if reason.is_empty() {
+        "The station calibration changed since it was loaded."
+    } else {
+        reason
+    };
+    format!("Not saved. {reason} Your unsaved changes are kept on this client until you reload.")
 }
 
 fn apply_manual_linear(cfg: &mut CalibrationFile, channel: &str, slope: f32, offset: f32) -> Result<(), String> {
@@ -107,6 +187,8 @@ impl Default for CalibrationFile {
             full_mass_kg: Some(10.0),
             weights_kg: Vec::new(),
             channels: BTreeMap::new(),
+            revision: 0,
+            mcp_vref_v: None,
         }
     }
 }
@@ -196,7 +278,18 @@ fn accept_calibration_save(
     submitted: &CalibrationFile,
     saved: CalibrationFile,
 ) -> bool {
-    if current != submitted { return false; }
+    if current != submitted {
+        // Newer local edits were made on top of exactly what the station just
+        // stored (it accepted the submitted revision and wrote the next one),
+        // so they are now based on that revision. Anything else stays stale.
+        if current.revision == submitted.revision
+            && saved.revision == submitted.revision.wrapping_add(1)
+            && saved.mcp_vref_v == submitted.mcp_vref_v
+        {
+            current.revision = saved.revision;
+        }
+        return false;
+    }
     *current = saved;
     true
 }
@@ -1518,6 +1611,8 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
     let sequence_direction = use_signal(|| CaptureDirection::Increasing);
     let sequence_capture_busy = use_signal(|| false);
     let calibration_save_busy = use_signal(|| false);
+    // Set when the station refused a save because its calibration moved on.
+    let mut stale_save = use_signal(|| None::<String>);
     use_effect(move || on_context_locked.call(!context_loaded() || *dirty.read() || manual_capture_busy() || *sequence_capture_busy.read() || *calibration_save_busy.read()));
 
 
@@ -2169,7 +2264,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                             let mut cfg=cfg;let mut dirty=dirty;let mut status=status;
                             spawn(async move {
                                 match settings_owner.get::<CalibrationFile>("/api/calibration").await {
-                                    Ok(mut current)=>{sanitize_calibration_file(&mut current);save_cached_calibration_file(&current);cfg.set(Some(current));dirty.set(false);clear_calibration_draft();context_loaded.set(true);status.set("Draft discarded; current station calibration loaded".into());},
+                                    Ok(mut current)=>{sanitize_calibration_file(&mut current);save_cached_calibration_file(&current);cfg.set(Some(current));dirty.set(false);clear_calibration_draft();context_loaded.set(true);stale_save.set(None);status.set("Draft discarded; current station calibration loaded".into());},
                                     Err(_) if !settings_owner.current()=>(),
                                     Err(error)=>status.set(format!("Draft kept: station calibration could not be loaded: {error}")),
                                 }
@@ -2194,6 +2289,19 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                         h2 { style: "margin:0; color:{theme.text_primary}; font-size:20px;", "Calibration" }
                         div { style: "margin-top:4px; color:{theme.text_muted}; font-size:13px;", "Select a sensor, capture known loads, review the fit, then save." }
                         div { role:"status", style:"margin-top:6px;color:{theme.text_secondary};font-size:13px;", "{status.read()}" }
+                        if let Some(message) = stale_save.read().clone() {
+                            div { class: "gs26-calibration-stale", role: "alert",
+                                style: "margin-top:8px; padding:10px 12px; border-radius:12px; border:1px solid {theme.warning_border}; background:{theme.warning_background}; color:{theme.warning_text}; font-size:13px; display:grid; gap:8px; max-width:640px;",
+                                span { "{message}" }
+                                div { style: "display:flex; gap:8px; flex-wrap:wrap;",
+                                    button { r#type: "button", style: "{neutral_button_style}",
+                                        disabled: *sequence_capture_busy.read() || manual_capture_busy() || *calibration_save_busy.read(),
+                                        onclick: move |_| confirm_discard.set(true),
+                                        "Reload station calibration…"
+                                    }
+                                }
+                            }
+                        }
                         div { style: "margin-top:6px; color:{theme.text_secondary}; font-size:12px;",
                             if can_edit {
                                 "Save applies only to the selected sensor. DAQ inputs and station configuration are in Settings → Ground Station."
@@ -2232,7 +2340,7 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                             return;
                                         };
                                         let Some(sensor) = selected_sensor.clone() else { return; };
-                                        let request = CalibrationSaveRequest { channel: sensor.channel, calibration: next.clone() };
+                                        let request = CalibrationSaveRequest::new(sensor.channel, next.clone());
                                         status.set(format!("Saving {} calibration…", sensor.label));
                                         calibration_save_busy.set(true);
                                         spawn(async move {
@@ -2241,17 +2349,36 @@ pub fn CalibrationTab(theme: ThemeConfig, can_edit: bool, capture_sample_count: 
                                                     sanitize_calibration_file(&mut saved_cfg);
                                                     save_cached_calibration_file(&saved_cfg);
                                                     let mut current = cfg.read().clone().unwrap_or_default();
+                                                    stale_save.set(None);
                                                     if accept_calibration_save(&mut current, &next, saved_cfg) {
                                                         cfg.set(Some(current));
                                                         dirty.set(false);
                                                         clear_calibration_draft();
                                                         status.set("Selected sensor saved; other calibrations preserved".to_string());
                                                     } else {
+                                                        cfg.set(Some(current));
                                                         status.set("Earlier calibration saved; newer local edits are preserved. Save again to publish them.".to_string());
                                                     }
                                                 }
                                                 Err(_) if !settings_owner.current() => return,
-                                                Err(e) => status.set(format!("Save failed: {e}")),
+                                                Err(e) => {
+                                                    // Never overwrite: find out whether the station's calibration
+                                                    // moved on, and if so offer a reload instead of a retry.
+                                                    let station = if save_refusal_needs_station(&e) {
+                                                        settings_owner.get::<CalibrationFile>("/api/calibration").await.ok()
+                                                    } else {
+                                                        None
+                                                    };
+                                                    if !settings_owner.current() { return; }
+                                                    match save_refusal(&e, &next, station.as_ref()) {
+                                                        SaveRefusal::Stale(reason) => {
+                                                            let message = stale_save_message(&reason);
+                                                            status.set(message.clone());
+                                                            stale_save.set(Some(message));
+                                                        }
+                                                        SaveRefusal::Failed(error) => status.set(format!("Save failed: {error}")),
+                                                    }
+                                                }
                                             }
                                             calibration_save_busy.set(false);
                                         });
