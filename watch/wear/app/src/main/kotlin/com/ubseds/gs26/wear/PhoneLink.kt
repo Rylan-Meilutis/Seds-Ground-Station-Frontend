@@ -1,6 +1,7 @@
 package com.ubseds.gs26.wear
 
 import android.content.Context
+import android.location.Location
 import android.annotation.SuppressLint
 import android.util.Log
 import androidx.core.content.edit
@@ -16,6 +17,8 @@ import com.google.android.gms.wearable.PutDataMapRequest
 import com.google.android.gms.wearable.Wearable
 import com.ubseds.gs26.wear.core.Direct
 import com.ubseds.gs26.wear.core.Protocol
+import com.ubseds.gs26.wear.core.Search
+import com.ubseds.gs26.wear.core.SearchRecorder
 import com.ubseds.gs26.wear.core.Snapshot
 import com.ubseds.gs26.wear.core.WatchSettings
 import com.ubseds.gs26.wear.core.WatchState
@@ -52,6 +55,47 @@ class PhoneLink private constructor(context: Context) :
 
     /** A connected phone node advertises the GS phone app (`gs26_phone`). */
     val phoneReachable: StateFlow<Boolean> = _phoneReachable.asStateFlow()
+
+    private val _search = MutableStateFlow(Search.decode(prefs.getString(KEY_SEARCH, null)))
+
+    /**
+     * Recovery search (core `Search`): this watch user's own opt-in and the
+     * fixes waiting for the phone (docs/watch-companion.md "Recovery search").
+     */
+    val search: StateFlow<SearchRecorder> = _search.asStateFlow()
+    private var lastShareSentMs = 0L
+
+    /** Every 2 s while the app runs: follow the phone, record a fix, send the buffer. */
+    fun searchTick(fix: Location?) {
+        val info = _state.value.snapshot?.search
+        var next = _search.value.apply(info)
+        val now = System.currentTimeMillis()
+        if (fix != null && now - fix.time < 30_000L) {
+            val accuracy = if (fix.hasAccuracy()) fix.accuracy.toDouble() else null
+            next = next.record(fix.latitude, fix.longitude, accuracy, fix.time, info)
+        }
+        next.nextMessage()?.let { send(it) }
+        // The opt-in goes only to a reachable phone: repeat it until the
+        // phone reports the station's answer.
+        if (next.wantsToShare && info?.active == true && !info.sharing && now - lastShareSentMs > 10_000L) {
+            lastShareSentMs = now
+            send(Search.shareMessage(true))
+        }
+        saveSearch(next)
+    }
+
+    /** The watch user turned sharing on or off. Off stops at once and discards the buffer. */
+    fun shareSearch(on: Boolean) {
+        saveSearch(if (on) _search.value.copy(wantsToShare = true) else _search.value.stop())
+        lastShareSentMs = System.currentTimeMillis()
+        send(Search.shareMessage(on))
+    }
+
+    private fun saveSearch(next: SearchRecorder) {
+        if (next == _search.value) return
+        _search.value = next
+        prefs.edit { putString(KEY_SEARCH, Search.encode(next)) }
+    }
 
     /** Page id currently on screen, reported in `activity` messages. */
     @Volatile var currentPage: String? = null
@@ -304,6 +348,7 @@ class PhoneLink private constructor(context: Context) :
         private const val KEY_SNAPSHOT = "snapshot_json"
         private const val KEY_RECEIVED = "received_ms"
         private const val KEY_PENDING = "pending_settings_json"
+        private const val KEY_SEARCH = "search_recorder_json"
         private const val REPORT_DELAY_MS = 5_000L
         private const val MAX_DIRECT_TILES = 6
 

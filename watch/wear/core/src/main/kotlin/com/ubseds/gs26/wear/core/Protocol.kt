@@ -100,6 +100,8 @@ data class Snapshot(
     /** `phone` (relayed by the phone app) or `direct` (read from the station). */
     val source: String = "phone",
     @SerialName("link_timeout_s") val linkTimeoutS: Long = 15,
+    /** Recovery search state for this watch (absent: no search data). */
+    val search: SearchInfo? = null,
 ) {
     /**
      * A status read from the station itself (`GET /api/watch/status`), shown

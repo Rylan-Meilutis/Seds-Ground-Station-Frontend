@@ -230,6 +230,13 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
         return true
     }
 
+    /// Recovery search messages: an opt-in change is queued for delivery
+    /// after a disconnect; track batches go only live (the watch keeps them
+    /// until the phone acknowledges them in a snapshot).
+    func sendSearch(_ message: WatchMessage) {
+        send(message)
+    }
+
     private func sendActivity() {
         send(.activity(foreground: foreground, page: currentPage))
     }
@@ -243,6 +250,7 @@ final class PhoneLink: NSObject, ObservableObject, WCSessionDelegate {
         switch message {
         case .settings: queued = "settings"
         case .tiles: queued = "tiles"
+        case .searchShare: queued = "search_share"
         default: queued = nil
         }
         if let type = queued {

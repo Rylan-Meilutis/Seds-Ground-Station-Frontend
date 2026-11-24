@@ -12,7 +12,9 @@ struct RootView: View {
     @EnvironmentObject private var link: PhoneLink
     @EnvironmentObject private var location: LocationService
     @EnvironmentObject private var voice: VoiceSession
+    @EnvironmentObject private var search: SearchModel
     @Environment(\.scenePhase) private var scenePhase
+    static let searchTag = "__search"
     @State private var selection = RootView.statusTag
     /// Push-to-talk opened from the complication while no voice page is enabled.
     @State private var voiceSheet = false
@@ -23,6 +25,9 @@ struct RootView: View {
             AlertsPage().tag(Self.alertsTag)
             ForEach(link.pages) { page in
                 PageContainer(page: page, visible: selection == page.id).tag(page.id)
+            }
+            if link.phoneSnapshot?.search?.active == true || !search.recorder.pending.isEmpty {
+                SearchPage().tag(Self.searchTag)
             }
             SettingsView().tag(Self.settingsTag)
         }
@@ -41,7 +46,7 @@ struct RootView: View {
         .onChange(of: link.pages.map(\.id)) {
             // A page that disappeared (disabled in settings) falls back to
             // Status, never to Settings.
-            let fixed = [Self.statusTag, Self.alertsTag, Self.settingsTag]
+            let fixed = [Self.statusTag, Self.alertsTag, Self.searchTag, Self.settingsTag]
             if !fixed.contains(selection) && !link.pages.contains(where: { $0.id == selection }) {
                 selection = Self.statusTag
             }
@@ -58,6 +63,11 @@ struct RootView: View {
             updateLocation()
             link.updateDirectPolling()
         }
+        // Recovery search: record and relay while opted in (SearchPage).
+        .onReceive(Timer.publish(every: 2, on: .main, in: .common).autoconnect()) { _ in
+            search.tick(link: link, location: location.location)
+            updateLocation()
+        }
     }
 
     private func pageName(_ tag: String) -> String {
@@ -65,14 +75,16 @@ struct RootView: View {
         case Self.statusTag: return "status"
         case Self.alertsTag: return "alerts"
         case Self.settingsTag: return "settings"
+        case Self.searchTag: return "search"
         default: return tag
         }
     }
 
-    /// Location and heading run only while the compass page is on screen.
+    /// Location and heading run only while the compass page is on screen,
+    /// or while this watch shares its recovery search track.
     private func updateLocation() {
         let page = link.pages.first { $0.id == selection }
-        if scenePhase == .active, page?.pageKind == .compass {
+        if scenePhase == .active, page?.pageKind == .compass || search.recording(link) {
             location.start(recovery: link.settings?.power == .recovery)
         } else {
             location.stop()

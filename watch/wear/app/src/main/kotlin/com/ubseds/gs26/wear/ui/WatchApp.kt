@@ -32,6 +32,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -51,6 +52,10 @@ import androidx.wear.compose.material.Text
 import androidx.wear.compose.material.TimeText
 import com.ubseds.gs26.wear.MainActivity
 import com.ubseds.gs26.wear.PhoneLink
+import com.ubseds.gs26.wear.WatchLocationEffect
+import com.ubseds.gs26.wear.hasLocationPermission
+import com.ubseds.gs26.wear.core.SearchInfo
+import com.ubseds.gs26.wear.core.SearchRecorder
 import com.ubseds.gs26.wear.core.ConnectionStatus
 import com.ubseds.gs26.wear.core.Direct
 import com.ubseds.gs26.wear.core.DirectInfo
@@ -85,6 +90,21 @@ fun WatchApp(link: PhoneLink) {
     var showSettings by rememberSaveable { mutableStateOf(false) }
     var confirming by remember { mutableStateOf<PageAction?>(null) }
     val watchFix = remember { mutableStateOf<Location?>(null) }
+    // Recovery search: location runs while this watch shares its track.
+    val search by link.search.collectAsStateWithLifecycle()
+    val context = LocalContext.current
+    WatchLocationEffect(
+        active = search.recording(state.snapshot?.search),
+        recovery = true,
+        permitted = hasLocationPermission(context),
+        holder = watchFix,
+    )
+    LaunchedEffect(link) {
+        while (true) {
+            link.searchTick(watchFix.value)
+            delay(2_000L)
+        }
+    }
     // Phone while its data is fresh, else the station itself (core Direct).
     val route = Direct.chooseRoute(
         phoneMode = state.snapshot?.mode,
@@ -187,7 +207,7 @@ private fun MainPager(
                 if (index >= FIXED_PAGES) Banners(state, status)
                 Box(Modifier.fillMaxWidth().weight(1f)) {
                     when {
-                        index == 0 -> StatusPage(state, status, route, now)
+                        index == 0 -> StatusPage(state, status, route, now, link)
                         index == 1 -> AlertsPage(state, status)
                         page == null -> SettingsEntry(onOpenSettings, enabled = state.snapshot != null)
                         page.kind == PageKind.ITEMS -> ItemsPage(page, state, now)
@@ -257,9 +277,12 @@ private fun Banners(state: WatchState, status: ConnectionStatus) {
 
 /** Landing page: flight state, T-clock, the data path ("Via phone" / "Direct to GS") and the station. */
 @Composable
-private fun StatusPage(state: WatchState, status: ConnectionStatus, route: LinkRoute, now: Long) {
+private fun StatusPage(state: WatchState, status: ConnectionStatus, route: LinkRoute, now: Long, link: PhoneLink) {
     val listState = rememberScalingLazyListState()
+    val search by link.search.collectAsStateWithLifecycle()
+    val searchInfo = state.snapshot?.search
     ScalingLazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+        if (searchInfo?.active == true || search.pending.isNotEmpty()) item { SearchSection(link, searchInfo, search) }
         if (state.snapshot?.mode == Mode.DEMO) item { Text("DEMO", fontSize = 11.sp, color = Amber) }
         for (id in listOf("flight_state", "t_clock")) {
             if (state.snapshot?.items?.containsKey(id) == true) item { StatusItem(state.item(id, now)) }
@@ -271,6 +294,40 @@ private fun StatusPage(state: WatchState, status: ConnectionStatus, route: LinkR
         if (status.openPhoneApp && status.phone.text != ConnectionStatus.OPEN_PHONE_APP) {
             item { Text(ConnectionStatus.OPEN_PHONE_APP, fontSize = 11.sp, color = Dim, textAlign = TextAlign.Center) }
         }
+    }
+}
+
+/** Recovery search on the watch: the explicit opt-in, a clear indicator while sharing, stop. */
+@Composable
+private fun SearchSection(link: PhoneLink, info: SearchInfo?, search: SearchRecorder) {
+    var confirm by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        val percent = info?.percent?.let { " · %.0f%% covered".format(it) }.orEmpty()
+        Text("Recovery search$percent", fontSize = 12.sp, color = Dim)
+        when {
+            search.recording(info) -> {
+                Text("● SHARING TRACK", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = AlertRed)
+                Chip(onClick = { link.shareSearch(false) }, label = { Text("Stop sharing") }, colors = ChipDefaults.secondaryChipColors())
+            }
+            search.wantsToShare -> {
+                Text("Waiting for the station to accept…", fontSize = 10.sp, color = Dim)
+                Chip(onClick = { link.shareSearch(false) }, label = { Text("Cancel") }, colors = ChipDefaults.secondaryChipColors())
+            }
+            confirm -> {
+                Text(
+                    "While the search is on, this watch sends its position to the station through your phone. Everyone signed in sees it on the search map. Stop any time.",
+                    fontSize = 10.sp,
+                    textAlign = TextAlign.Center,
+                )
+                Chip(onClick = { confirm = false; link.shareSearch(true) }, label = { Text("Share track") })
+            }
+            info?.active == true -> Chip(onClick = { confirm = true }, label = { Text("Share watch track…") }, colors = ChipDefaults.secondaryChipColors())
+        }
+        if (search.wantsToShare && !hasLocationPermission(context)) {
+            Text("Allow location (open the compass page once).", fontSize = 10.sp, color = Amber, textAlign = TextAlign.Center)
+        }
+        if (search.pending.isNotEmpty()) Text("${search.pending.size} fixes waiting for the phone", fontSize = 10.sp, color = Dim)
     }
 }
 

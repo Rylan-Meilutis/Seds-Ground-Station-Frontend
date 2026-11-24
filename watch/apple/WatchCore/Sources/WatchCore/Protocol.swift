@@ -316,9 +316,11 @@ public struct Snapshot: Decodable, Equatable {
     public var source: String
     /// Seconds without a snapshot after which the phone link counts as lost.
     public var linkTimeoutS: Int
+    /// Recovery search state for this watch (absent: no search data).
+    public var search: SearchInfo?
 
     enum CodingKeys: String, CodingKey {
-        case v, seq, mode, station, account, items, pages, targets, settings, catalog, actions, source
+        case v, seq, mode, station, account, items, pages, targets, settings, catalog, actions, source, search
         case linkTimeoutS = "link_timeout_s"
     }
 
@@ -337,6 +339,7 @@ public struct Snapshot: Decodable, Equatable {
         actions = c.lossyMap(.actions)
         source = c.soft(.source, "phone")
         linkTimeoutS = max(1, c.soft(.linkTimeoutS, 15))
+        search = c.softOptional(.search)
     }
 
     public static func parse(_ json: String) -> Snapshot? {
@@ -375,8 +378,15 @@ public enum WatchMessage: Encodable, Equatable {
     /// The map tiles the watch holds (`z/x/y`), so the phone sends only
     /// missing ones; `set` is the manifest it last received.
     case tiles(set: String?, have: [String])
+    /// Recovery search: the watch user turned sharing on or off.
+    case searchShare(Bool)
+    /// Recovery search: buffered fixes with the watch's sequence numbers.
+    case searchTrack(sessionId: String, points: [SearchFix])
 
-    enum CodingKeys: String, CodingKey { case v, type, foreground, page, settings, set, have }
+    enum CodingKeys: String, CodingKey {
+        case v, type, foreground, page, settings, set, have, sharing, points
+        case sessionId = "session_id"
+    }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -395,6 +405,13 @@ public enum WatchMessage: Encodable, Equatable {
             try c.encode("tiles", forKey: .type)
             try c.encodeIfPresent(set, forKey: .set)
             try c.encode(have, forKey: .have)
+        case let .searchShare(sharing):
+            try c.encode("search_share", forKey: .type)
+            try c.encode(sharing, forKey: .sharing)
+        case let .searchTrack(sessionId, points):
+            try c.encode("search_track", forKey: .type)
+            try c.encode(sessionId, forKey: .sessionId)
+            try c.encode(points, forKey: .points)
         }
     }
 
