@@ -45,6 +45,8 @@ impl LocalSelection {
         install_tiles(Some(station.session.tiles()));
         LOCAL.with(|slot| *slot.borrow_mut() = Some(station));
         super::persist::begin_scratch();
+        #[cfg(target_arch = "wasm32")]
+        super::js_eval(BROWSER_SCRATCH_ON);
         Self(())
     }
 }
@@ -54,8 +56,25 @@ impl Drop for LocalSelection {
         LOCAL.with(|slot| slot.borrow_mut().take());
         install_tiles(None);
         super::persist::end_scratch();
+        #[cfg(target_arch = "wasm32")]
+        super::js_eval(BROWSER_SCRATCH_OFF);
     }
 }
+
+/// In the browser, scripts (the map, the debug log, settings sync) write
+/// `localStorage` directly. While a local station is selected their writes
+/// land in a page-memory overlay that reads see first, so the station's own
+/// preferences and caches in this browser are left exactly as they were.
+#[cfg(target_arch = "wasm32")]
+const BROWSER_SCRATCH_ON: &str = r#"(()=>{const P=Storage.prototype;if(P.__gs26Scratch)return;
+const o={setItem:P.setItem,getItem:P.getItem,removeItem:P.removeItem,clear:P.clear};const m=new Map();
+P.__gs26Scratch={o,m};
+P.setItem=function(k,v){if(this===window.localStorage){m.set(String(k),String(v));return;}return o.setItem.call(this,k,v);};
+P.getItem=function(k){if(this===window.localStorage&&m.has(String(k)))return m.get(String(k));return o.getItem.call(this,k);};
+P.removeItem=function(k){if(this===window.localStorage){m.set(String(k),null);return;}return o.removeItem.call(this,k);};
+P.clear=function(){if(this===window.localStorage)return;return o.clear.call(this);};})()"#;
+#[cfg(target_arch = "wasm32")]
+const BROWSER_SCRATCH_OFF: &str = r#"(()=>{const P=Storage.prototype;const s=P.__gs26Scratch;if(!s)return;Object.assign(P,s.o);delete P.__gs26Scratch;})()"#;
 
 /// Map tiles of the selected local station, "z/x/y" -> JPEG bytes. The map
 /// draws only these while a local station is selected and fetches nothing.

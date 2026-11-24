@@ -143,6 +143,8 @@ pub(crate) struct Session {
     /// Bundle entries by the station route whose body they are (path
     /// without query), served as the station served them.
     pub routes: BTreeMap<String, RouteEntry>,
+    /// Bundle entries that are filtered lists rather than route bodies.
+    pub lists: BTreeMap<String, Value>,
     index: BTreeMap<(String, String), Vec<usize>>,
 }
 
@@ -197,7 +199,7 @@ impl Session {
         LIVE_SESSIONS.with(|n| n.set(n.get() + 1));
         Self {
             source, title, mode, provenance, layout, boards, samples, states, alerts, calibration, recordings, replay_document, vehicle_geometry, notes, epoch_ms,
-            csv: None, manifest: None, predicted: None, plans: Vec::new(), terrain: None, trajectory: None, recovery_search: None, routes: BTreeMap::new(), index,
+            csv: None, manifest: None, predicted: None, plans: Vec::new(), terrain: None, trajectory: None, recovery_search: None, routes: BTreeMap::new(), lists: BTreeMap::new(), index,
         }
     }
 
@@ -350,6 +352,11 @@ impl Session {
         })
     }
 
+    /// A bundle's filtered list entry (`derived/burn_reports.json`), else empty.
+    pub(crate) fn listed(&self, path: &str) -> Value {
+        self.lists.get(path).cloned().unwrap_or_else(|| Value::Array(Vec::new()))
+    }
+
     /// Map tiles carried by a bundle, "z/x/y" -> bytes.
     pub(crate) fn tiles(&self) -> super::station_link::Tiles {
         self.routes
@@ -359,8 +366,12 @@ impl Session {
     }
 
     /// A bundle entry (or a map tile) for `GET path`, as the station sent it.
-    pub(crate) fn route_entry(&self, path: &str, _query: &str) -> Option<super::station_link::Reply> {
-        let entry = self.routes.get(path)?;
+    pub(crate) fn route_entry(&self, path: &str, query: &str) -> Option<super::station_link::Reply> {
+        let full = format!("{path}?{query}");
+        let prefix = format!("{path}?");
+        let entry = (!query.is_empty()).then(|| self.routes.get(&full)).flatten()
+            .or_else(|| self.routes.get(path))
+            .or_else(|| self.routes.range(prefix.clone()..).next().filter(|(k, _)| k.starts_with(&prefix)).map(|(_, v)| v))?;
         Some(super::station_link::Reply { status: 200, body: entry.body.as_ref().clone(), content_type: entry.media_type.clone() })
     }
 

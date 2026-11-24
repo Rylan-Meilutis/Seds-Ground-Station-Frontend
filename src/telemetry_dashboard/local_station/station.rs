@@ -258,14 +258,20 @@ impl LocalStation {
         let boards = self.board_json(wall);
         let mut nodes = vec![json!({"id": "gs", "label": "This device", "kind": "endpoint", "status": "online", "group": "ground", "show_in_details": true, "detail": self.mode_line()})];
         let mut links = Vec::new();
+        let mut health = Vec::new();
+        let observed = (self.position(wall) - self.origin()).max(0);
         for board in boards["boards"].as_array().into_iter().flatten() {
             let sender = board["sender_id"].as_str().unwrap_or_default();
             let online = board["age_ms"].as_i64().is_some_and(|age| age < 5_000);
             let id = sender.to_ascii_lowercase();
             nodes.push(json!({"id": id, "label": board["board_label"], "kind": "board", "status": if online {"online"} else {"offline"}, "group": "vehicle", "sender_id": sender, "endpoints": ["telemetry"], "show_in_details": true}));
             links.push(json!({"source": id, "target": "gs", "label": "telemetry", "status": if online {"online"} else {"offline"}}));
+            if let Some(age) = board["age_ms"].as_i64() {
+                health.push(json!({"sender_id": sender, "healthy": online, "age_ms": age, "last_seen_ms": board["last_seen_ms"], "disconnects": 0, "reconnects": 0,
+                    "rx_observations": board["packet_count"], "observed_ms": observed, "offline_ms": 0, "longest_outage_ms": 0, "current_outage_ms": if online {0} else {age}}));
+            }
         }
-        json!({"generated_ms": wall, "simulated": self.session.is_demo(), "nodes": nodes, "links": links})
+        json!({"generated_ms": wall, "simulated": false, "nodes": nodes, "links": links, "health": health})
     }
 
     fn mode_line(&self) -> String {
@@ -278,6 +284,10 @@ impl LocalStation {
     fn commands(&self) -> Vec<String> {
         let mut out = Vec::new();
         layout_commands(&self.session.layout, &mut out);
+        if self.session.is_demo() {
+            // The demo station's policy also lists the close commands its supply valves pair with.
+            out.extend(super::demo::PAIRED_COMMANDS.iter().map(|c| c.to_string()));
+        }
         out
     }
 
@@ -389,6 +399,16 @@ impl LocalStation {
             _ if self.replay_id().is_some_and(|id| path == format!("/api/recordings/{}/replay/export", percent_component(&id))) => {
                 self.session.replay_document.clone()?
             }
+            "/api/recordings/store" => {
+                let legacy: Vec<Value> = self.recordings().as_array().into_iter().flatten().map(|r| json!({"id": r["id"], "bytes": r["bytes"]})).collect();
+                json!({"always_on": false, "groups": [], "legacy": legacy})
+            }
+            // Filtered lists a bundle carries (no route of their own); empty otherwise.
+            "/api/burn_reports" => json!({"reports": self.session.listed("derived/burn_reports.json")}),
+            "/api/fire_archive" => json!({"fires": self.session.listed("derived/fire_archive.json")}),
+            "/api/checklists" => if self.session.is_demo() { super::demo::checklists() } else { json!({"revision": 0, "enforce_before_launch": false, "checklists": []}) },
+            _ if path.starts_with("/api/recordings/") && path.ends_with("/replay") => self.replay_snapshot()?,
+            _ if path.starts_with("/api/recordings/") && path.ends_with("/replay/window") => self.replay_window(query)?,
             _ => {
                 if let Some(value) = self.session.get(&format!("{path}?{query}"), at) {
                     return Some(value);
@@ -396,6 +416,47 @@ impl LocalStation {
                 return None;
             }
         })
+    }
+
+    /// The replay document's rows (portable replay format, with ids).
+    fn replay_rows(&self) -> impl Iterator<Item = &Value> {
+        self.session.replay_document.iter().flat_map(|d| d["samples"].as_array().into_iter().flatten())
+    }
+
+    /// `GET /api/recordings/{id}/replay`: the frozen range of the recording.
+    fn replay_snapshot(&self) -> Option<Value> {
+        let upper = self.replay_rows().filter_map(|r| r["id"].as_i64()).max()?;
+        Some(json!({"upper_id": upper, "start_ms": self.session.start_ms(), "end_ms": self.session.end_ms()}))
+    }
+
+    /// `GET /api/recordings/{id}/replay/window`: rows by id within a time
+    /// window and type list, paged like the station, with the last row of
+    /// each source before the window as seeds on the first page.
+    fn replay_window(&self, query: &str) -> Option<Value> {
+        const PAGE: usize = 5_000;
+        let param = |name: &str| query.split('&').find_map(|p| p.strip_prefix(name)?.strip_prefix('=')).map(percent_decode);
+        let number = |name: &str, default: i64| param(name).and_then(|v| v.parse().ok()).unwrap_or(default);
+        let (upper, after) = (number("upper_id", i64::MAX), number("after_id", 0));
+        let (start, end) = (number("start_ms", i64::MIN), number("end_ms", i64::MAX));
+        let types: Vec<String> = param("types").and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default();
+        let wanted = |r: &Value| r["id"].as_i64().is_some_and(|id| id <= upper) && (types.is_empty() || types.iter().any(|t| r["data_type"] == t.as_str()));
+        let mut rows: Vec<&Value> = self.replay_rows().filter(|r| wanted(r) && r["id"].as_i64() > Some(after) && r["timestamp_ms"].as_i64().is_some_and(|t| t >= start && t <= end)).collect();
+        rows.sort_by_key(|r| r["id"].as_i64());
+        let has_more = rows.len() > PAGE;
+        rows.truncate(PAGE);
+        let next_id = rows.last().and_then(|r| r["id"].as_i64()).unwrap_or(after);
+        let mut seeds: Vec<Value> = Vec::new();
+        if after == 0 {
+            let mut last: std::collections::BTreeMap<(String, String), &Value> = std::collections::BTreeMap::new();
+            for r in self.replay_rows().filter(|r| wanted(r) && r["timestamp_ms"].as_i64().is_some_and(|t| t < start)) {
+                let key = (r["sender_id"].as_str().unwrap_or_default().to_string(), r["data_type"].as_str().unwrap_or_default().to_string());
+                if last.get(&key).is_none_or(|prev| prev["timestamp_ms"].as_i64() <= r["timestamp_ms"].as_i64()) {
+                    last.insert(key, r);
+                }
+            }
+            seeds = last.into_values().cloned().collect();
+        }
+        Some(json!({"upper_id": upper.min(self.replay_snapshot()?["upper_id"].as_i64()?), "next_id": next_id, "has_more": has_more, "rows": rows, "seeds": seeds}))
     }
 
     fn alerts_between(&self, from: i64, to: i64, mut each: impl FnMut(i64, &super::Alert)) {

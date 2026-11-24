@@ -125,8 +125,6 @@ fn route_of(path: &str, recording: &str) -> Option<String> {
         "derived/trajectory.json" => format!("/api/recordings/{id}/replay/trajectory"),
         "derived/flight_review.json" => format!("/api/flight_review/recording/{id}"),
         "derived/apogee_planner.json" => "/api/apogee_planner".into(),
-        "derived/burn_reports.json" => "/api/burn_reports".into(),
-        "derived/fire_archive.json" => "/api/fire_archive".into(),
         other if other.starts_with("tiles/") => format!("/{other}"),
         _ => return None,
     })
@@ -137,7 +135,7 @@ fn routes(manifest: &Value, files: &BTreeMap<String, Vec<u8>>) -> BTreeMap<Strin
     let mut out = BTreeMap::new();
     for (path, body) in files {
         let listed = manifest["entries"].as_array().into_iter().flatten().find(|e| e["path"] == path.as_str());
-        let route = listed.and_then(|e| e["route"].as_str()).map(|r| r.split('?').next().unwrap_or(r).to_string()).or_else(|| route_of(path, recording));
+        let route = listed.and_then(|e| e["route"].as_str()).map(str::to_owned).or_else(|| route_of(path, recording));
         let Some(route) = route else { continue };
         let media_type = listed.and_then(|e| e["media_type"].as_str()).map(str::to_owned).unwrap_or_else(|| {
             if path.ends_with(".csv") { "text/csv; charset=utf-8" } else if path.ends_with(".jpg") { "image/jpeg" } else if path.ends_with(".zip") { "application/zip" } else { "application/json" }.to_owned()
@@ -218,6 +216,11 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
     session.trajectory = json(&files, "derived/trajectory.json");
     session.recovery_search = json(&files, "derived/recovery_search.json").filter(|v| v["overlay"].is_object());
     session.routes = routes(&manifest, &files);
+    for path in ["derived/burn_reports.json", "derived/fire_archive.json"] {
+        if let Some(list) = json(&files, path) {
+            session.lists.insert(path.to_string(), list);
+        }
+    }
     session.notes.push(format!(
         "Bundle from {} ({}), {} entries, made {}.",
         manifest["source"]["station_name"].as_str().unwrap_or("a station"),

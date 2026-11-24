@@ -227,6 +227,15 @@ fn a_station_bundle_opens_with_everything_and_exports_the_station_csv() {
     }
     let recordings: Vec<vehicle_replay::Recording> = decode(&station, "/api/recordings");
     assert_eq!(recordings[0].id, id);
+    // Replay windows are computed from the rows, paged by id like the station.
+    let snapshot: vehicle_replay::Snapshot = decode(&station, &format!("/api/recordings/{id}/replay"));
+    let mid = (snapshot.start_ms.unwrap() + snapshot.end_ms.unwrap()) / 2;
+    let window: Value = decode(&station, &format!("/api/recordings/{id}/replay/window?upper_id={}&after_id=0&start_ms={mid}&end_ms={}&types=%5B%22GPS_DATA%22%5D", snapshot.upper_id, snapshot.end_ms.unwrap()));
+    let rows = window["rows"].as_array().unwrap();
+    assert!(!rows.is_empty() && rows.iter().all(|r| r["data_type"] == "GPS_DATA" && r["timestamp_ms"].as_i64().unwrap() >= mid));
+    assert_eq!(window["seeds"].as_array().unwrap().len(), 1, "the last fix before the window seeds it");
+    let store: Value = decode(&station, "/api/recordings/store");
+    assert_eq!(store["legacy"][0]["id"], id.as_str());
 }
 
 #[test]

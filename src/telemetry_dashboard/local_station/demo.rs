@@ -219,6 +219,22 @@ pub(crate) fn layout() -> Value {
     })
 }
 
+/// Commands the demo station's action policy lists beside the layout's
+/// buttons: the close halves of the supply valves, as a station lists them.
+pub(crate) const PAIRED_COMMANDS: &[&str] = &["NitrogenClose", "NitrousClose"];
+
+/// The demo's pad checklists (`GET /api/checklists`).
+pub(crate) fn checklists() -> Value {
+    let item = |id: &str, text: &str| json!({"id": id, "text": text, "checked": false, "completed_by": null, "completed_at_ms": null});
+    json!({"revision": 1, "enforce_before_launch": false, "checklists": [
+        {"id": "pad", "title": "Pad checks (demo)", "required_before_launch": false, "items": [
+            item("pt", "Pressure transducer reading checked"),
+            item("lines", "Gas lines and connections inspected"),
+            item("comms", "Communications and abort procedure checked")
+        ]}
+    ]})
+}
+
 fn boards() -> Vec<Board> {
     [("FC", "Flight Computer"), ("RF", "RF Board"), ("PB", "Power Board"), ("VB", "Valve Board"), ("GB", "Gateway Board"), ("AB", "Actuator Board"), ("DAQ", "DAQ Board")]
         .into_iter()

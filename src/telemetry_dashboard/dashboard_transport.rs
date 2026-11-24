@@ -1304,9 +1304,6 @@ async fn connect_local_station(
     alive: Arc<AtomicBool>,
 ) -> Result<(), String> {
     use futures_util::StreamExt;
-    let mut notifications = notifications;
-    let mut notification_history = notification_history;
-    let mut unread_notification_ids = unread_notification_ids;
     let ws_url = station_link::LOCAL_BASE.to_string();
     let condition_connection = ALERT_CONDITION_VIEW.write().begin_connection();
     let (tx, mut commands) = futures_channel::mpsc::unbounded::<QueuedCommand>();
@@ -1327,13 +1324,16 @@ async fn connect_local_station(
                 }
             }
         });
-        note_ws_connected_and_restore_data_flow(ws_url.clone(), epoch, &mut notifications, &mut notification_history, &mut unread_notification_ids);
+        let (mut popups, mut history, mut unread) = (notifications, notification_history, unread_notification_ids);
+        note_ws_connected_and_restore_data_flow(ws_url.clone(), epoch, &mut popups, &mut history, &mut unread);
         refresh_flight_state_after_ws_reconnect(flight_state, epoch);
         refresh_layout_after_ws_reconnect(
             layout_config, layout_loading, layout_error, layout_error_dismissed, layout_request_base,
             calibration_has_sensors, calibration_request_base, action_policy,
         );
     }
+    #[cfg(target_arch = "wasm32")]
+    let _ = (notifications, notification_history, unread_notification_ids, flight_state);
     #[cfg(target_arch = "wasm32")]
     let _ = (warnings, errors, ack_warning_ts, ack_error_ts, remote_alert_acks_enabled, message_history, dismissed_notifications,
         recording_status, fill_targets, network_time, launch_clock, network_topology, warning_event_counter, error_event_counter,
