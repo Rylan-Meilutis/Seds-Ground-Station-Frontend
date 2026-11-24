@@ -77,6 +77,11 @@
       "kind": "bytes"
     },
     {
+      "name": "MAP_3D_JS",
+      "path": "station_ui/rendering/three/map-3d.js",
+      "kind": "bytes"
+    },
+    {
       "name": "SOFTWARE_RENDERER_JS",
       "path": "station_ui/rendering/three/software-renderer.js",
       "kind": "bytes"

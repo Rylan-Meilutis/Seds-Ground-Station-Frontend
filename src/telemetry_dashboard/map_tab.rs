@@ -699,8 +699,10 @@ pub fn MapTab(
                 super::igt_view::IgtMapTrack { theme: theme.clone() }
                 super::flight_plans_view::PlanMapLegend { theme: theme.clone() }
                 super::los_prediction::LosMapCard { theme: theme.clone(), viewer: rendered_user_coords, metric: distance_units_metric }
-                div { style: "flex:1; min-height:0; width:100%;",
+                super::map_3d::Map3dPanel { theme: theme.clone() }
+                div { style: "flex:1; min-height:0; width:100%; position:relative;",
                     {map_canvas(&theme)}
+                    {super::map_3d::map3d_layer()}
                 }
             }
         } else {
@@ -748,8 +750,10 @@ pub fn MapTab(
                 super::igt_view::IgtMapTrack { theme: theme.clone() }
                 super::flight_plans_view::PlanMapLegend { theme: theme.clone() }
                 super::los_prediction::LosMapCard { theme: theme.clone(), viewer: rendered_user_coords, metric: distance_units_metric }
-                div { style: "flex:1 1 auto; min-height:0; width:100%; overflow:hidden;",
+                super::map_3d::Map3dPanel { theme: theme.clone() }
+                div { style: "flex:1 1 auto; min-height:0; width:100%; overflow:hidden; position:relative;",
                     {map_canvas(&theme)}
+                    {super::map_3d::map3d_layer()}
                 }
             }
         }

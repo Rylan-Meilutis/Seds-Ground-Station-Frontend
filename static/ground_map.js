@@ -3557,6 +3557,7 @@ function syncUserHeadingIndicator() {
 
 function syncOverlaySourcesNow() {
     if (!groundMap || !mapReady) return;
+    syncGroundMapFlightTrack();
     const source = groundMap.getSource(OVERLAY_SOURCE_ID);
     if (!source) return;
     const userLatLng = currentUserAnchorLatLng();
@@ -3588,6 +3589,106 @@ function syncOverlaySourcesNow() {
     );
 }
 
+// ---------------------------------------------------------------------------------------------
+// Flight track coloured by phase (2D), the 3D map's data hand-off and its imagery source.
+// The station segments the track (GET /api/flight_phases, GET .../replay/trajectory); this only
+// draws it. The palette is CONTRACT.md's and matches station_ui/rendering/three/map-3d.js.
+const GS26_PHASE_COLORS = Object.freeze({pad: "#94a3b8", boost: "#f97316", coast: "#facc15", apogee: "#ffffff", drogue: "#38bdf8", main: "#22c55e", landed: "#a78bfa", unknown: "#64748b"});
+const FLIGHT_TRACK_SOURCE_ID = "gs26-flight-track";
+const FLIGHT_TRACK_LAYER_ID = "gs26-flight-track-line";
+const FLIGHT_TRACK_MARKER_LAYER_ID = "gs26-flight-track-markers";
+let flightTrackDoc = null;
+let flightTrackSyncKey = "";
+
+function flightTrackPhaseAt(phases, t) {
+    if (!Array.isArray(phases) || !Number.isFinite(t)) return null;
+    let found = -1;
+    for (let i = 0; i < phases.length; i++) {
+        if (phases[i] && phases[i].start_ms <= t) found = i; else break;
+    }
+    if (found < 0) return null;
+    const segment = phases[found];
+    const last = found === phases.length - 1;
+    if (Number.isFinite(segment.end_ms) && (t > segment.end_ms || (t === segment.end_ms && !last))) return null;
+    return segment.phase;
+}
+
+/** GeoJSON of a phase-segmented track: one LineString per contiguous phase run, plus the apogee. */
+function flightTrackFeatureCollection(doc) {
+    const features = [];
+    const points = Array.isArray(doc && doc.points) ? doc.points.slice(0, 8192) : [];
+    let run = null;
+    for (const p of points) {
+        const lat = Number(p && p.latitude), lon = Number(p && p.longitude);
+        if (!isUsableLatLng(lat, lon)) continue;
+        const phase = (typeof p.phase === "string" && p.phase) || flightTrackPhaseAt(doc.phases, p.timestamp_ms) || "unknown";
+        if (run && run.phase === phase && p.break_before !== true) {
+            run.coordinates.push([lon, lat]);
+            continue;
+        }
+        const start = run && p.break_before !== true ? [run.coordinates[run.coordinates.length - 1]] : [];
+        run = {phase, coordinates: start.concat([[lon, lat]])};
+        features.push({type: "Feature", geometry: {type: "LineString", coordinates: run.coordinates}, properties: {phase, color: GS26_PHASE_COLORS[phase] || GS26_PHASE_COLORS.unknown}});
+    }
+    const lines = features.filter(f => f.geometry.coordinates.length >= 2);
+    const apogee = (Array.isArray(doc && doc.events) ? doc.events : []).find(e => e && e.kind === "apogee" && isUsableLatLng(Number(e.latitude), Number(e.longitude)));
+    if (apogee) {
+        lines.push({type: "Feature", geometry: {type: "Point", coordinates: [Number(apogee.longitude), Number(apogee.latitude)]}, properties: {phase: "apogee", color: GS26_PHASE_COLORS.apogee}});
+    }
+    return {type: "FeatureCollection", features: lines};
+}
+
+function syncGroundMapFlightTrack() {
+    if (!groundMap || !mapReady || usingRasterFallback()) return;
+    try {
+        const data = flightTrackFeatureCollection(flightTrackDoc);
+        const key = `${data.features.length}:${JSON.stringify(data.features.map(f => [f.properties.phase, f.geometry.coordinates.length, f.geometry.coordinates[f.geometry.coordinates.length - 1]]))}`;
+        let source = groundMap.getSource(FLIGHT_TRACK_SOURCE_ID);
+        if (!source) {
+            const before = ((groundMap.getStyle() || {}).layers || []).find(layer => layer.source === OVERLAY_SOURCE_ID);
+            groundMap.addSource(FLIGHT_TRACK_SOURCE_ID, {type: "geojson", data});
+            groundMap.addLayer({id: FLIGHT_TRACK_LAYER_ID, type: "line", source: FLIGHT_TRACK_SOURCE_ID, filter: ["==", ["geometry-type"], "LineString"],
+                layout: {"line-cap": "round", "line-join": "round"}, paint: {"line-color": ["get", "color"], "line-width": 3.5}}, before ? before.id : undefined);
+            groundMap.addLayer({id: FLIGHT_TRACK_MARKER_LAYER_ID, type: "circle", source: FLIGHT_TRACK_SOURCE_ID, filter: ["==", ["geometry-type"], "Point"],
+                paint: {"circle-radius": 6, "circle-color": ["get", "color"], "circle-stroke-color": "#0f172a", "circle-stroke-width": 2}}, before ? before.id : undefined);
+            flightTrackSyncKey = key;
+            return;
+        }
+        if (key === flightTrackSyncKey) return;
+        flightTrackSyncKey = key;
+        source.setData(data);
+    } catch (error) {
+        reportMapRuntimeError("flight track sync failed", error);
+    }
+}
+
+/** The current flight's track with the station's phase segmentation (null clears it). */
+function setGroundMapFlightTrack(doc) {
+    flightTrackDoc = doc && typeof doc === "object" ? doc : null;
+    window.__gs26_flight_track = flightTrackDoc;
+    flightTrackSyncKey = flightTrackDoc ? flightTrackSyncKey : "";
+    syncGroundMapFlightTrack();
+    try {
+        window.dispatchEvent(new CustomEvent("gs26-flight-track"));
+    } catch (e) {
+    }
+}
+
+/** One imagery tile for the 3D map through the 2D map's own source, caches and validation. */
+async function fetchGroundMapTileBitmap(z, x, y) {
+    const tilesUrl = effectivePrefetchTilesUrl();
+    const url = resolvePrefetchTileUrl(tilesUrl, z, x, y);
+    if (!url || typeof createImageBitmap !== "function") return null;
+    const cacheName = tileCacheName(tilesUrl);
+    const data = (await readCachedTileArrayBuffer(cacheName, url)) || (await fetchAndCacheTileArrayBuffer(cacheName, url, {skipCacheLookup: true}));
+    if (!data || !isRasterTileData(data)) return null;
+    return await createImageBitmap(new Blob([data]));
+}
+
+window.GS26_PHASE_COLORS = GS26_PHASE_COLORS;
+window.setGroundMapFlightTrack = setGroundMapFlightTrack;
+window.gs26FetchMapTileBitmap = fetchGroundMapTileBitmap;
+
 function setGroundMapStations(list) {
     const next = normalizeStationMarkers(list);
     if (stationMarkersDataKey(next) === stationMarkersDataKey(stationMarkers)) return;
@@ -3596,6 +3697,10 @@ function setGroundMapStations(list) {
         renderRasterFallbackMap();
     }
     scheduleOverlaySourceSync();
+    try {
+        window.dispatchEvent(new CustomEvent("gs26-map-stations"));
+    } catch (e) {
+    }
 }
 
 function setGroundMapSimTrack(list) {

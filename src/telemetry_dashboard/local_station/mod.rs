@@ -157,6 +157,10 @@ pub(crate) struct Session {
     /// Flight plans the bundle carries (`derived/flight_plan.json`,
     /// `derived/flight_plans.json`), for drawing a prediction beside the data.
     pub plans: Vec<super::flight_plans::PlanDoc>,
+    /// A bundle's `terrain/heightmap.json` (`GET /api/terrain/heightmap`).
+    pub terrain: Option<Value>,
+    /// A bundle's `derived/trajectory.json` with its flight phases.
+    pub trajectory: Option<Value>,
     index: BTreeMap<(String, String), Vec<usize>>,
 }
 
@@ -204,7 +208,7 @@ impl Session {
         LIVE_SESSIONS.with(|n| n.set(n.get() + 1));
         Self {
             source, title, mode, provenance, layout, boards, samples, states, alerts, calibration, recordings, replay_document, vehicle_geometry, notes, epoch_ms,
-            diagrams: Vec::new(), derived: Vec::new(), tiles: BTreeMap::new(), csv: None, manifest: None, predicted: None, plans: Vec::new(), index,
+            diagrams: Vec::new(), derived: Vec::new(), tiles: BTreeMap::new(), csv: None, manifest: None, predicted: None, plans: Vec::new(), terrain: None, trajectory: None, index,
         }
     }
 
@@ -465,6 +469,24 @@ impl Session {
                 json!({"version": 2, "extra_channels": channels})
             }
             "/api/vehicle/geometry" => self.vehicle_geometry.clone()?,
+            // The bundle's DEM grid around the pad (the 3D map draws flat ground without it).
+            "/api/terrain/heightmap" => self.terrain.clone().unwrap_or_else(|| json!({
+                "available": false, "format": "gs26.heightmap", "version": 1, "reason": "This replay carries no terrain.",
+            })),
+            // The recorded track with the station's phases, up to the replay position.
+            "/api/flight_phases" => {
+                let trajectory = self.trajectory.as_ref()?;
+                let now = wall(at);
+                let points: Vec<Value> = trajectory["points"].as_array().into_iter().flatten()
+                    .filter(|p| p["timestamp_ms"].as_i64().is_some_and(|t| t <= now)).cloned().collect();
+                let phases = trajectory["phases"].clone();
+                let current = phases.as_array().and_then(|list| list.iter().rev().find(|s| s["start_ms"].as_i64().is_some_and(|t| t <= now))).map(|s| s["phase"].clone());
+                json!({
+                    "source": "replay", "window_start_ms": null, "current_phase": current,
+                    "phases": phases, "events": trajectory["events"].as_array().map(|e| e.iter().filter(|e| e["t_ms"].as_i64().is_some_and(|t| t <= now)).cloned().collect::<Vec<_>>()),
+                    "source_sender_id": trajectory["source_sender_id"], "points": points, "sampled": trajectory["sampled"],
+                })
+            }
             _ => return None,
         })
     }

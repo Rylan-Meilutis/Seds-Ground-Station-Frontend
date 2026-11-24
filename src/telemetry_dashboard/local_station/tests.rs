@@ -220,6 +220,25 @@ fn a_station_bundle_opens_with_everything_and_exports_the_station_csv() {
 }
 
 #[test]
+fn a_bundle_serves_its_phased_track_and_says_when_it_has_no_terrain() {
+    let s = bundle::open("flight.gsreplay", BUNDLE).unwrap();
+    let all: crate::telemetry_dashboard::map_3d::FlightTrack = serde_json::from_value(s.get("/api/flight_phases", i64::MAX / 4).unwrap()).unwrap();
+    assert!(all.points.len() > 100);
+    assert_eq!(all.phases.iter().map(|p| p.phase.as_str()).collect::<Vec<_>>(), ["pad", "boost", "coast", "drogue", "landed"]);
+    for point in &all.points {
+        assert_eq!(point.phase.as_deref(), all.phase_at(point.timestamp_ms));
+    }
+    let boost = all.phases[1].start_ms;
+    let early: crate::telemetry_dashboard::map_3d::FlightTrack = serde_json::from_value(s.get("/api/flight_phases", boost - s.epoch_ms).unwrap()).unwrap();
+    assert!(early.points.iter().all(|p| p.timestamp_ms <= boost));
+    assert_eq!(early.current_phase.as_deref(), Some("boost"));
+    // The fixture station had no DEM: the bundle carries none and the route says so.
+    assert!(s.terrain.is_none());
+    assert_eq!(s.get("/api/terrain/heightmap", 0).unwrap()["available"], false);
+    assert_eq!(s.manifest.as_ref().unwrap()["terrain"]["included"], false);
+}
+
+#[test]
 fn bundles_are_verified_and_newer_versions_refused() {
     let mut files = bundle::unzip(BUNDLE).unwrap();
     assert!(bundle::verify(&files).is_ok());
