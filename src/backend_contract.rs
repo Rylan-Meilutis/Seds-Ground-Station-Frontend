@@ -63,6 +63,7 @@ pub(crate) const COVERED: &[&str] = &[
     "station-modes/prepare-restart",
     "station-modes/snapshot",
     "station-modes/snapshot-after-switch",
+    "vehicle/geometry",
     "websocket/action-policy",
     "websocket/alert-ack-state",
     "websocket/fc-estimator",

@@ -3,7 +3,8 @@
 //! attributes and text; flow animation is a CSS dash animation, not a JS
 //! loop, and stops under `prefers-reduced-motion`.
 use super::derive::{DiagramState, EdgeState, Flow, Link, ValveState, format_age, visible};
-use super::topology::{Anchor, Edge, EdgeKind, Node, NodeKind, Reading, Topology, Valve, ValveKind};
+use super::topology::{Anchor, Edge, EdgeKind, FrameVehicle, Node, NodeKind, Reading, Topology, Valve, ValveKind};
+use crate::telemetry_dashboard::vehicle_geometry::{Geometry, current, vertical};
 use crate::telemetry_dashboard::layout::ThemeConfig;
 use dioxus::prelude::*;
 
@@ -20,6 +21,11 @@ pub(crate) const CSS: &str = r#"
 .gs26-pid { width:100%; height:auto; max-height:100%; display:block; font-family:inherit; user-select:none; }
 .gs26-pid text { fill:var(--pid-text); }
 .gs26-pid .pid-frame { fill:none; stroke:var(--pid-border); stroke-dasharray:6 6; }
+.gs26-pid .pid-vehicle-body { fill:var(--pid-surface-alt); stroke:var(--pid-text); stroke-width:1.2; stroke-linejoin:round; }
+.gs26-pid .pid-vehicle-fins { fill:var(--pid-border-strong); stroke:var(--pid-text); stroke-width:1; stroke-linejoin:round; }
+.gs26-pid .pid-vehicle-section { fill:none; stroke:var(--pid-muted); stroke-width:.8; }
+.gs26-pid .pid-vehicle-section.highlight { fill:var(--pid-fluid-1); fill-opacity:.55; stroke:var(--pid-text); stroke-width:1.2; }
+.gs26-pid .pid-vehicle-separation { stroke:var(--pid-warning-text); stroke-width:1.5; stroke-dasharray:3 2; }
 .gs26-pid .pid-frame-label { font-size:13px; fill:var(--pid-muted); letter-spacing:.04em; text-transform:uppercase; }
 .gs26-pid .pid-edge { fill:none; stroke-width:6; stroke-linecap:round; stroke-linejoin:round; transition:stroke .3s, opacity .3s; }
 .gs26-pid .pid-edge.flow-blocked { opacity:.28; }
@@ -362,11 +368,37 @@ fn ReadingView(reading: Reading, state: super::derive::ReadingState) -> Element 
     }
 }
 
-/// One diagram. The caller derives `state` at its own cadence.
+/// The station's vehicle in a frame, true to scale (vehicle_geometry.rs).
 #[component]
-pub(crate) fn DiagramSvg(topology: Topology, state: DiagramState) -> Element {
+fn VehicleView(frame: String, vehicle: FrameVehicle, geometry: Geometry) -> Element {
+    let v = &vehicle;
+    let s = vertical(&geometry, f64::from(v.x), f64::from(v.y), f64::from(v.w), f64::from(v.h));
+    let name = if geometry.source.rocket.is_empty() { "Generic rocket (the station sent no vehicle)".to_string() } else { geometry.source.rocket.clone() };
+    let length_ft = geometry.length_m / 0.3048;
+    let diameter_in = geometry.diameter_m / 0.0254;
+    rsx! {
+        g { class: "pid-vehicle", "data-vehicle": frame, "data-vehicle-source": geometry.source.kind.clone(),
+            title { "{name}: {geometry.length_m:.2} m ({length_ft:.1} ft) by {geometry.diameter_m * 1000.0:.0} mm ({diameter_in:.1} in), to scale" }
+            path { class: "pid-vehicle-fins", d: s.fins }
+            path { class: "pid-vehicle-body", d: s.body }
+            for (i, (role, label, d)) in s.sections.into_iter().enumerate() {
+                path { key: "{i}", class: if v.highlight.contains(&role) { "pid-vehicle-section highlight" } else { "pid-vehicle-section" },
+                    "data-role": role, d: d, title { "{label}" } }
+            }
+            for (i, [x1, y1, x2, y2]) in s.separations.into_iter().enumerate() {
+                line { key: "sep{i}", class: "pid-vehicle-separation", x1: "{x1:.1}", y1: "{y1:.1}", x2: "{x2:.1}", y2: "{y2:.1}" }
+            }
+        }
+    }
+}
+
+/// One diagram. The caller derives `state` at its own cadence.
+/// `vehicle` overrides the station geometry (tests); `None` reads it.
+#[component]
+pub(crate) fn DiagramSvg(topology: Topology, state: DiagramState, #[props(default)] vehicle: Option<Geometry>) -> Element {
     let [min_x, min_y, width, height] = topology.view_box;
     let igt = state.igt;
+    let geometry = if topology.frames.iter().any(|f| f.vehicle.is_some()) { Some(vehicle.unwrap_or_else(current)) } else { None };
     rsx! {
         svg { class: "gs26-pid", "data-diagram": topology.id.clone(), view_box: "{min_x} {min_y} {width} {height}",
             preserve_aspect_ratio: "xMidYMid meet", role: "img", "aria-label": "{topology.title}",
@@ -379,6 +411,9 @@ pub(crate) fn DiagramSvg(topology: Topology, state: DiagramState) -> Element {
                 g { key: "frame-{frame.id}",
                     rect { class: "pid-frame", x: "{frame.x}", y: "{frame.y}", width: "{frame.w}", height: "{frame.h}", rx: "14" }
                     text { class: "pid-frame-label", x: "{frame.x + 14.0}", y: "{frame.y + 20.0}", "{frame.label}" }
+                    if let (Some(v), Some(g)) = (frame.vehicle.clone(), geometry.clone()) {
+                        VehicleView { frame: frame.id.clone(), vehicle: v, geometry: g }
+                    }
                 }
             }
             for edge in topology.edges.iter().filter(|e| visible(e.when, igt)) {

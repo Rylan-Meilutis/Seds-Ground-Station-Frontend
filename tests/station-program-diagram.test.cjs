@@ -47,4 +47,16 @@ assert.deepStrictEqual(s.edges.fill_line.fluids, ['n2', 'n2o_liquid']);
 assert.ok(s.readings.tank_pt.text.startsWith('300 psi'));
 
 assert.strictEqual(derive(stand, input([0, 0, 0, 0, 0, 0, 0], 1)).igt, false);
+// The vehicle silhouette: the station's geometry true to scale, else the generic rocket.
+const geometry = JSON.parse(fs.readFileSync(path.join(__dirname, 'fixtures/backend-contract/vehicle/geometry.json'), 'utf8'));
+const sil = window.gsVehicleSilhouette;
+assert.ok(sil.valid(geometry) && !sil.valid({ ...geometry, version: 2 }));
+const frame = stand.frames.find((f) => f.vehicle).vehicle;
+const drawn = sil(geometry, frame.x, frame.y, frame.w, frame.h, frame.highlight);
+assert.strictEqual(drawn.geometry.source.rocket, 'SWEET_V6');
+assert.ok(Math.abs(drawn.scale * geometry.length_m - frame.h) < 0.5, 'fills the box height');
+assert.ok(geometry.length_m / geometry.diameter_m > 27, 'about 28:1, as drawn');
+assert.deepStrictEqual(drawn.sections.map((x) => x.role), ['avionics']);
+assert.strictEqual((drawn.fins.match(/Z/g) || []).length, 3, 'three fins, all visible from the side');
+assert.strictEqual(sil({ ...geometry, version: 9 }, 0, 0, 100, 100).geometry.source.kind, 'generic');
 console.log('station-program-diagram: ok');

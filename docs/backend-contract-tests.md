@@ -20,6 +20,8 @@ file with the UI's own serde types:
 - `live_station_mode_switch_decodes_with_the_ui_contract`: with
   `GS_LIVE_STATION_MODE_DIR`, decodes a mode review captured from a running
   station (FirmwareSimulator `test-full-network.py --ui-contract`).
+- `vehicle_geometry.rs`: `vehicle/geometry` parses true to the design and
+  other versions are refused ([vehicle geometry](vehicle-geometry.md)).
 - Inline `backend_contract_tests` modules in `src/auth.rs` (session, login
   challenge), `errors_tab.rs` (history clear reply) and `recovery_status.rs`
   (`/api/rrls/status`), where the types are private.

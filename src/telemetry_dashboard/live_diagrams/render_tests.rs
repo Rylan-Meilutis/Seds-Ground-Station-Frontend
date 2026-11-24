@@ -84,6 +84,50 @@ fn every_bundled_diagram_renders_and_the_rocket_body_appears_only_in_igt() {
     assert!(html.contains("data-node=\"fc\""));
 }
 
+#[derive(Props, Clone, PartialEq)]
+struct SvgProps {
+    topology: Topology,
+    state: derive::DiagramState,
+    vehicle: Option<crate::telemetry_dashboard::vehicle_geometry::Geometry>,
+}
+
+#[allow(non_snake_case)]
+fn SvgHarness(props: SvgProps) -> Element {
+    rsx! { render::DiagramSvg { topology: props.topology, state: props.state, vehicle: props.vehicle } }
+}
+
+fn render_with_vehicle(topology: Topology, fake: &Fake, vehicle: Option<crate::telemetry_dashboard::vehicle_geometry::Geometry>) -> String {
+    let state = derive(&topology, fake);
+    let mut dom = VirtualDom::new_with_props(SvgHarness, SvgProps { topology, state, vehicle });
+    dom.rebuild_in_place();
+    dioxus::ssr::render(&dom)
+}
+
+/// The IGT and AV-bay views draw the station's vehicle (vehicle_geometry.rs),
+/// else the generic rocket; the station's is SWEET_V6 from its .ork.
+#[test]
+fn igt_and_av_bay_draw_the_station_vehicle_to_scale() {
+    use crate::telemetry_dashboard::vehicle_geometry::{parse, tests::station_example};
+    let station = parse(&station_example()).unwrap();
+    let mut fake = Fake::default();
+    fake.igt = true;
+    let stand = topology::parse(topology::BUNDLED[3].1).unwrap();
+    let html = render_with_vehicle(stand.clone(), &fake, Some(station.clone()));
+    let vehicle = element(&html, "data-vehicle=\"rocket\"");
+    assert!(vehicle.contains("data-vehicle-source=\"default\""), "{vehicle}");
+    assert!(html.contains("SWEET_V6: 4.39 m (14.4 ft) by 156 mm (6.2 in), to scale"));
+    assert!(element(&html, "data-role=\"avionics\"").contains("highlight"));
+    assert!(html.contains("pid-vehicle-separation"), "the recovery separation is marked");
+    // Not in IGT: no rocket frame, no vehicle.
+    assert!(!render_with_vehicle(stand.clone(), &Fake::default(), Some(station.clone())).contains("pid-vehicle"));
+    // Without station data the generic rocket is drawn.
+    let generic = render_with_vehicle(stand, &fake, None);
+    assert!(element(&generic, "data-vehicle=\"rocket\"").contains("data-vehicle-source=\"generic\""));
+    let av = render_with_vehicle(topology::parse(topology::BUNDLED[1].1).unwrap(), &Fake::default(), Some(station));
+    assert!(av.contains("data-vehicle=\"vehicle\""));
+    assert!(element(&av, "data-role=\"recovery\"").contains("highlight"));
+}
+
 #[test]
 fn av_bay_links_show_down_boards_with_their_age() {
     let mut fake = Fake::default();

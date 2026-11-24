@@ -87,6 +87,23 @@ pub(crate) struct Frame {
     pub h: f32,
     #[serde(default)]
     pub when: Option<When>,
+    /// Draws the station's vehicle (GET /api/vehicle/geometry) true to scale in this box.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vehicle: Option<FrameVehicle>,
+}
+
+/// The vehicle's side profile, nose up, fitted into `x, y, w, h` at its real
+/// proportions; `highlight` names section roles to emphasise (`avionics`,
+/// `recovery`, `tank`, `motor`, `payload`, `nose`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FrameVehicle {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    #[serde(default)]
+    pub highlight: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -390,6 +407,11 @@ pub(crate) fn validate(topology: &Topology) -> Result<(), Vec<String>> {
     };
     for frame in &topology.frames {
         unique("frame", &frame.id, &mut err);
+        if let Some(v) = &frame.vehicle
+            && !([v.x, v.y, v.w, v.h].iter().all(|n| n.is_finite()) && v.w > 0.0 && v.h > 0.0)
+        {
+            err(format!("frame `{}`: vehicle w and h must be positive", frame.id));
+        }
     }
     let mut nodes: BTreeMap<&str, &Node> = BTreeMap::new();
     for node in &topology.nodes {

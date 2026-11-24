@@ -100,7 +100,7 @@ function mount(root,input){
  resetView.onclick=()=>visual?.reset();
  if(typeof globalThis.GSLoadReplay3D==='function')globalThis.GSLoadReplay3D().then(({T,SoftwareRenderer,mountReplayCanvas})=>{
   if(disposed||!root.isConnected)return;
-  visual=mountReplayCanvas(T,SoftwareRenderer,host,p.mode==='test_fire'?'test_fire':'flight',status=>{visualUnavailable=status==='lost';host.dataset.renderer=visualUnavailable?'unavailable':visual?.software?'canvas3d':'webgl';updateVisualNote();});
+  visual=mountReplayCanvas(T,SoftwareRenderer,host,p.mode==='test_fire'?'test_fire':'flight',status=>{visualUnavailable=status==='lost';host.dataset.renderer=visualUnavailable?'unavailable':visual?.software?'canvas3d':'webgl';updateVisualNote();},p.vehicle_geometry);
   scene.remove();host.dataset.renderer=visual.software?'canvas3d':'webgl';resetView.disabled=false;
   updateVisualNote();
   if(visualState)visual.update(visualState);

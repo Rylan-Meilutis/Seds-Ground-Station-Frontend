@@ -46,6 +46,8 @@ export class SavedReplayPlayer {
     this.identity=identity;this.generation++;this.dataAbort.abort();this.dataAbort=new AbortController();this.loading=false;this.trackLoading=false;this.chunk=null;this.nextTrackRetry=0;this.nextWindowRetry=0;this.trackNeedsRefresh=true;
     if(!growth){this.rows=[];this.buffer=null;this.track=null;this.viewer.setAttribute('data-track','null');this.viewer.setAttribute('data-state','{}');this.viewer.setAttribute('src',state.config?.model_url||'/assets/models/vehicle.glb');}
    }
+   // The station's vehicle geometry (docs/vehicle-geometry.md); none draws the generic rocket.
+   const geometry=state.vehicle_geometry&&typeof state.vehicle_geometry==='object'?JSON.stringify(state.vehicle_geometry):'';if((this.geometryText||'')!==geometry){this.geometryText=geometry;this.viewer.setAttribute('data-geometry',geometry);}
    this.state=state;this.receivedAt=this.clock();this.failed=false;if(this.trackNeedsRefresh&&this.clock()>=(this.nextTrackRetry||0))this.loadTrack(this.generation);this.frame();
   }catch(e){if(!this.stopped){this.failed=true;this.status('Recorded replay unavailable');}}
   finally{this.polling=false;}

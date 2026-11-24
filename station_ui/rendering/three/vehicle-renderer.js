@@ -1,10 +1,13 @@
 import * as T from './three.module.js';
 import {GLTFLoader} from './GLTFLoader.js';
 import {SoftwareRenderer} from './software-renderer.js';
-import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedPath, visibleSegmentCount, createReplayAssembly} from './replay-scene.js';
+import {EARTH_RADIUS_M, validGps, gpsToLocal, recordedPath, visibleSegmentCount, createReplayAssembly, buildVehicle, vehicleGeometry} from './replay-scene.js';
+// The bundled model stands in for the station's vehicle: with station geometry (data-geometry,
+// GET /api/vehicle/geometry) it is built from that instead, with the same node names.
+const BUNDLED_VEHICLE=/(^|\/)(station-)?assets\/models\/vehicle\.glb([?#]|$)/;
 // Explicit named-node transforms; no dependence on model-viewer's private scene graph.
 class VehicleViewer extends HTMLElement {
- static observedAttributes=['src','data-state','data-track'];
+ static observedAttributes=['src','data-state','data-track','data-geometry'];
  connectedCallback(){
   if(this.renderer)return;
   this.tabIndex=0;this.setAttribute('role','group');this.setAttribute('aria-description','Drag to orbit; shift-drag or two fingers to pan; pinch or scroll to zoom. Arrow keys orbit, W A S D pan, Q E rise or descend, F follows, R resets.');this.style.display='block';this.style.touchAction='none';this.status=document.createElement('div');this.status.className='gs-vehicle-reference-note';this.status.setAttribute('role','note');this.status.style.cssText='position:absolute;top:64px;left:12px;max-width:calc(100% - 24px);width:max-content;box-sizing:border-box;padding:6px 8px;border-radius:7px;background:#142534e8;pointer-events:none;color:#cfdfec;font:12px/1.4 system-ui;z-index:2';this.append(this.status);
@@ -54,7 +57,7 @@ class VehicleViewer extends HTMLElement {
   };
   this.clock=new T.Clock();this.load();this.renderer.setAnimationLoop(()=>this.frame());
  }
- attributeChangedCallback(name,old,value){if(old===value)return;if(name==='src'&&this.renderer)this.load();if(name==='data-track'){try{this.track=JSON.parse(value);}catch{this.track=null;}this.trackChanged=true;this.dirty=true;}if(name==='data-state'){this.dirty=true;try{this.state=JSON.parse(value);}catch{this.state={};}}}
+ attributeChangedCallback(name,old,value){if(old===value)return;if(name==='data-geometry'){this.geometry=vehicleGeometry(value);this.dataset.vehicleSource=this.geometry?.source?.kind||'generic';if(this.renderer){if(this.replayAssembly){this.replaySceneMode=null;this.dirty=true;}else if(BUNDLED_VEHICLE.test(this.getAttribute('src')||''))this.load();}}if(name==='src'&&this.renderer)this.load();if(name==='data-track'){try{this.track=JSON.parse(value);}catch{this.track=null;}this.trackChanged=true;this.dirty=true;}if(name==='data-state'){this.dirty=true;try{this.state=JSON.parse(value);}catch{this.state={};}}}
  viewDistance(){return this.distance/Math.min(1,Math.max(.1,this.camera.aspect));}
  pan(dx,dy){
   const scale=2*this.viewDistance()*Math.tan(T.MathUtils.degToRad(this.camera.fov/2))/Math.max(this.clientHeight,1);
@@ -117,7 +120,7 @@ class VehicleViewer extends HTMLElement {
   const mode=Number.isFinite(state.replay_time_seconds)&&['flight','test_fire'].includes(state.replay_scene)?state.replay_scene:null;
   if(mode){
    if(this.replaySceneMode!==mode){
-    this.generation=(this.generation||0)+1;this.disposeModel();this.replayAssembly=createReplayAssembly(T,mode);this.replaySceneMode=mode;this.model=this.replayAssembly.group;this.root.add(this.model);this.mixer=new T.AnimationMixer(this.model);this.clips=[];this.activeClip=null;this.base=new Map();this.smooth=new Map();this.driven=[];
+    this.generation=(this.generation||0)+1;this.disposeModel();this.replayAssembly=createReplayAssembly(T,mode,this.geometry);this.replaySceneMode=mode;this.model=this.replayAssembly.group;this.root.add(this.model);this.mixer=new T.AnimationMixer(this.model);this.clips=[];this.activeClip=null;this.base=new Map();this.smooth=new Map();this.driven=[];
     this.model.traverse(n=>this.base.set(n,{position:n.position.clone(),scale:n.scale.clone(),quaternion:n.quaternion.clone(),visible:n.visible}));this.modelDistance=mode==='test_fire'?11:10;this.distance=this.modelDistance;this.theta=.6;this.phi=1.2;this.follow=true;this.dataset.loaded='true';
    }
    this.replayAssembly.update({attitude:null,valves:state.visual_valves||[],components:state.visual_components||[]});this.dataset.replayScene=mode;return true;
@@ -127,7 +130,7 @@ class VehicleViewer extends HTMLElement {
  }
  disposeModel(){if(this.model){this.root.remove(this.pivot||this.model);this.pivot=null;this.model.traverse(n=>{n.geometry?.dispose();for(const m of Array.isArray(n.material)?n.material:n.material?[n.material]:[]){for(const v of Object.values(m))if(v?.isTexture)v.dispose();m.dispose();}});this.model=null;}this.replayAssembly=null;this.replaySceneMode=null;}
  async load(){if(Number.isFinite(this.state?.replay_time_seconds)&&['flight','test_fire'].includes(this.state?.replay_scene)){this.ensureReplayAssembly(this.state);return;}const src=this.getAttribute('src');if(!src)return;const generation=this.generation=(this.generation||0)+1;this.status.textContent='Loading model…';try{
-   const gltf=await new GLTFLoader().loadAsync(src);if(!this.isConnected||generation!==this.generation){gltf.scene.traverse(n=>{n.geometry?.dispose();});return;}
+   const gltf=this.geometry&&BUNDLED_VEHICLE.test(src)?{scene:buildVehicle(T,this.geometry),animations:[]}:await new GLTFLoader().loadAsync(src);if(!this.isConnected||generation!==this.generation){gltf.scene.traverse(n=>{n.geometry?.dispose();});return;}
    this.disposeModel();this.model=gltf.scene;const box=new T.Box3().setFromObject(this.model);const modelCenter=box.getCenter(new T.Vector3());const size=box.getSize(new T.Vector3());this.pivot=new T.Group();this.pivot.position.sub(modelCenter);this.pivot.add(this.model);this.center.set(0,0,0);this.root.add(this.pivot);this.base=new Map();this.smooth=new Map();this.model.traverse(n=>this.base.set(n,{position:n.position.clone(),scale:n.scale.clone(),quaternion:n.quaternion.clone(),visible:n.visible}));
    this.mixer=new T.AnimationMixer(this.model);this.clips=gltf.animations;this.activeClip=null;
    this.modelDistance=Math.max(size.length()*1.6,2);this.distance=this.modelDistance;this.status.textContent='';this.dataset.loaded='true';this.dirty=true;

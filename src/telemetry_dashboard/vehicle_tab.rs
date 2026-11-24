@@ -218,6 +218,8 @@ fn sync_model_viewer(
     let valves=replay_visual_valves(layout,frame);
     let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds,"replay_timestamp_ms":frame.at_ms,"replay_scene":scene_mode,"visual_components":components,"visual_valves":valves}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
+    // The station's vehicle geometry; empty draws the generic rocket.
+    let geometry = serde_json::to_string(&super::vehicle_geometry::station_json().unwrap_or_default()).unwrap();
     let src = serde_json::to_string(&backend_url(&config.model_url)).unwrap();
     let renderer =
         serde_json::to_string(&backend_url("/assets/three/vehicle-renderer.js")).unwrap();
@@ -227,6 +229,7 @@ fn sync_model_viewer(
         window.__gs26RendererModules ||= new Map();
         if(!window.__gs26RendererModules.has({renderer}))window.__gs26RendererModules.set({renderer},import({renderer}));
         window.__gs26RendererModules.get({renderer}).catch(()=>{{m.textContent='3D renderer could not load. Check the GroundStation connection and update the backend.';}});
+        if((m.getAttribute('data-geometry')||'')!=={geometry})m.setAttribute('data-geometry',{geometry});
         if(m.getAttribute('src')!=={src})m.setAttribute('src',{src});
         if(m.getAttribute('data-state')!=={payload})m.setAttribute('data-state',{payload});
     }})();"#
@@ -380,6 +383,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
         Buffer, Frame, Index, Page, Recording, Snapshot, Trajectory, advance,
     };
     let mut station = use_signal(UrlConfig::base_http);
+    super::vehicle_geometry::use_station_geometry();
     let mut scene_mode=use_signal(||"configured".to_string());
     let scene_layout=use_resource(move||{
         let origin=station.read().clone();
@@ -1014,6 +1018,8 @@ pub(super) fn ReplayFileExport(recording: String) -> Element {
                     if file["layout"].is_null(){file["layout"]=super::recording_download::saved_json::<serde_json::Value>("/api/layout",owner.clone()).await?;}
                     file["mode"]=if file["layout"]["test_fire_mode"].as_bool()==Some(true){"test_fire"}else{"flight"}.into();
                     if file["valve_mappings"].is_null(){file["valve_mappings"]=saved_valve_mappings(&file["layout"]);}
+                    // The station's vehicle as drawn now (the offline player validates it; absent draws the generic rocket).
+                    if file["vehicle_geometry"].is_null()&&let Some(g)=super::vehicle_geometry::station_json_now().and_then(|t|serde_json::from_str::<serde_json::Value>(&t).ok()){file["vehicle_geometry"]=g;}
                     if export_visual_config&&!file["sd_provenance"].is_null(){file["configuration_provenance"]="Imported source schema/configuration retained; missing view/layout supplied from station at export.".into();}
                     if file["configuration_provenance"].is_null(){file["configuration_provenance"]="Station configuration at export; not a claim of historical capture-time configuration.".into();}
                     super::recording_download::save_replay_file(&file,html,owner.clone()).await

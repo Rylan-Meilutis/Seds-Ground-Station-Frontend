@@ -58,6 +58,7 @@ mod sequence_progress_host;
 mod layout_settings_tab;
 mod live_stream_tab;
 pub(crate) mod live_diagrams;
+pub(crate) mod vehicle_geometry;
 mod raw_streams_tab;
 mod media_tool_tab;
 mod messages_tab;

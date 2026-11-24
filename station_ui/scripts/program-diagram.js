@@ -20,6 +20,7 @@
 .gs-pd .e.blocked{opacity:.25}.gs-pd .e.unknown{stroke:#7b8a99!important;stroke-dasharray:3 9;opacity:.7}.gs-pd .e.dash{stroke-dasharray:12 6}
 .gs-pd .a{fill:none;stroke:#0b1220;stroke-width:3;stroke-dasharray:4 18;opacity:0}.gs-pd .a.on{opacity:.95;animation:gspd 0.9s linear infinite}
 @keyframes gspd{to{stroke-dashoffset:-22}}
+.gs-pd .vb{fill:#1c2b3d;stroke:#e5ecf2;stroke-width:1.2;stroke-linejoin:round}.gs-pd .vf{fill:#3a4a5c;stroke:#e5ecf2;stroke-width:1}.gs-pd .vh{fill:#3987e5;fill-opacity:.55;stroke:#e5ecf2;stroke-width:1.2}
 .gs-pd .l{fill:none;stroke-width:3}.gs-pd .l.up{stroke:#e5ecf2}.gs-pd .l.down{stroke:#d03b3b;stroke-dasharray:2 8}.gs-pd .l.unknown{stroke:#7b8a99;stroke-dasharray:2 8;opacity:.6}.gs-pd .l.mechanical{stroke:#7b8a99;stroke-width:8;opacity:.55;stroke-dasharray:none}
 .gs-pd .n .s{fill:#152132;stroke:#8498a8;stroke-width:2}.gs-pd .n.up .s{stroke:#0ca30c}.gs-pd .n.down .s{stroke:#d03b3b;stroke-dasharray:6 4}.gs-pd .n.unknown .s{stroke:#7b8a99;stroke-dasharray:3 5}
 .gs-pd .n.bus .s,.gs-pd .n.junction .s{fill:#e5ecf2;stroke:none}.gs-pd .n.atmosphere .s{fill:none;stroke-dasharray:4 4}
@@ -168,7 +169,14 @@
     const svg = el('svg', { viewBox: `${x} ${y} ${w} ${h}`, preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': topo.title }, root);
     const refs = { root, badge, svg, frames: {}, edges: {}, nodes: {}, valves: {}, readings: {} };
     const pts = (e) => e.points.map((p) => p.join(',')).join(' ');
-    for (const f of topo.frames || []) { const g = el('g', {}, svg); el('rect', { class: 'f', x: f.x, y: f.y, width: f.w, height: f.h, rx: 14 }, g); el('text', { class: 'fl', x: f.x + 14, y: f.y + 20 }, g).textContent = f.label; refs.frames[f.id] = g; }
+    for (const f of topo.frames || []) {
+      const g = el('g', {}, svg); el('rect', { class: 'f', x: f.x, y: f.y, width: f.w, height: f.h, rx: 14 }, g); el('text', { class: 'fl', x: f.x + 14, y: f.y + 20 }, g).textContent = f.label; refs.frames[f.id] = g;
+      if (f.vehicle) {
+        const v = f.vehicle, sil = vehicleSilhouette(window.gsProgramVehicle, v.x, v.y, v.w, v.h, v.highlight), vg = el('g', { class: 'veh', 'data-vehicle': f.id }, g);
+        el('path', { class: 'vf', d: sil.fins }, vg); el('path', { class: 'vb', d: sil.body }, vg);
+        for (const x of sil.sections) el('path', { class: 'vh', d: x.d, 'data-role': x.role }, vg);
+      }
+    }
     for (const e of topo.edges || []) {
       const g = el('g', {}, svg);
       const base = el('polyline', { points: pts(e) }, g), second = el('polyline', { points: pts(e), class: 'e dash', style: 'display:none;stroke-width:3' }, g), anim = el('polyline', { points: pts(e), class: 'a' }, g);
@@ -254,13 +262,46 @@
     }
   }
 
+  // The station's vehicle (GET /api/media-assets/program/vehicle-geometry, the
+  // same reply as /api/vehicle/geometry; docs/vehicle-geometry.md), drawn nose
+  // up and true to scale in a box. A neutral generic rocket until it arrives.
+  function validVehicle(g) {
+    if (!g || g.schema !== 'gs26.vehicle_geometry' || g.version !== 1 || !(g.length_m > 0.1 && g.length_m < 200) || !(g.diameter_m > 0) || !Array.isArray(g.profile) || g.profile.length < 2 || g.profile.length > 4096) return false;
+    return g.profile.every((p) => Array.isArray(p) && Number.isFinite(p[0]) && Number.isFinite(p[1]) && p[1] >= 0) && (g.fins || []).every((f) => f && f.count >= 1 && f.count <= 16 && Array.isArray(f.planform) && f.planform.every((p) => Number.isFinite(p[0]) && Number.isFinite(p[1])));
+  }
+  const GENERIC_VEHICLE = (() => {
+    const len = 3, r = 0.075, nose = 0.6, rho = (r * r + nose * nose) / (2 * r), profile = [];
+    for (let i = 0; i <= 16; i++) { const x = nose * i / 16; profile.push([x, Math.max(0, Math.sqrt(Math.max(0, rho * rho - (nose - x) ** 2)) + r - rho)]); }
+    profile.push([len, r]);
+    return { schema: 'gs26.vehicle_geometry', version: 1, source: { kind: 'generic' }, length_m: len, diameter_m: 2 * r, span_m: 2 * (r + 0.15), profile, sections: [], separations: [],
+      fins: [{ count: 4, x_m: len - 0.32, root_radius_m: r, angle_offset_deg: 0, planform: [[0, 0], [0.15, 0.15], [0.27, 0.15], [0.3, 0]] }] };
+  })();
+  function vehicleSilhouette(geometry, bx, by, bw, bh, highlight) {
+    const g = validVehicle(geometry) ? geometry : GENERIC_VEHICLE, span = Math.max(g.span_m || 0, g.diameter_m);
+    const s = Math.max(0, Math.min(bh / g.length_m, bw / span)), cx = bx + bw / 2, top = by + (bh - g.length_m * s) / 2;
+    const pt = (x, r) => `${(cx + r * s).toFixed(1)} ${(top + x * s).toFixed(1)}`;
+    const outline = (pts) => 'M' + pts.map((p) => pt(p[0], p[1])).join('L') + 'L' + pts.slice().reverse().map((p) => pt(p[0], -p[1])).join('L') + 'Z';
+    const at = (x) => { const p = g.profile; for (let i = 1; i < p.length; i++) if (x >= p[i - 1][0] && x <= p[i][0]) return p[i][0] - p[i - 1][0] > 1e-12 ? p[i - 1][1] + (p[i][1] - p[i - 1][1]) * (x - p[i - 1][0]) / (p[i][0] - p[i - 1][0]) : Math.max(p[i - 1][1], p[i][1]); return p[p.length - 1][1]; };
+    const clip = (x0, x1) => [[x0, at(x0)], ...g.profile.filter((p) => p[0] > x0 && p[0] < x1), [x1, at(x1)]];
+    let fins = '';
+    for (const f of g.fins || []) for (let k = 0; k < f.count; k++) {
+      const c = Math.cos((f.angle_offset_deg || 0) * Math.PI / 180 + 2 * Math.PI * k / f.count);
+      if (Math.abs(c) < 1e-3) continue;
+      fins += 'M' + f.planform.map((p) => pt(f.x_m + p[0], (f.root_radius_m + p[1]) * c)).join('L') + 'Z';
+    }
+    const sections = (g.sections || []).filter((x) => (highlight || []).includes(x.role) && x.x1_m > x.x0_m).map((x) => ({ role: x.role, name: x.name, d: outline(clip(x.x0_m, x.x1_m)) }));
+    const tail = g.profile[g.profile.length - 1];
+    return { geometry: g, body: outline(g.profile), fins, sections, scale: s, top, cx, tailY: top + tail[0] * s, tailHalf: tail[1] * s };
+  }
+  window.gsVehicleSilhouette = Object.assign(vehicleSilhouette, { valid: validVehicle, generic: GENERIC_VEHICLE });
+
   let current = null;
   window.gsProgramDiagram = {
     derive,
     /** Show `topology` in `holder`, driven by the delayed snapshot `input`. */
     show(holder, topology, input) {
       if (!topology || !holder) return;
-      const key = JSON.stringify(topology);
+      const key = JSON.stringify(topology) + '|' + (window.gsProgramVehicle?.source?.hash || '');
       if (!current || current.holder !== holder || current.key !== key) current = { holder, key, refs: build(holder, topology) };
       update(current.refs, topology, input || {});
     },

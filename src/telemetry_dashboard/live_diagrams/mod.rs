@@ -285,6 +285,7 @@ pub(crate) fn LiveDiagramsTab(
     network_topology: Signal<NetworkTopologyMsg>,
     flight_state: Signal<String>,
 ) -> Element {
+    super::vehicle_geometry::use_station_geometry();
     let mut topologies = use_signal(topology::bundled);
     let mut source_note = use_signal(|| "Client copy".to_string());
     let mut selected = use_signal(|| default_selection(&topology::bundled()));

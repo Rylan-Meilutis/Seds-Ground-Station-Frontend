@@ -26,6 +26,9 @@ active.
 Regenerate replay GLBs with `node scripts/build_gse_models.mjs` from the frontend
 checkout, or pass `--output-dir PATH` for a separate build directory. Verify them
 with `node tests/station-model-structure.cjs` and the software-renderer test.
+The bundled `vehicle.glb` is only the generic stand-in: with the station's
+vehicle geometry (`GET /api/vehicle/geometry`, `../docs/vehicle-geometry.md`) the
+viewer and replays build the real airframe instead.
 The legacy CDP broadcast/animation fixtures are also frontend-owned; their
 loopback-only server setup remains documented by GroundStation. The obsolete
 live-3D streamer fixture is superseded by `station-program_browser.mjs`, which

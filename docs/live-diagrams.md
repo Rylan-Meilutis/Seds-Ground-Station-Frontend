@@ -9,6 +9,9 @@
 - **System overview**: the network topology with live link health.
 - **Test stand**: load cells and thrust. In IGT the rocket appears as a second body.
 
+The AV-bay and IGT views draw the station's vehicle true to scale from
+`GET /api/vehicle/geometry` (a frame's `vehicle` box); see [vehicle geometry](vehicle-geometry.md).
+
 The tab is available to every session with view-data permission. Split view can
 place it next to Actions. **Broadcast size** frames the diagram at 16:9 with
 larger text, for a wall display or OBS window capture.
