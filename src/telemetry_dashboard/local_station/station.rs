@@ -218,12 +218,12 @@ pub(crate) fn live_only(path: &str) -> Option<&'static str> {
     let starts = |prefix: &str| path.starts_with(prefix);
     Some(match path {
         "/api/live_streams" => "Live cameras need a Ground Station.",
-        _ if starts("/api/media-assets") || starts("/api/video") => "Live video needs a Ground Station.",
+        _ if starts("/api/media-assets") || starts("/api/video/") => "Live video needs a Ground Station.",
         _ if starts("/api/stream/raw") => "The raw packet feed is live only; it needs a Ground Station.",
         "/api/antenna/status" => "Antenna tracking is live only; it needs a Ground Station.",
-        _ if starts("/api/rrls") => "The RRLS relay link is live only; it needs a Ground Station.",
+        _ if starts("/api/rrls/") => "The RRLS relay link is live only; it needs a Ground Station.",
         _ if starts("/api/radio/") => "Radio checks are live only; they need a Ground Station.",
-        _ if starts("/api/board-recovery") || starts("/api/board_abort") => "Board recovery is live only; it needs a Ground Station.",
+        _ if starts("/api/board-recovery/") || starts("/api/board_abort") => "Board recovery is live only; it needs a Ground Station.",
         _ if starts("/api/recovery") => "Recovery tracking is live only; it needs a Ground Station.",
         _ if starts("/api/proximity") => "The proximity lock is live only; it needs a Ground Station.",
         _ if starts("/api/igt") => "The integrated ground test runs on a Ground Station.",
@@ -235,10 +235,10 @@ pub(crate) fn live_only(path: &str) -> Option<&'static str> {
         _ if starts("/api/sd_download") => "Board SD downloads need a Ground Station.",
         _ if starts("/api/daq/dac") => "The DAQ signal generator needs a Ground Station.",
         _ if starts("/api/mission-settings") => "Shared settings sync between stations is live only; it needs a Ground Station.",
-        _ if starts("/api/admin") || starts("/api/stream-roles") => "User and access management needs a Ground Station.",
+        _ if starts("/api/admin/") || starts("/api/stream-roles") => "User and access management needs a Ground Station.",
         _ if starts("/api/station/pairing") => "Station pairing needs a Ground Station.",
         _ if starts("/api/system/power") => "Station power control needs a Ground Station.",
-        _ if starts("/api/watch") || starts("/api/auth/watch-token") => "The watch companion pairs with a Ground Station.",
+        _ if starts("/api/watch/") || starts("/api/auth/watch-token") => "The watch companion pairs with a Ground Station.",
         _ => return None,
     })
 }
