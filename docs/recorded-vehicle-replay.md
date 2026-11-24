@@ -69,6 +69,114 @@ Set `GS_REPLAY_WEBGL=1` to require an explicit Chrome SwiftShader WebGL run;
 otherwise the fixture reports the renderer actually selected by the browser.
 
 
+## Flight replay
+
+**3D replay → Flight replay** plays a flight as flight states rather than positions
+over time: *Open flight replay of the selected recording* loads the whole recording
+(`/replay/export`), and *Follow the live flight* follows the dashboard's own
+telemetry store with the cursor on the newest data (scrub to look back, **Go
+live** to return). The same player opens `.gsreplay` bundles and portable files
+offline (offline workspace → Replay & summary → Load 3D replay; exported HTML).
+It is `GSOfflineReplay.mount` in `station_ui/rendering/three/offline-replay.js`
+with `mountFlightScene` in `replay-scene.js`; `src/telemetry_dashboard/flight_replay_panel.rs`
+hosts it on a connected station. Nothing here sends a command.
+
+**Flight state.** Phases come from the recorded `FLIGHT_STATE` rows (the `phase`
+name, else the number in `values[0]`), with the shared flight-plan vocabulary and
+palette:
+
+| FlightState | phase | colour |
+|---|---|---|
+| Startup, Idle, PreFill/Fill, FillTest, NitrogenFill, NitrousFill, Armed | pad | `#94a3b8` |
+| Launch, Ascent (InFlight with no detail) | boost | `#f97316` |
+| Coast, Apogee (an apogee marker, `#ffffff`) | coast | `#facc15` |
+| Descent | drogue | `#38bdf8` |
+| Reefing | main | `#22c55e` |
+| Landed, Recovery | landed | `#a78bfa` |
+| Aborted | the previous phase | |
+
+Events are the transitions: ignition (into boost), burnout (boost → coast), apogee
+(the Apogee row), drogue, main, landing. A flight review (`flight.events`,
+`flight.apogee`) or a plan (`events[].t_s` from `created_ms`) only fills an event
+the rows lack; with neither, apogee is the highest recorded altitude between
+ignition and the drogue. T-0 is the ignition. The T-clock reads `T+ MM:SS`,
+`T+ H:MM:SS`, `T+ D:HH:MM:SS`, `T- …` before T-0 and `T --:--` without one.
+
+**The model.** The vehicle is the station geometry (`buildVehicle`); nothing names
+a vehicle. On the pad it stands on the pad and rail at the first fix. In boost the
+plume's length follows the recorded thrust (a `THRUST` type, else the largest
+`KG…` load cell), else the chamber pressure, each against its recorded maximum,
+else nominal. Attitude: the recorded FC attitude (`view_config.attitude`) while
+free-flying, else the direction of the velocity from the track (a central
+difference over ±2.5 s, so a single bad fix does not flip it), else vertical.
+At the drogue the airframe parts at `separations[0]` and the drogue opens at its
+`recovery` diameter and line length; the main joins it at Reefing. Landed lies on
+the ground. The track is coloured by phase and drawn up to the replay time, with
+event markers.
+
+**Position.** One GPS sender (the backend trajectory's, else FC, else RF), never
+stitched. A fix that exactly repeats the previous one is a held fix and is dropped.
+Height is the barometric altitude above the pad when it is recorded (GPS height is
+the weakest axis, worst in boost), else the GPS altitude; between fixes the
+position is interpolated for display.
+
+**Ground.** The scene imports `./terrain.js` (`loadTerrain`, owned by the 3D-map
+work) and places the track, pad, stations, overlays and the landing point on its
+`heightAt`; the track is shifted by the terrain height at the pad. Without it
+(or in a standalone file) the ground is a curved surface at the pad altitude with
+a scale grid, labelled as such.
+
+**Sensors.** The HUD and the charts bind generically: for each role the recorded
+data types are matched by name and the channel by the layout's data-tab channel
+names; units come from `channel_formatters[].suffix` or a `(unit)` in the channel
+name. A role with no recorded data shows a dash.
+
+| Role | Data types (first present) | Fallback |
+|---|---|---|
+| Altitude | `BAROMETER_DATA` "Altitude", `ASCENT_STATE`/`DESCENT_STATE` "Altitude" | GPS height above the pad |
+| Velocity | `VEHICLE_SPEED`, `ASCENT_STATE`/`DESCENT_STATE` "Velocity" | speed along the track |
+| Acceleration | `ACCEL_DATA`, `IMU_DATA` (magnitude of the first three) | — |
+| Chamber pressure | `…CHAMBER_PRESSURE`, `DAQ_LOADCELL_CHAMBER` | — |
+| Tank pressure | `…TANK_PRESSURE` | — |
+| Thrust | `…THRUST…`, the largest `KG…` | — |
+| Battery | `BATTERY_VOLTAGE` (FC, PB, RF first) | — |
+| GPS fix | `GPS_STATUS` (module state), `GPS_SATELLITE_NUMBER` | — |
+| Radio link | `…RSSI…`, `…LINK_QUALITY…`, `…SNR…` | — |
+
+**Time.** Play/pause, the slider, the phase timeline (click a segment or an event
+marker), step a frame (the next/previous recorded fix) or an event, jump to
+ignition, burnout, apogee, drogue, main or landing, 0.1×–20× speed, optional slow
+motion (0.25×) within 1.5 s of an event, and an A/B loop.
+
+**Cameras.** Follow, chase (behind along the path), pad view, ground station (the
+station positions from `/api/antenna/status` or a bundle's `derived/stations.json`;
+press again for the next), free orbit and top-down (north up); keys 1–6. Under a
+canopy the camera frames the chute too. Far views mark the vehicle with a locator
+dot; the model keeps its true size.
+
+**Predicted.** A plan bundle (`manifest.predicted` or `replay.predicted`) shows a
+Predicted badge and its label on the scene and in the time readout. Plan overlays
+(MapOverlay, the contract's format) are drawn dashed at 55 % with the landing
+ellipse on the ground: a plan's own overlay, a recording bundle's
+`derived/flight_plans.json`, or the five latest `/api/flight_plans` when connected.
+`<gs-vehicle-viewer>` takes the same array in `data-overlays`.
+
+**Test fire.** A `test_fire` replay keeps the motor on the stand with the rocket
+apart; the stand plume burns while the recorded thrust (or chamber pressure) is
+above 5 % of its maximum and scales with it.
+
+**Performance.** The scene redraws only on change. The software renderer, four or
+fewer cores, 2 GB or less memory, or a phone-width screen use the low budget:
+pixel ratio 1, fewer segments, no plume glow or flicker.
+
+Tests: `node tests/flight-replay.test.mjs` (timeline from rows, attitude from
+velocity, plume scale, chute sizes, time controls, camera modes, overlays,
+channel binding, predicted label); `node tests/flight-replay-browser.mjs` plays
+the nominal 10k bundle in Chrome (WebGL and Canvas2D), with
+`GS_FLIGHT_REPLAY_SCREENSHOTS=DIR` for screenshots. The fixture records no main
+deployment (no Reefing row; its flight review has `main: null`), so the main
+screenshot uses a copy with one Reefing row added.
+
 ## Audience recorded-flight scene
 
 Stream Studio offers a **Recorded flight replay** panel. Select a saved recording,

@@ -207,6 +207,12 @@ fn a_station_bundle_opens_with_everything_and_exports_the_station_csv() {
     assert!(!s.derived.is_empty(), "flight review figures from the bundle");
     assert!(s.boards.iter().any(|b| b.sender == "FC" && b.label != "FC"), "board names from the bundle");
     assert!(s.track(i64::MAX).len() > 100);
+    // The flight replay player gets the backend track, the flight review and the predicted flag.
+    let extras = &s.replay_document.as_ref().unwrap()["replay_extras"];
+    assert!(extras["trajectory"]["points"].as_array().is_some_and(|p| p.len() > 100));
+    assert!(extras["flight_review"]["flight"]["events"].is_array());
+    assert_eq!(extras["manifest"]["predicted"], false);
+    assert!(extras["flight_plan"].is_null(), "a recording bundle carries no plan");
     // Round trip: the CSV exported offline is the station's own CSV export of the recording.
     assert_eq!(s.csv.as_deref().map(Vec::as_slice), Some(STATION_CSV));
     assert!(std::str::from_utf8(STATION_CSV).unwrap().starts_with("id,"));

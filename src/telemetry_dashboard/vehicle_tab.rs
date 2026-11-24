@@ -216,7 +216,7 @@ fn sync_model_viewer(
         row
     }).collect();
     let valves=replay_visual_valves(layout,frame);
-    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds,"replay_timestamp_ms":frame.at_ms,"replay_scene":scene_mode,"visual_components":components,"visual_valves":valves}).to_string();
+    let payload=serde_json::json!({"motions":motions,"orbit":config.camera_orbit,"attitude":[pitch,yaw,roll],"gps":frame.gps_for(gps_sender).map(|(lat,lon,alt)|[lat,lon,alt]),"clip":model_animation(config,&phase),"replay_time_seconds":replay_seconds,"replay_timestamp_ms":frame.at_ms,"replay_scene":scene_mode,"phase":phase,"visual_components":components,"visual_valves":valves}).to_string();
     let payload = serde_json::to_string(&payload).unwrap();
     // The station's vehicle geometry; empty draws the generic rocket.
     let geometry = serde_json::to_string(&super::vehicle_geometry::station_json().unwrap_or_default()).unwrap();
@@ -759,6 +759,7 @@ pub(crate) fn VehicleTab(theme: ThemeConfig) -> Element {
     rsx! {
         div {class:"gs26-vehicle-shell",style:"height:100%;overflow-y:auto;padding:12px;box-sizing:border-box;color:{theme.text_primary};background:{theme.tab_shell_background};",
             h2 {"3D replay"}
+            super::flight_replay_panel::FlightReplayPanel { recording: selected() }
             OfflineReplayImport {}
             label {"Replay model " select {value:"{scene_mode}",onchange:move|e|scene_mode.set(e.value()),
                 option {value:"configured","Configured model"}

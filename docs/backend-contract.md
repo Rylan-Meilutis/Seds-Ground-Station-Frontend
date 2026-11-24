@@ -387,7 +387,7 @@ schema. Where the path is built at run time, the variable segment is shown as
 | GET | `/tiles/{z}/{x}/{y}.jpg` | JPEG tile ([detail](backend-api.md#get-tileszxyjpg)) | map (browser direct; native via local `gs26://` / `gs26.localhost` proxy in `main.rs`), watch direct | view_data / watch token | blank tile |
 | GET | `/api/station_positions` | → `{ground_station, rrls, ...}` document | Admin → Station positions | admin | M |
 | POST | `/api/station_positions` | `Update` → document | Admin → Station positions | admin | M |
-| GET | `/api/antenna/status` | → `{ground_station?: StationFix, rrls?: StationFix, ...rssi}`; `StationFix` = `{latitude, longitude, altitude_m?, altitude_reference?, accuracy_m?, age_ms, stale, source, manual}` | Map markers, antenna aiming, live diagrams, custom dashboard, watch | view_data | K |
+| GET | `/api/antenna/status` | → `{ground_station?: StationFix, rrls?: StationFix, ...rssi}`; `StationFix` = `{latitude, longitude, altitude_m?, altitude_reference?, accuracy_m?, age_ms, stale, source, manual}` | Map markers, antenna aiming, live diagrams, custom dashboard, watch, flight replay ground-station camera | view_data | K |
 | GET | `/api/fc/launch-site` | → `{configured?: Site, compiled_default?: Site, fc_reported?: Site, confirmed, pending}`; `Site` = `{lat_deg, lon_deg, alt_msl_m}` | Settings → Mission → Launch site | view_data | M |
 | PUT | `/api/fc/launch-site` | `Site` request → any | same | send_commands | M |
 
@@ -545,7 +545,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | GET | `/api/recordings/{id}/replay/alerts` | → alerts | saved replay | view_data | K |
 | GET | `/api/recordings/{id}/replay/layout` | query `view` (`normal`, `test_fire`, `testing`, `hitl`, `integrated_ground_test`) → `LayoutConfig` | saved replay | view_data | M |
 | GET | `/api/recordings/{id}/replay/trajectory` | query `upper_id` → trajectory | vehicle replay | view_data | M |
-| GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export | view_data | M |
+| GET | `/api/recordings/{id}/replay/export` | → portable replay file ([section 10](#10-offline-replay-files)) | vehicle replay export; 3D replay → Flight replay (whole recording) | view_data | M |
 | GET | `/api/recordings/{id}/bundle` | query `tiles` (bool), `tiles_max_mb` (≤32) → `.gsreplay` ZIP ([replay-bundle.md](replay-bundle.md)) | Recordings panel → Download replay bundle | view_data | M |
 | GET | `/api/vehicle/geometry` | → vehicle geometry (GroundStation26 `docs/vehicle-geometry.md`) | attached to portable replay files as `vehicle_geometry` | view_data | K (file falls back to the generic rocket) |
 | GET | `/api/recordings/{id}/sd/sources` | query `after_id` → `SourcePage` | SD recording import | view_data | M |
@@ -558,7 +558,7 @@ and GroundStation26 `docs/backend/paired-calibration.md`.
 | POST | `/api/recovery/reached` | `{launch_session}` → `Event` | recovery marker | send_commands | M |
 | GET | `/api/recovery/export.{kind}` | `kind` = `csv` or `json`: `/api/recovery/export.csv`, `/api/recovery/export.json` | Recordings → exports | view_data | M |
 | GET | `/api/flight_review/live` | → `LiveReview` | Flight review | view_data | M |
-| GET | `/api/flight_review/recording/{id}` | → `RecordingReview` | Flight review | view_data | M |
+| GET | `/api/flight_review/recording/{id}` | → `RecordingReview` | Flight review; flight replay events (`flight.events`, `flight.apogee`) | view_data | M |
 | GET | `/api/flight_review/recording/{id}/{kind}` | `kind` = `motor_export` or `flight_export`; query `from_ms`, `to_ms`; ZIP | Flight review | view_data | M |
 | GET | `/api/flight_review/recording/{id}/motor_export` | concrete form of the row above | Flight review | view_data | M |
 | GET | `/api/flight_review/recording/{id}/flight_export` | concrete form of the row above | Flight review | view_data | M |
@@ -984,11 +984,19 @@ attaches its station's configuration before saving
 | `vehicle_geometry` | app (`GET /api/vehicle/geometry`), new | no | 3D vehicle shape | the generic rocket |
 | `alerts[]`: `{timestamp_ms, message, severity}` | not written yet | no | Network → Warnings | none listed |
 | `schema`, `sd_provenance`, `snapshot`, `recording_diagnostics_schema`, `configuration_provenance` | backend / app | no | diagnostics and provenance note | not shown |
+| `predicted`, `label` | backend (flight-plan bundle `replay.json`) | no | the flight replay's "Predicted" badge and label | a recording |
+| `replay_extras` (`trajectory`, `flight_review`, `flight_plan`, `flight_plans`, `stations`, `overlays`, `manifest.predicted`) | app (from a bundle's `derived/…` entries, or the routes below when connected) | no | flight replay: track, events a FLIGHT_STATE row lacks, plan overlays, ground-station camera | rows only: the track from the GPS rows, events from the FLIGHT_STATE rows, no overlays or station view |
 
 Calibration is not needed: recorded values are already calibrated. Map tiles
 are never fetched offline. Files are capped at 64 MiB (as the export).
 GroundStation26's contract fixture `replay-export/flight.json` is the actual
 export of a recorded `nominal_10k` flight plus the attached configuration.
+
+The flight replay (3D replay → Flight replay) also asks, each optional: `GET
+/api/flight_plans` and `GET /api/flight_plans/{id}` (the five latest flight
+plans' `overlay` drawn for comparison; 404 on a station without flight plans),
+`GET /api/antenna/status` (station positions) and the snapshot's
+`/replay/trajectory`. See [recorded-vehicle-replay.md](recorded-vehicle-replay.md#flight-replay).
 
 A station-made bundle (`GET /api/recordings/{id}/bundle`) completes
 `replay.json` with `boards`, `vehicle_geometry`, `layout` and `mode` itself, so

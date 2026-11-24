@@ -134,6 +134,7 @@ mod stream_rundown;
 mod stream_studio;
 pub mod types;
 pub(crate) mod over_range;
+mod flight_replay_panel;
 mod vehicle_replay;
 mod vehicle_tab;
 pub mod version_page;

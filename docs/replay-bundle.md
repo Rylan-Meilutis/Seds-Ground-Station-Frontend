@@ -83,6 +83,14 @@ schemas are those in [backend-contract.md](backend-contract.md) and
 | `derived/apogee_planner.json` | no | `GET /api/apogee_planner` (state at export) | reference |
 | `derived/burn_reports.json`, `derived/fire_archive.json` | no | entries of `GET /api/burn_reports` / `GET /api/fire_archive` that name the recording | burn summary |
 | `tiles/{z}/{x}/{y}.jpg` | no | `GET /tiles/{z}/{x}/{y}.jpg` around the track | map background |
+| `derived/flight_plan.json` | no | `GET /api/flight_plans/{id}` (plan bundles only) | flight replay: plan events, the Predicted label, the landing ellipse |
+| `derived/flight_plans.json` | no | `{"plans": [plan document, …]}`, the latest plans at export | flight replay: plan overlays on the recorded flight |
+| `derived/stations.json` | no | `GET /api/antenna/status` at export (not written by GroundStation26 yet) | flight replay: ground-station camera and masts |
+
+A plan bundle (`GET /api/flight_plans/{id}/bundle`) sets `manifest.predicted: true`
+and `manifest.label`; its `replay.json` has `"predicted": true`. The flight replay
+shows a Predicted badge for either. The offline workspace passes these entries to
+the player as the document's `replay_extras` (`local_station/bundle.rs`).
 
 Map tiles are opt-in. Request them with `?tiles=1&tiles_max_mb=N`; the default
 budget is 8 MiB and the maximum 32 MiB. The station collects tiles from zoom

@@ -167,6 +167,28 @@ pub(crate) fn open(file_name: &str, bytes: &[u8]) -> Result<Session, String> {
     if let Some(alerts) = json(&files, "derived/alerts.json") {
         document["alerts"] = alerts.get("alerts").cloned().unwrap_or(alerts);
     }
+    // What the flight replay player uses beyond the rows: the backend track, the
+    // flight review's events, a plan bundle's plan and the predicted flag, stations.
+    let mut extras = serde_json::Map::new();
+    for (key, path) in [
+        ("trajectory", "derived/trajectory.json"),
+        ("flight_review", "derived/flight_review.json"),
+        ("flight_plan", "derived/flight_plan.json"),
+        ("flight_plans", "derived/flight_plans.json"),
+        ("stations", "derived/stations.json"),
+    ] {
+        if let Some(value) = json(&files, path) {
+            extras.insert(key.into(), value);
+        }
+    }
+    extras.insert("manifest".into(), serde_json::json!({"predicted": manifest["predicted"].as_bool() == Some(true), "label": manifest["label"].clone(), "mode": manifest["mode"].clone()}));
+    if let Some(plans) = extras.get("flight_plans").and_then(|p| p["plans"].as_array()) {
+        let overlays: Vec<Value> = plans.iter().filter_map(|p| p.get("overlay").filter(|o| o.is_object()).cloned()).take(5).collect();
+        extras.insert("overlays".into(), Value::Array(overlays));
+    }
+    if !document["replay_extras"].is_object() {
+        document["replay_extras"] = Value::Object(extras);
+    }
     let text = serde_json::to_string(&document).map_err(|e| e.to_string())?;
     let mut session = replay_file::open(file_name, &text)?;
     session.title = manifest["source"]["recording"].as_str().unwrap_or(file_name).to_string();
