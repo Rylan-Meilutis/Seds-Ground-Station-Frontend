@@ -32,6 +32,20 @@ function updateControls(){
   $('radio-enable').disabled=!session?.ready||!radioAvailable;
   $('noise-suppression').disabled=!noiseSupported||joining||!!session?.reconfiguring;
 }
+// The station forwards at most max_talkers at once (talk floor): a request
+// waits until a slot frees. Stations without a floor put every request on air.
+const onAir=s=>!!s&&(!s.floorControl||s.floor==='on_air');
+function countText(n){return session?.maxParticipants?`${n} / ${session.maxParticipants}`:`${n}`;}
+function micState(enabled,mode){
+  if(!session)return 'Microphone off';
+  if(session.held)return 'Paused · your watch has voice';
+  if(session.reconfiguring)return 'Updating microphone…';
+  if(enabled&&!onAir(session))return `Waiting for a free channel · ${session.talkers??session.maxTalkers} of ${session.maxTalkers} talking`;
+  if(enabled)return 'Transmitting';
+  if(mode==='off')return 'Microphone off · listening';
+  if(muted)return 'Microphone muted';
+  return 'Listening · hold to talk';
+}
 function transmit(){
   const mode=$('mode').value;
   const enabled=!!session?.ready&&!session.reconfiguring&&!session.held&&!muted&&(mode==='open'||(mode==='ptt'&&held));
@@ -47,14 +61,15 @@ function transmit(){
   }
   $('ptt').setAttribute('aria-pressed',String(enabled&&$('mode').value==='ptt'));
   $('mute').setAttribute('aria-pressed',String(muted));$('mute').textContent=muted?'Unmute microphone':'Mute microphone';
-  $('mic-state').textContent=!session?'Microphone off':session.held?'Paused · your watch has voice':session.reconfiguring?'Updating microphone…':enabled?'Transmitting to crew':mode==='off'?'Microphone off · listening':muted?'Microphone muted':'Listening · hold to talk';
+  $('mic-state').textContent=micState(enabled,mode);
+  $('mic-state').dataset.floor=session?.transmitting?(onAir(session)?'on_air':'waiting'):'idle';
   updateControls();
 }
 function leave(message='Left voice. Microphone released.'){
   window.GS26StayAwake?.setActive('voice',false);
   const old=session;session=null;held=false;joining=false;$('radio-enable').checked=false;
   if(old){clearInterval(old.ping);clearTimeout(old.joinTimeout);old.ws?.close();old.stream?.getTracks().forEach(t=>t.stop());old.node?.disconnect();old.context?.close().catch(()=>{});}
-  $('peers').replaceChildren();$('count').textContent='0 / 12';$('level').value=0;transmit();notice(message);
+  $('peers').replaceChildren();$('count').textContent='0';$('level').value=0;transmit();notice(message);
 }
 async function devices(){
   try{
@@ -113,7 +128,7 @@ $('join').onclick=async()=>{
     s.node.port.onmessage=({data:m})=>{
       if(session!==s)return;
       if(m.type==='level')$('level').value=m.value;
-      if(m.type==='pcm'&&s.transmitting&&s.ws.readyState===WebSocket.OPEN&&s.ws.bufferedAmount<2560)s.ws.send(m.buffer);
+      if(m.type==='pcm'&&s.transmitting&&onAir(s)&&s.ws.readyState===WebSocket.OPEN&&s.ws.bufferedAmount<2560)s.ws.send(m.buffer);
     };
     const url=new URL('/api/voice/ws',location.href);url.protocol=location.protocol==='https:'?'wss:':'ws:';
     s.ws=new WebSocket(url);s.ws.binaryType='arraybuffer';
@@ -142,12 +157,21 @@ $('join').onclick=async()=>{
         transmit();
       }
 
-      if(m.type==='joined'){clearTimeout(s.joinTimeout);s.ready=true;s.id=m.id;joining=false;window.GS26StayAwake?.setActive('voice',true);transmit();notice('Connected to voice chat.');}
+      if(m.type==='floor'){
+        s.floor=m.state;s.talkers=m.talkers;if(Number.isInteger(m.max_talkers))s.maxTalkers=m.max_talkers;
+        if(m.reason==='priority')notice('An administrator took a talk slot. You are next in line and go back on air when a slot frees.');
+        else if(m.reason==='quiet')notice('You were quiet while others waited to talk. You go back on air when a slot frees.');
+        transmit();
+      }
+      if(m.type==='joined'){clearTimeout(s.joinTimeout);s.ready=true;s.id=m.id;s.maxParticipants=Number.isInteger(m.max_participants)?m.max_participants:0;s.floorControl=Number.isInteger(m.max_talkers);s.maxTalkers=m.max_talkers;s.floor='idle';joining=false;window.GS26StayAwake?.setActive('voice',true);transmit();notice('Connected to voice chat.');}
       if(m.type==='roster'){
         const next=new Set(m.peers.map(p=>p.id));
         for(const id of s.peers||[])if(!next.has(id))s.node.port.postMessage({type:'remove',id});s.peers=next;
-        $('peers').replaceChildren();$('count').textContent=`${m.peers.length} / 12`;
-        for(const p of m.peers){const li=document.createElement('li');li.textContent=`${p.name}${p.device==='watch'?' (watch)':''}${p.id===s.id?' (you)':''} · ${p.transmitting?'Mic open':'Listening'}`;li.className=p.transmitting?'talking':'';$('peers').append(li);}
+        $('peers').replaceChildren();$('count').textContent=countText(m.peers.length);
+        for(const p of m.peers){const li=document.createElement('li');li.textContent=`${p.name}${p.device==='watch'?' (watch)':''}${p.id===s.id?' (you)':''} · ${p.transmitting?'On air':p.waiting?'Waiting to talk':'Listening'}`;li.className=p.transmitting?'talking':p.waiting?'waiting':'';$('peers').append(li);}
+        // The roster is resent every second: it also repairs a lost floor message.
+        const me=m.peers.find(p=>p.id===s.id);
+        if(me&&s.floorControl){const floor=me.transmitting?'on_air':me.waiting?'waiting':'idle';if(floor!==s.floor){s.floor=floor;s.talkers=m.peers.filter(p=>p.transmitting).length;transmit();}}
       }
     };
     s.ws.onclose=()=>{if(session===s)leave('Voice disconnected. Your microphone is off; select Join voice to reconnect.');};

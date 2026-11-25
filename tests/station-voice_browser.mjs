@@ -31,7 +31,7 @@ try {
   }
   const [a,b]=clients.map(c=>c.page);
   const api=clients[0].context.request;
-  await a.waitForFunction(()=>document.querySelector('#count').textContent==='2 / 12');
+  await a.waitForFunction(()=>document.querySelector('#count').textContent==='2 / 32');
   assert.equal(await a.evaluate(()=>audioSent),0,'joining defaults to no transmitted audio');
   await a.bringToFront();
   await a.locator('#ptt').scrollIntoViewIfNeeded();
@@ -96,7 +96,7 @@ try {
   await audience.waitForTimeout(500);const heard=await audience.evaluate(()=>programFrames);await audience.waitForTimeout(400);assert.equal(await audience.evaluate(()=>programFrames),heard,'disabling broadcast stops audience audio');
   await audience.screenshot({path:'/tmp/gs-audience-audio.png',fullPage:true});await spectator.close();
   await a.evaluate(()=>window.voiceSocket.close());await a.waitForFunction(()=>document.querySelector('#mic-state').textContent==='Microphone off');
-  await b.waitForFunction(()=>document.querySelector('#count').textContent==='1 / 12');
+  await b.waitForFunction(()=>document.querySelector('#count').textContent==='1 / 32');
   await b.click('#leave');assert.equal(await b.locator('#mic-state').textContent(),'Microphone off');
   // Bad credentials are rejected by the actual server.
   const denied=await a.evaluate(origin=>new Promise(resolve=>{

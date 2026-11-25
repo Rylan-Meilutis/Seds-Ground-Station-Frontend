@@ -85,7 +85,7 @@ try {
   const mediaFrame=page.frames().find(f=>f.url().includes('/media?'));
   const voiceFrame=page.frames().find(f=>f.url().includes('/radio?'));
   assert.equal(await mediaFrame.evaluate(()=>document.querySelector('#publish-preview').srcObject.getVideoTracks()[0].readyState),'live');
-  assert.equal(await voiceFrame.evaluate(()=>document.querySelector('#mic-state').textContent),'Transmitting to crew');
+  assert.equal(await voiceFrame.evaluate(()=>document.querySelector('#mic-state').textContent),'Transmitting');
   await page.evaluate(()=>document.querySelectorAll('iframe').forEach(f=>f.style.display='block'));
   await voice.locator('#mode').selectOption('ptt');
   const box = await voice.locator('#ptt').boundingBox();
