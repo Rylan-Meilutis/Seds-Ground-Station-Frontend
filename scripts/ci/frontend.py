@@ -934,7 +934,7 @@ def apk_signers(output):
     several schemes. Each label's DN pairs with its own digest, and signers are
     de-duplicated; the distinct set must equal `Number of signers`."""
     count = re.search(r"^Number of signers: (\d+)$", output, re.MULTILINE)
-    label = r"((?:V\d+(?:\.\d+)? )?Signer(?: #\d+)?):"
+    label = r"((?:V\d+(?:\.\d+)? )?Signer(?: #\d+)?):?"
     digests = dict(re.findall(rf"^{label} certificate SHA-256 digest: ([0-9a-f]{{64}})$", output, re.MULTILINE))
     names = dict(re.findall(rf"^{label} certificate DN: (.+)$", output, re.MULTILINE))
     if not count or not digests or set(digests) != set(names):
