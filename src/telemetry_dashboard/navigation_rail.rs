@@ -55,6 +55,9 @@ fn icon(id: &str) -> &'static str {
         "data-export" => "M4 3h10l6 6v12H4z M14 3v6h6 M12 11v7 M9 15l3 3 3-3",
         "sequence-history" => "M3 12a9 9 0 1 0 3-6.7 M3 4v5h5 M12 7v5l3 3",
         "vehicle" => "M9 16l-4 3 1-6 M15 16l4 3-1-6 M9 16h6V8l-3-6-3 6z M10 20v2 M14 20v2",
+        "live-diagrams" => "M4 3h6v9H4z M7 12v6h6 M13 14l4 4-4 4z M21 14l-4 4 4 4z",
+        "raw-streams" => "M4 4h16v16H4z M7 8l3 3-3 3 M12 15h5",
+        "flight-review" => "M3 20C7 4 16 4 21 18 M3 20h18 M12 8v5 M10 11l2 2 2-2",
         _ => "M4 5h16v14H4z M8 9h8 M8 13h8 M8 17h5",
     }
 }
@@ -94,5 +97,56 @@ pub(super) fn NavigationRail(
        a {href:"#",onclick:move|e|{e.prevent_default();on_settings.call(());},title:"Settings","aria-label":"Settings",svg {view_box:"0 0 24 24","aria-hidden":"true",path {d:"M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8 M9 3h6l1 3 3 1 2 5-2 5-3 1-1 3H9l-1-3-3-1-2-5 2-5 3-1z"}} span {"Settings"}}
       }
      }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::{MainTab, _main_tab_to_str};
+    use super::icon;
+
+    /// Every tab in turn; adding a tab without extending this fails to compile.
+    fn next(tab: MainTab) -> Option<MainTab> {
+        Some(match tab {
+            MainTab::Checklists => MainTab::State,
+            MainTab::State => MainTab::ConnectionStatus,
+            MainTab::ConnectionStatus => MainTab::Detailed,
+            MainTab::Detailed => MainTab::NetworkTopology,
+            MainTab::NetworkTopology => MainTab::Map,
+            MainTab::Map => MainTab::Actions,
+            MainTab::Actions => MainTab::FirmwareUpdate,
+            MainTab::FirmwareUpdate => MainTab::Calibration,
+            MainTab::Calibration => MainTab::Mission,
+            MainTab::Mission => MainTab::CrewVoice,
+            MainTab::CrewVoice => MainTab::StreamManager,
+            MainTab::StreamManager => MainTab::Media,
+            MainTab::Media => MainTab::Vehicle,
+            MainTab::Vehicle => MainTab::Messages,
+            MainTab::Messages => MainTab::Notifications,
+            MainTab::Notifications => MainTab::Warnings,
+            MainTab::Warnings => MainTab::Errors,
+            MainTab::Errors => MainTab::Data,
+            MainTab::Data => MainTab::DataExport,
+            MainTab::DataExport => MainTab::SequenceHistory,
+            MainTab::SequenceHistory => MainTab::LiveDiagrams,
+            MainTab::LiveDiagrams => MainTab::RawStreams,
+            MainTab::RawStreams => MainTab::FlightReview,
+            MainTab::FlightReview => return None,
+        })
+    }
+
+    #[test]
+    fn every_tab_has_its_own_icon() {
+        let mut seen = std::collections::HashMap::new();
+        let mut tab = Some(MainTab::Checklists);
+        while let Some(current) = tab {
+            let id = _main_tab_to_str(current);
+            assert_ne!(icon(id), icon("no such tab"), "{id} uses the fallback icon");
+            if let Some(other) = seen.insert(icon(id), id) {
+                panic!("{id} and {other} share an icon");
+            }
+            tab = next(current);
+        }
+        assert_eq!(seen.len(), 24);
     }
 }
