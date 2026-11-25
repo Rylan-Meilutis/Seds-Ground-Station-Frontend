@@ -78,6 +78,14 @@ ANDROID_R8_UPSTREAM_RULE_NOTICE = re.compile(
     r"that have no member pattern\. If the following rule should continue to keep the default constructor in the next major version of R8, "
     r"then it must be augmented with the member pattern `\{ void <init>\(\); \}` to explicitly keep the default constructor:$"
 )
+# bundletool builds the universal APK unsigned on the release path; the
+# `--final` step then signs it with the upload key (apksigner) and
+# release-verify requires exactly that one signer. Only this exact line, and
+# only in a final-signing Android release build, is reported instead of fatal.
+BUNDLETOOL_UNSIGNED_INTERMEDIATE = re.compile(
+    r"^WARNING: The APKs won't be signed and thus not installable unless you also pass a keystore via the flag --ks\. "
+    r"See the command help for more information\.$"
+)
 WARNING = re.compile(r"(?i)(?:(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)|::warning(?: [^:]*)?::)")
 
 # Only the two observed Cargo/libcurl error-55 SSL transport diagnostics may
@@ -141,7 +149,7 @@ def configure_utf8_console():
             reconfigure(encoding="utf-8", errors="strict")
 
 
-def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=False):
+def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=False, android_final_signing=False):
     """Preserve full output and fail warnings as well as nonzero exits.
 
     Only the exact upstream notices named above are reported separately, and
@@ -153,6 +161,7 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
     warnings = []
     progress_lines = []
     upstream_r8_lines = []
+    unsigned_intermediate_lines = []
     resolved = list(argv)
     if not Path(resolved[0]).is_absolute():
         executable = shutil.which(resolved[0], path=env.get("PATH", ""))
@@ -172,11 +181,13 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
                     progress_lines.append(plain)
                 elif android_upstream_r8 and ANDROID_R8_UPSTREAM_RULE_NOTICE.fullmatch(plain):
                     upstream_r8_lines.append(plain)
+                elif android_final_signing and BUNDLETOOL_UNSIGNED_INTERMEDIATE.fullmatch(plain):
+                    unsigned_intermediate_lines.append(plain)
                 else:
                     if WARNING.search(plain):
                         warnings.append(plain)
         result = child.wait()
-    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines}, indent=2) + "\n")
+    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines, "bundletool_unsigned_intermediate_notices": unsigned_intermediate_lines}, indent=2) + "\n")
     if result or warnings:
         raise CommandFailure(label, result, warnings)
 
@@ -921,7 +932,8 @@ def release_build(name):
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh checkout")
     (ROOT / "ci-results").mkdir(exist_ok=True)
     checked(release_command(name), env, "release-" + name, dioxus_progress=True,
-            android_upstream_r8=name.startswith("android"))
+            android_upstream_r8=name.startswith("android"),
+            android_final_signing=name.startswith("android") and "--final" in release_command(name))
 
 
 def find_apksigner():

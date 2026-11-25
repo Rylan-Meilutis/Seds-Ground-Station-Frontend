@@ -143,6 +143,36 @@ assert sys.stdout.encoding.lower()=='utf-8' and sys.stderr.encoding.lower()=='ut
                 failure = error
             return failure, json.loads((Path(directory) / "ci-results/build.json").read_text())
 
+    BUNDLETOOL_LINE = ("WARNING: The APKs won't be signed and thus not installable unless you also pass a keystore "
+                       "via the flag --ks. See the command help for more information.")
+
+    def final_run(self, lines, enabled):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            failure = None
+            try:
+                ci.checked([sys.executable, "-c", f"print({chr(10).join(lines)!r})"], os.environ.copy(), "build",
+                           android_final_signing=enabled)
+            except ci.CommandFailure as error:
+                failure = error
+            return failure, json.loads((Path(directory) / "ci-results/build.json").read_text())
+
+    def test_bundletool_unsigned_intermediate_is_reported_only_in_final_signing_builds(self):
+        failure, receipt = self.final_run([self.BUNDLETOOL_LINE], True)
+        self.assertIsNone(failure)
+        self.assertEqual(receipt["bundletool_unsigned_intermediate_notices"], [self.BUNDLETOOL_LINE])
+        # Anywhere else it stays fatal, and any other warning in a final build stays fatal.
+        self.assertIsNotNone(self.final_run([self.BUNDLETOOL_LINE], False)[0])
+        self.assertIsNotNone(self.final_run([self.BUNDLETOOL_LINE, "warning: something else"], True)[0])
+        self.assertIsNotNone(self.final_run([self.BUNDLETOOL_LINE.replace("--ks", "--ks-x")], True)[0])
+
+    def test_only_android_final_release_builds_get_the_exemption(self):
+        # release_build passes android_final_signing only when the target is Android and signs with --final.
+        self.assertIn("--final", ci.release_command("android"))
+        self.assertIn("--final", ci.release_command("android-armv7"))
+        for unsigned in ("linux", "linux-arm64", "windows"):
+            self.assertNotIn("--final", ci.release_command(unsigned))
+
     def test_hosted_android_release_upstream_r8_rule_notices_are_reported_not_fatal(self):
         lines = ["WARNING: " + self.R8_ROOT + rule + self.R8_NOTICE for rule in self.R8_HOSTED_RULES]
         failure, receipt = self.r8_run(lines, True)
