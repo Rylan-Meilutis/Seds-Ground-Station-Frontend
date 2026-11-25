@@ -166,6 +166,37 @@ assert sys.stdout.encoding.lower()=='utf-8' and sys.stderr.encoding.lower()=='ut
         self.assertIsNotNone(self.final_run([self.BUNDLETOOL_LINE, "warning: something else"], True)[0])
         self.assertIsNotNone(self.final_run([self.BUNDLETOOL_LINE.replace("--ks", "--ks-x")], True)[0])
 
+    # jarsigner's block, from hosted Release run 45637852601.
+    JARSIGNER_BLOCK = [ci.JARSIGNER_HEADER + " ", ci.JARSIGNER_SELF_SIGNED, ci.JARSIGNER_POSIX, ""]
+
+    def store_run(self, lines, enabled=True):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            failure = None
+            try:
+                ci.checked([sys.executable, "-c", f"print({chr(10).join(lines)!r})"], os.environ.copy(), "build",
+                           android_store_signing=enabled)
+            except ci.CommandFailure as error:
+                failure = error
+            return failure, json.loads((Path(directory) / "ci-results/build.json").read_text())
+
+    def test_jarsigner_self_signed_notice_is_reported_only_in_the_play_build(self):
+        for tail in ([], ["Renaming android artifact"]):
+            failure, receipt = self.store_run(["jar signed.", ""] + self.JARSIGNER_BLOCK + tail)
+            self.assertIsNone(failure)
+            self.assertEqual(receipt["jarsigner_self_signed_notices"], [line.strip() for line in self.JARSIGNER_BLOCK[:3]])
+        self.assertIsNone(self.store_run(self.JARSIGNER_BLOCK[:2])[0])
+        # Anywhere else it stays fatal, and so does any other notice in or near the block.
+        self.assertIsNotNone(self.store_run(self.JARSIGNER_BLOCK, enabled=False)[0])
+        expiring = "The signer certificate will expire within six months."
+        header, self_signed, posix, blank = self.JARSIGNER_BLOCK
+        for lines in ([header], [header, blank, self_signed], [header, posix, blank], [header, expiring, blank],
+                      [header, self_signed, expiring, blank], [header, expiring, self_signed, blank],
+                      [header, self_signed, blank, "warning: something else"],
+                      [header, self_signed, "warning: something else"],
+                      self.JARSIGNER_BLOCK + [header, expiring]):
+            self.assertIsNotNone(self.store_run(lines)[0], lines)
+
     def test_only_android_final_release_builds_get_the_exemption(self):
         # release_build passes android_final_signing only when the target is Android and signs with --final.
         self.assertIn("--final", ci.release_command("android"))

@@ -86,6 +86,15 @@ BUNDLETOOL_UNSIGNED_INTERMEDIATE = re.compile(
     r"^WARNING: The APKs won't be signed and thus not installable unless you also pass a keystore via the flag --ks\. "
     r"See the command help for more information\.$"
 )
+# jarsigner signs the Play AAB with the upload key, whose certificate is
+# self-signed (Google re-signs the app). It says so under a bare "Warning:"
+# header, with a note on the entries it cannot cover. Only that exact block,
+# and only in the Play build, is reported instead of fatal: an expiring
+# certificate or any other text in the block stays fatal.
+JARSIGNER_HEADER = "Warning:"
+JARSIGNER_SELF_SIGNED = "The signer's certificate is self-signed."
+JARSIGNER_POSIX = ("POSIX file permission and/or symlink attributes detected. These attributes are ignored when signing "
+                   "and are not protected by the signature.")
 WARNING = re.compile(r"(?i)(?:(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)|::warning(?: [^:]*)?::)")
 
 # Only the two observed Cargo/libcurl error-55 SSL transport diagnostics may
@@ -215,7 +224,7 @@ def configure_utf8_console():
 
 
 def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=False, android_final_signing=False,
-            receipt_extra=None):
+            android_store_signing=False, receipt_extra=None):
     """Preserve full output and fail warnings as well as nonzero exits.
 
     Only the exact upstream notices named above are reported separately, and
@@ -228,6 +237,15 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
     progress_lines = []
     upstream_r8_lines = []
     unsigned_intermediate_lines = []
+    self_signed_lines = []
+    block = None  # lines of an open jarsigner notice
+
+    def close_block():
+        nonlocal block
+        if block is not None:
+            (self_signed_lines if JARSIGNER_SELF_SIGNED in block else warnings).extend(block)
+            block = None
+
     resolved = list(argv)
     if not Path(resolved[0]).is_absolute():
         executable = shutil.which(resolved[0], path=env.get("PATH", ""))
@@ -243,6 +261,16 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
                 print(line, end="", flush=True)
                 log.write(line)
                 plain = ANSI.sub("", line).strip()
+                if android_store_signing and plain == JARSIGNER_HEADER:
+                    close_block()
+                    block = [plain]
+                    continue
+                if block is not None and plain in (JARSIGNER_SELF_SIGNED, JARSIGNER_POSIX):
+                    block.append(plain)
+                    continue
+                if block is not None and plain:
+                    block = [entry for entry in block if entry != JARSIGNER_SELF_SIGNED] + [plain]
+                close_block()
                 if dioxus_progress and DIOXUS_METADATA_PROGRESS.fullmatch(plain):
                     progress_lines.append(plain)
                 elif android_upstream_r8 and ANDROID_R8_UPSTREAM_RULE_NOTICE.fullmatch(plain):
@@ -252,8 +280,9 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
                 else:
                     if WARNING.search(plain):
                         warnings.append(plain)
+        close_block()
         result = child.wait()
-    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines, "bundletool_unsigned_intermediate_notices": unsigned_intermediate_lines, **(receipt_extra or {})}, indent=2) + "\n")
+    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines, "bundletool_unsigned_intermediate_notices": unsigned_intermediate_lines, "jarsigner_self_signed_notices": self_signed_lines, **(receipt_extra or {})}, indent=2) + "\n")
     if result or warnings:
         raise CommandFailure(label, result, warnings)
 
@@ -1420,7 +1449,7 @@ def store_build(name):
     (ROOT / "ci-results").mkdir(exist_ok=True)
     build = checked_gradle_build if name.startswith("android") else checked
     build(store_command(name), env, "store-" + name, dioxus_progress=True,
-            android_upstream_r8=name == "android")
+            android_upstream_r8=name == "android", android_store_signing=name == "android")
     output = ROOT / STORE_OUTPUTS[name]
     if output.is_symlink() or not output.is_file():
         raise RuntimeError(f"Store build produced no {output.relative_to(ROOT)}")
