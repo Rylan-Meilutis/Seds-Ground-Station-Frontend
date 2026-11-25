@@ -24,8 +24,11 @@ button{min-height:44px;border-radius:10px}button:focus-visible{outline:3px solid
 #graphic-stage[data-flat="true"] #rocket-inset[data-equipment="true"]>#gs26-sequence-equipment{grid-column:2;grid-row:1 / 3}
 @media(max-width:600px){#graphic-stage[data-flat="true"] #rocket-inset[data-equipment="true"]{grid-template-columns:62px minmax(0,1fr);gap:8px;padding:10px}#graphic-stage[data-flat="true"] #rocket-inset[data-equipment="true"]>#rocket-phase{font-size:10px;overflow-wrap:anywhere}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+#studio-layer{position:absolute;inset:0;pointer-events:none}
+body.studio-no-bar #banner,body.studio-no-bar #rocket-inset{display:none}body.studio-no-bar.clean-feed #program-bar,body.source-mode #program-bar{display:none}
+body.transparent,body.transparent #viewport,body.transparent #graphic-stage{background:transparent!important}
 </style>
-<div id="viewport"><div id="stage"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><div id="diagram-scene" style="display:none;position:absolute;inset:0" aria-label="Live diagram, delayed with the programme"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Vehicle mode unavailable; illustration only"><g id="flight-vehicle" style="display:none"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path id="flight-vehicle-fins" d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path id="flight-vehicle-body" d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></g><g id="test-fire-stand" style="display:none"><rect x="14" y="79" width="63" height="25" rx="8" fill="#d9e3ea" stroke="#8498a8" stroke-width="2"/><path d="M77 85L90 80V103L77 98Z" fill="#8498a8"/><path d="M28 105V139M62 105V139" fill="none" stroke="#91a8ba" stroke-width="6"/><rect x="8" y="141" width="84" height="7" rx="2" fill="#8498a8"/><path d="M23 109H35M56 109H68" stroke="#91a8ba" stroke-width="3"/></g><g id="vehicle-mode-unknown"><circle cx="50" cy="97" r="25" fill="#152a3c" stroke="#8498a8" stroke-width="2"/><text x="50" y="109" text-anchor="middle" fill="#d9e3ea" font-size="34">?</text></g></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Buffering</div><div id="stream-sound"></div></div></footer><script src="/assets/stay-awake.js"></script><script src="/assets/hls.min.js"></script><script src="/assets/stream-sequence-visuals.js"></script><script src="/assets/program-art.js"></script><script src="/assets/program-diagram.js"></script>
+<div id="viewport"><div id="stage"></div><div id="studio-layer"></div><div id="graphic-stage"></div><div id="map-scene" style="display:none"></div><div id="diagram-scene" style="display:none;position:absolute;inset:0" aria-label="Live diagram, delayed with the programme"></div><iframe id="recorded-scene" title="Recorded flight replay" style="display:none;position:absolute;inset:0;width:100%;height:100%;border:0" allow="fullscreen"></iframe></div><footer id="program-bar" aria-label="Program status"><div id="rocket-inset" aria-label="Delayed rocket state"><svg viewBox="0 0 100 180" role="img" aria-label="Vehicle mode unavailable; illustration only"><g id="flight-vehicle" style="display:none"><g id="chute" style="display:none"><path d="M10 32 Q50 -8 90 32Z" fill="#e5ecf2"/><path d="M10 32L50 63L90 32" fill="none" stroke="#99afc0"/></g><path id="flight-vehicle-fins" d="M40 145L28 159V130L40 120M60 145L72 159V130L60 120" fill="#8498a8"/><path id="flight-vehicle-body" d="M40 145V68L50 45L60 68V145Z" fill="#e5ecf2"/><path id="flame" d="M42 148L50 175L58 148Z" fill="#ff984a" style="display:none"/></g><g id="test-fire-stand" style="display:none"><rect x="14" y="79" width="63" height="25" rx="8" fill="#d9e3ea" stroke="#8498a8" stroke-width="2"/><path d="M77 85L90 80V103L77 98Z" fill="#8498a8"/><path d="M28 105V139M62 105V139" fill="none" stroke="#91a8ba" stroke-width="6"/><rect x="8" y="141" width="84" height="7" rx="2" fill="#8498a8"/><path d="M23 109H35M56 109H68" stroke="#91a8ba" stroke-width="3"/></g><g id="vehicle-mode-unknown"><circle cx="50" cy="97" r="25" fill="#152a3c" stroke="#8498a8" stroke-width="2"/><text x="50" y="109" text-anchor="middle" fill="#d9e3ea" font-size="34">?</text></g></svg><div id="rocket-phase">Unknown</div></div><div id="banner"></div><div id="playback-controls"><div id="status" role="status">Buffering</div><div id="stream-sound"></div></div></footer><script src="/assets/stay-awake.js"></script><script src="/assets/hls.min.js"></script><script src="/assets/stream-sequence-visuals.js"></script><script src="/assets/program-art.js"></script><script src="/assets/program-diagram.js"></script><script src="/assets/program-studio.js"></script>
 <script>
 'use strict';
 window.GS26StayAwake?.setActive('programme',true);
@@ -35,12 +38,22 @@ let state,clockOffset=0,lastPoll=0,displayed='',stopped=false,lastVideoError='',
 const supportsMse=typeof Hls!=='undefined'&&Hls.isSupported();
 const supportsNative=!!document.createElement('video').canPlayType('application/vnd.apple.mpegurl');
 const supportsVideo=supportsMse||supportsNative;
-const cleanFeed=new URLSearchParams(location.search).get('clean')==='1';
+const query=new URLSearchParams(location.search);
+// Studio: `scene=` draws that scene (the manager's Preview monitor), `source=`
+// one source full frame (a browser source; `transparent=1` for an overlay),
+// `monitor=1` a muted, control-free monitor of the programme.
+const studioScene=query.get('scene'),studioSource=query.get('source'),monitor=query.get('monitor')==='1'||!!studioScene||!!studioSource;
+const cleanFeed=query.get('clean')==='1'||monitor;
 if(cleanFeed){document.body.classList.add('clean-feed');document.querySelector('#playback-controls').hidden=true;}
+if(studioSource)document.body.classList.add('source-mode');
+if(studioSource&&query.get('transparent')==='1')document.body.classList.add('transparent');
+const studioLayer=document.querySelector('#studio-layer');
 const unsupportedVideo='H.264 playback unavailable. Linux native app: install GStreamer good/bad and libav codecs, then restart the app.';
-window.gsStreamSound={muted:!cleanFeed,volume:1};
-function scene(){const override=state?.telemetry?.scene;return override&&override!=='inherit'?override:state?.broadcast.layout;}
-function sound(video){const interview=scene()==='interview'&&!state?.broadcast.replay,plan=state?.broadcast.interview;const allowed=!interview||(video.dataset.streamId===plan?.main_stream_id?plan.main_audio:video.dataset.streamId===plan?.pip_stream_id?plan.pip_audio:false);video.muted=window.gsStreamSound.muted||!allowed;video.volume=window.gsStreamSound.volume;}
+window.gsStreamSound={muted:!cleanFeed||monitor,volume:1};
+function scene(){if(state?.studio)return 'studio';const override=state?.telemetry?.scene;return override&&override!=='inherit'?override:state?.broadcast.layout;}
+// The scene's backmost camera carries its audio; monitors stay muted.
+function studioAudioId(){return (state?.studio?.slots||[]).find(s=>s.source?.view==='camera'&&s.source.stream_id)?.source.stream_id;}
+function sound(video){const interview=scene()==='interview'&&!state?.broadcast.replay,plan=state?.broadcast.interview;const studio=scene()==='studio'&&!state?.broadcast.replay;const allowed=studio?video.dataset.streamId===studioAudioId():!interview||(video.dataset.streamId===plan?.main_stream_id?plan.main_audio:video.dataset.streamId===plan?.pip_stream_id?plan.pip_audio:false);video.muted=window.gsStreamSound.muted||!allowed;video.volume=window.gsStreamSound.volume;}
 window.addEventListener('gs-stream-sound',()=>{for(const p of players.values())sound(p.video);});
 const serverNow=()=>Date.now()+clockOffset;
 const programmeFresh=()=>!!(state&&lastPoll&&performance.now()-lastPoll<=2500);
@@ -71,7 +84,7 @@ function graphicDisplay(videoReady,tile=null){
  const flat=selected||!videoReady;
  const show=selected||flat;
  window.gsProgramArt.layout(holder,inset,document.querySelector('#program-bar'),flat,telemetry?.sequence_visuals||null,onGround||phase==='Unknown');
- Object.assign(holder.style,tile||{left:'0',top:'0',width:'100%',height:'100%'});
+ Object.assign(holder.style,tile||{left:'0',top:'0',width:'100%',height:'100%',zIndex:''});
  holder.style.right='auto';holder.style.bottom='auto';
  holder.style.display=flat?'flex':'none';
  holder.querySelector('gs-vehicle-viewer')?.remove();
@@ -80,15 +93,24 @@ function graphicDisplay(videoReady,tile=null){
  document.querySelector('#chute').style.display=['Descent','Reefing','ParachuteDeploy','Landed','Recovery'].includes(vehicle)?'':'none';
 }
 let transitionFrame=null,transitionStarted=0;
-function captureTransition(){
+let transitionMs=450;
+function captureTransition(duration=450,studio=false){
  if(matchMedia('(prefers-reduced-motion: reduce)').matches)return;
- transitionFrame?.remove();transitionFrame=null;
+ transitionFrame?.remove();transitionFrame=null;transitionMs=Math.max(50,Math.min(5000,duration));
  const bounds=stage.getBoundingClientRect(),canvas=document.createElement('canvas');canvas.width=Math.ceil(bounds.width);canvas.height=Math.ceil(bounds.height);if(!canvas.width||!canvas.height)return;
  const ctx=canvas.getContext('2d');ctx.fillStyle='#080d15';ctx.fillRect(0,0,canvas.width,canvas.height);let drew=false;
  for(const p of players.values()){if(p.video.readyState<2||p.video.style.opacity!=='1')continue;const r=p.tile.getBoundingClientRect();try{const scale=Math.min(r.width/p.video.videoWidth,r.height/p.video.videoHeight),w=p.video.videoWidth*scale,h=p.video.videoHeight*scale;ctx.drawImage(p.video,r.left-bounds.left+(r.width-w)/2,r.top-bounds.top+(r.height-h)/2,w,h);drew=true;}catch{}}
- if(!drew)return;canvas.dataset.transition='camera';canvas.style.cssText='position:absolute;inset:0;width:100%;height:100%;z-index:30;pointer-events:none;transition:opacity 450ms ease';stage.append(canvas);transitionFrame=canvas;transitionStarted=performance.now();
+ if(studio){
+  // The outgoing studio scene as a still: camera frames, then a copy of its
+  // telemetry/overlay sources, diagram and graphic, faded over the new one.
+  const still=document.createElement('div');still.dataset.transition='studio';still.style.cssText=`position:absolute;inset:0;z-index:60;pointer-events:none;transition:opacity ${transitionMs}ms ease`;
+  if(drew){canvas.style.cssText='position:absolute;inset:0;width:100%;height:100%';still.append(canvas);}
+  for(const sel of ['#graphic-stage','#diagram-scene','#studio-layer']){const node=document.querySelector(sel);if(!node||getComputedStyle(node).display==='none')continue;const copy=node.cloneNode(true);copy.removeAttribute('id');copy.querySelectorAll('[id]').forEach(e=>e.removeAttribute('id'));still.append(copy);drew=true;}
+  if(!drew)return;document.querySelector('#viewport').append(still);transitionFrame=still;transitionStarted=performance.now();return;
+ }
+ if(!drew)return;canvas.dataset.transition='camera';canvas.style.cssText=`position:absolute;inset:0;width:100%;height:100%;z-index:30;pointer-events:none;transition:opacity ${transitionMs}ms ease`;stage.append(canvas);transitionFrame=canvas;transitionStarted=performance.now();
 }
-function finishTransition(ready){if(!transitionFrame||(!ready&&performance.now()-transitionStarted<8000))return;const frame=transitionFrame;transitionFrame=null;requestAnimationFrame(()=>frame.style.opacity='0');setTimeout(()=>frame.remove(),500);}
+function finishTransition(ready){if(!transitionFrame||(!ready&&performance.now()-transitionStarted<(transitionFrame.dataset.transition==='studio'?3000:8000)))return;const frame=transitionFrame;transitionFrame=null;requestAnimationFrame(()=>frame.style.opacity='0');setTimeout(()=>frame.remove(),transitionMs+50);}
 function remove(id){const p=players.get(id);if(p){p.hls?.destroy();p.video.pause();p.video.removeAttribute('src');p.video.load();p.tile.remove();players.delete(id);}}
 function create(feed){
  const video=document.createElement('video');video.dataset.streamId=feed.id;sound(video);video.playsInline=true;video.disableRemotePlayback=true;video.preload='auto';video.setAttribute('aria-label',feed.label);const tile=document.createElement("div");tile.style.cssText="position:absolute;overflow:hidden;width:100%;height:100%;transition:width 450ms ease,height 450ms ease,left 450ms ease,top 450ms ease";video.style.cssText="position:absolute;width:100%;height:100%;transition:opacity 450ms ease";tile.append(video);stage.append(tile);
@@ -143,15 +165,17 @@ async function poll(){
  if(stopped)return;
  const epoch=pollEpoch,abort=new AbortController();pollAbort=abort;
  try{
-  const start=Date.now(),r=await fetch('/api/media-assets/program/state?ticket='+encodeURIComponent(ticket)+(Number.isFinite(window.gsProgramPlaybackMs)?'&playback_ms='+Math.floor(window.gsProgramPlaybackMs):''),{cache:'no-store',signal:abort.signal});if(!r.ok)throw Error('Program unavailable');const next=await r.json();if(stopped||epoch!==pollEpoch)return;clockOffset=next.server_now_ms-(start+Date.now())/2;
-  if(state&&JSON.stringify([state.broadcast.layout,state.broadcast.tiles,state.broadcast.featured_stream_id,state.broadcast.replay?.id,state.telemetry?.scene])!==JSON.stringify([next.broadcast.layout,next.broadcast.tiles,next.broadcast.featured_stream_id,next.broadcast.replay?.id,next.telemetry?.scene]))captureTransition();
+  const start=Date.now(),r=await fetch('/api/media-assets/program/state?ticket='+encodeURIComponent(ticket)+(Number.isFinite(window.gsProgramPlaybackMs)?'&playback_ms='+Math.floor(window.gsProgramPlaybackMs):'')+(studioScene?'&scene='+encodeURIComponent(studioScene):'')+(studioSource?'&source='+encodeURIComponent(studioSource):''),{cache:'no-store',signal:abort.signal});if(!r.ok)throw Error('Program unavailable');const next=await r.json();if(stopped||epoch!==pollEpoch)return;clockOffset=next.server_now_ms-(start+Date.now())/2;
+  if(state&&JSON.stringify([state.broadcast.layout,state.broadcast.tiles,state.broadcast.featured_stream_id,state.broadcast.replay?.id,state.studio?null:state.telemetry?.scene,state.studio?.scene_id,state.studio?.take_seq])!==JSON.stringify([next.broadcast.layout,next.broadcast.tiles,next.broadcast.featured_stream_id,next.broadcast.replay?.id,next.studio?null:next.telemetry?.scene,next.studio?.scene_id,next.studio?.take_seq])){const t=next.studio&&!next.broadcast.replay?next.studio.transition:null;if(t?.kind!=='cut')captureTransition(t?t.duration_ms:450,!!(state.studio||next.studio)&&!next.broadcast.replay);}
   if(state&&(next.broadcast.delay_seconds!==state.broadcast.delay_seconds||(next.broadcast.replay?.id||'')!==(state.broadcast.replay?.id||''))){for(const id of [...players.keys()])remove(id);displayed='';}
-  state=next;lastPoll=performance.now();vehicleGeometry(next.vehicle_geometry_hash);
+  state=next;lastPoll=performance.now();vehicleGeometry(next.vehicle_geometry_hash);window.gsProgramStudio?.record(next.telemetry,serverNow());
   window.gsProgramAudioState={enabled:(state.broadcast.comms_audio_enabled||state.broadcast.commentary_audio_enabled)&&!state.broadcast.replay,delay:state.broadcast.delay_seconds,fresh:true};window.dispatchEvent(new CustomEvent("gs-program-audio-state",{detail:window.gsProgramAudioState}));
   // Decode only the featured camera in hero mode, especially on the Pi.
   let feeds=state.broadcast.replay?state.streams:scene()==='model'?[]:['grid','grid-model','tiles'].includes(scene())?state.streams:state.streams.filter(s=>s.id===(state.streams.find(s=>s.id===state.broadcast.featured_stream_id)||state.streams[0])?.id);
   if(!state.broadcast.replay&&scene()==='interview'){const i=state.broadcast.interview;feeds=state.streams.filter(s=>s.id===i?.main_stream_id||s.id===i?.pip_stream_id);}
   if(!state.broadcast.replay&&(['map','recorded-replay'].includes(scene())||isDiagram(scene())))feeds=[];
+  // A studio scene's cameras are exactly the streams the station chose for it.
+  if(!state.broadcast.replay&&scene()==='studio')feeds=state.streams;
   const ids=new Set(feeds.map(s=>s.id));for(const id of [...players.keys()])if(!ids.has(id)){const outgoing=players.get(id);if(!outgoing.retiring){outgoing.retiring=true;outgoing.video.style.opacity=0;setTimeout(()=>{if(players.get(id)===outgoing)remove(id);},500);}}else players.get(id).retiring=false;
   for(const feed of feeds){if(players.has(feed.id)&&players.get(feed.id).url!==feed.url)remove(feed.id);if(players.get(feed.id)?.failed && performance.now()-players.get(feed.id).failedAt>5000)remove(feed.id);if(supportsVideo&&!players.has(feed.id))create(feed);}
   drawBanner();
@@ -160,13 +184,13 @@ async function poll(){
 }
 function render(){
  if(stopped)return;
- if(!programmeFresh()){if(banner.dataset.programmeFresh!=='false')drawBanner();updateMap(state?.telemetry?.positions||{},false);for(const p of players.values()){p.video.pause();p.video.style.opacity=0;}graphicDisplay(false);return;}
+ if(!programmeFresh()){if(state?.studio)window.gsProgramStudio?.render(studioLayer,state.studio,studioContext(false));if(banner.dataset.programmeFresh!=='false')drawBanner();updateMap(state?.telemetry?.positions||{},false);for(const p of players.values()){p.video.pause();p.video.style.opacity=0;}graphicDisplay(false);return;}
  const replay=state.broadcast.replay;
  const layout=replay?(state.broadcast.tiles?.length?"tiles":state.streams.length>1?"grid":"hero"):scene();
  for(const p of players.values())sound(p.video);
  if(isDiagram(layout)){specialScene(layout);graphicDisplay(false);document.querySelector('#graphic-stage').style.display='none';const holder=document.querySelector('#diagram-scene');if(state.diagram_topology){window.gsProgramDiagram?.show(holder,state.diagram_topology,state.telemetry?.diagram);status.textContent='';}else status.textContent='Diagram unavailable';finishTransition(true);return;}
  if(layout==='map'||layout==='recorded-replay'){specialScene(layout);graphicDisplay(false);document.querySelector('#graphic-stage').style.display='none';status.textContent=layout==='map'?'Recovery map · delayed positions':'Recorded replay · saved data';finishTransition(true);return;}
- specialScene(null);
+ if(layout!=='studio')specialScene(null);
  const target=replay?Math.min(replay.source_end_ms,replay.source_end_ms-replay.duration_seconds*1000+Math.max(0,serverNow()-replay.started_at_ms)*replay.speed):serverNow()-state.broadcast.delay_seconds*1000-bufferMarginMs;
  for(const [id,p] of players){
   if(p.retiring)continue;
@@ -197,6 +221,7 @@ function render(){
  }
  window.gsProgramPlaybackMs=[...players.values()].find(p=>p.video.dataset.streamId===state.broadcast.featured_stream_id&&p.ready)?.hls?.playingDate?.getTime()||[...players.values()].find(p=>p.ready)?.hls?.playingDate?.getTime();
  const preferred=replay?state.streams[0]?.id:players.has(state.broadcast.featured_stream_id)?state.broadcast.featured_stream_id:state.streams[0]?.id;
+ if(layout==='studio'){renderStudio();return;}
  if(layout==='model'){
   status.textContent='Rocket graphic';graphicDisplay(false);
  }else if(layout==='interview'){
@@ -220,17 +245,52 @@ function render(){
 let mapController=null,mapLoading=false,specialActive=null,lastMapInput=null,lastMapFresh=null,mapRetryAt=0;
 function updateMap(input,fresh){if(mapController&&(input!==lastMapInput||fresh!==lastMapFresh)){mapController.update(input,fresh);lastMapInput=input;lastMapFresh=fresh;}}
 function isDiagram(layout){return typeof layout==='string'&&layout.startsWith('diagram-');}
-function specialScene(next){
+function specialScene(next){specials({diagram:isDiagram(next),map:next==='map',recorded:next==='recorded-replay'},{});}
+// Diagram, map and recorded-replay holders: shown full frame for a classic
+// scene, or in their slots (`rects`, CSS boxes) for a studio scene.
+let specialWant={};
+function specials(want,rects){
  const map=document.querySelector('#map-scene'),recorded=document.querySelector('#recorded-scene'),diagram=document.querySelector('#diagram-scene');
- if(next!==specialActive){diagram.style.display=isDiagram(next)?'block':'none';if(!isDiagram(next))window.gsProgramDiagram?.hide(diagram);if(mapController){mapController.destroy();mapController=null;}lastMapInput=null;lastMapFresh=null;map.style.display=next==='map'?'block':'none';recorded.style.display=next==='recorded-replay'?'block':'none';
-  if(next==='recorded-replay')recorded.src='/api/media-assets/recorded-vehicle?ticket='+encodeURIComponent(ticket);else recorded.removeAttribute('src');specialActive=next;
+ const key=JSON.stringify(want);
+ if(key!==specialActive){
+  diagram.style.display=want.diagram?'block':'none';if(!want.diagram)window.gsProgramDiagram?.hide(diagram);
+  if(mapController&&!want.map){mapController.destroy();mapController=null;}if(!want.map){lastMapInput=null;lastMapFresh=null;}map.style.display=want.map?'block':'none';
+  recorded.style.display=want.recorded?'block':'none';
+  if(want.recorded&&!specialWant.recorded)recorded.src='/api/media-assets/recorded-vehicle?ticket='+encodeURIComponent(ticket);else if(!want.recorded)recorded.removeAttribute('src');
+  specialActive=key;specialWant=want;
  }
- if(next==='map'){
-  if(!mapController&&!mapLoading&&performance.now()>=mapRetryAt){const epoch=pollEpoch;mapLoading=true;import('/assets/program-map.js').then(m=>m.mount(map)).then(controller=>{mapLoading=false;if(stopped||epoch!==pollEpoch||specialActive!=='map'){controller.destroy();return;}mapController=controller;updateMap(state?.telemetry?.positions||{},true);}).catch(()=>{mapLoading=false;if(stopped||epoch!==pollEpoch)return;mapRetryAt=performance.now()+30000;status.textContent='Map unavailable';});}
+ for(const [node,box]of [[diagram,rects.diagram],[map,rects.map],[recorded,rects.recorded]])Object.assign(node.style,box?{position:'absolute',inset:'auto',...box}:{inset:'0',left:'0',top:'0',width:'100%',height:'100%',zIndex:''});
+ if(want.map){
+  if(!mapController&&!mapLoading&&performance.now()>=mapRetryAt){const epoch=pollEpoch;mapLoading=true;import('/assets/program-map.js').then(m=>m.mount(map)).then(controller=>{mapLoading=false;if(stopped||epoch!==pollEpoch||!specialWant.map){controller.destroy();return;}mapController=controller;if(rects.map)Object.assign(map.style,{inset:'auto',...rects.map});updateMap(state?.telemetry?.positions||{},true);}).catch(()=>{mapLoading=false;if(stopped||epoch!==pollEpoch)return;mapRetryAt=performance.now()+30000;status.textContent='Map unavailable';});}
   updateMap(state.telemetry?.positions||{},true);
  }
 }
-function tick(){render();finishTransition([...players.values()].some(p=>p.ready)||['model','map','recorded-replay'].includes(scene())||isDiagram(scene()));}
+function studioContext(fresh){
+ const telemetry=fresh?state?.telemetry:null;
+ return {telemetry,fresh,label:state?.broadcast?.label||'Mission',phase:programPhase(telemetry).shown,now:serverNow(),cameraReady:id=>!!players.get(id)?.ready};
+}
+// A studio scene: cameras and the page's own holders in their slots, every
+// other source drawn by program-studio.js, in the slots' stacking order.
+function renderStudio(){
+ const sc=state.studio,box=s=>({left:s.x+'%',top:s.y+'%',width:s.width+'%',height:s.height+'%',zIndex:String(2+(s.z|0)*3)});
+ const want={},rects={};let cameras=0,ready=0;const shown=new Set();let model=null;
+ for(const s of sc.slots||[]){const src=s.source;if(!src)continue;
+  if(src.view==='camera'){if(!src.stream_id)continue;cameras++;const p=players.get(src.stream_id);if(!p||p.retiring)continue;shown.add(src.stream_id);Object.assign(p.tile.style,{...box(s),border:'0',borderRadius:'0',boxShadow:'none'});p.video.style.opacity=p.ready?'1':'0';if(p.ready)ready++;}
+  else if(src.view==='diagram'){want.diagram=true;rects.diagram=box(s);}
+  else if(src.view==='map'){want.map=true;rects.map=box(s);}
+  else if(src.view==='recorded_replay'){want.recorded=true;rects.recorded=box(s);}
+  else if(src.view==='model')model=s;
+ }
+ for(const [id,p]of players)if(!shown.has(id))p.video.style.opacity='0';
+ specials(want,rects);
+ if(want.diagram){const holder=document.querySelector('#diagram-scene');if(state.diagram_topology)window.gsProgramDiagram?.show(holder,state.diagram_topology,state.telemetry?.diagram);}
+ if(model){graphicDisplay(false,box(model));}else{graphicDisplay(true);document.querySelector('#graphic-stage').style.zIndex='';}
+ document.body.classList.toggle('studio-no-bar',sc.program_bar===false);
+ window.gsProgramStudio?.render(studioLayer,sc,studioContext(true));
+ window.gsProgramStudioReady=!cameras||ready>=cameras;
+ displayed='';status.textContent=!cameras||ready?'':!supportsVideo?unsupportedVideo:(lastVideoError||'Buffering');
+}
+function tick(){render();if(scene()!=='studio'){window.gsProgramStudio?.clear(studioLayer);document.body.classList.remove('studio-no-bar');}finishTransition(scene()==='studio'?window.gsProgramStudioReady!==false:[...players.values()].some(p=>p.ready)||['model','map','recorded-replay'].includes(scene())||isDiagram(scene()));}
 let timer=setInterval(tick,100);
 if(!supportsVideo){status.textContent=unsupportedVideo;}poll();
 window.addEventListener('pagehide',()=>{stopped=true;pollEpoch++;pollAbort?.abort();clearTimeout(pollTimer);clearInterval(timer);timer=null;lastPoll=0;state=null;displayed='';window.gsProgramPlaybackMs=undefined;transitionFrame?.remove();transitionFrame=null;specialScene(null);for(const id of [...players.keys()])remove(id);window.gsProgramAudioState={enabled:false,fresh:false};window.dispatchEvent(new CustomEvent('gs-program-audio-state',{detail:window.gsProgramAudioState}));});

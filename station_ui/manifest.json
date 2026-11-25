@@ -47,6 +47,11 @@
       "kind": "text"
     },
     {
+      "name": "PROGRAM_STUDIO_JS",
+      "path": "station_ui/scripts/program-studio.js",
+      "kind": "text"
+    },
+    {
       "name": "PROGRAM_AUDIO_JS",
       "path": "station_ui/scripts/program-audio.js",
       "kind": "text"
