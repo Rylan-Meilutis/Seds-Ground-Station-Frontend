@@ -115,7 +115,7 @@ fixture+=String.raw`try{
  const savedScenes=studioPosts.filter(p=>p.path==='/api/studio/scenes').at(-1).body;
  const saved=savedScenes.scenes.find(s=>s.id===target.id);assert.equal(saved.sources[slots[0].id],'telemetry:tclock');assert.equal(saved.sources[slots[1].id],'diagram:flight');
  assert.equal(Object.values(saved.sources).filter(v=>v.startsWith('diagram:')).length,1,'one diagram per scene');
- if(shots){await page.waitForTimeout(1500);await page.screenshot({path:path.join(shots,'stream-manager-desktop.png'),fullPage:true});}
+ if(shots){await manager.evaluate(e=>e.scrollIntoView({block:'start'}));await page.waitForTimeout(1500);await page.screenshot({path:path.join(shots,'stream-manager-desktop.png')});}
 
  // Layout editor: a preset, a pointer drag (snapped), typed geometry, save.
  await manager.getByRole('tab',{name:'Layout editor'}).click();
@@ -141,7 +141,8 @@ fixture+=String.raw`try{
   await page.setViewportSize({width,height});await page.waitForTimeout(400);
   assert(await page.evaluate(()=>document.querySelector('.gs26-switcher').scrollWidth<=document.querySelector('.gs26-switcher').clientWidth+1),'stream manager fits '+width);
   const cut=await manager.getByRole('button',{name:'Cut',exact:true}).boundingBox();assert(cut.width>=44&&cut.height>=44,'touch-sized Cut at '+width);
-  if(shots)await page.screenshot({path:path.join(shots,'stream-manager-'+name+'.png'),fullPage:name==='tablet'});
+  if(name==='phone'){const bar=await manager.getByRole('group',{name:'Take to Program'}).boundingBox();assert(bar.y+bar.height<=height+1&&bar.y>height/2,'Cut/Fade stay at the bottom of the phone screen');}
+  if(shots){await manager.evaluate(e=>e.scrollIntoView({block:'start'}));await page.waitForTimeout(300);await page.screenshot({path:path.join(shots,'stream-manager-'+name+'.png')});}
  }
  // Tap-to-place works on the phone too.
  await sceneButton(5).click();await manager.locator('.sw-source[data-source="graphic:title"]').click();

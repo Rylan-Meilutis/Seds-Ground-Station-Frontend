@@ -23,7 +23,7 @@
 .gs-st-card.none span{color:#7b8a99;font-weight:500}
 @container (max-aspect-ratio: 5/4){.gs-st-cards{grid-template-columns:minmax(0,1fr)!important}.gs-st-card{flex-direction:row;align-items:baseline;justify-content:space-between;gap:3cqmin}.gs-st-card span{margin-top:0;font-size:max(14px,min(9cqw,12cqh))}}
 .gs-st-clock{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2cqmin;min-height:0}
-.gs-st-clock strong{font-size:min(15cqw,40cqh);white-space:nowrap;font-weight:800;letter-spacing:.02em;line-height:1}
+.gs-st-clock strong{font-size:min(11.5cqw,40cqh);white-space:nowrap;font-weight:800;letter-spacing:.02em;line-height:1}
 .gs-st-clock span{font-size:max(11px,7cqmin);color:#b8cadb;letter-spacing:.06em;text-transform:uppercase}
 .gs-st-plots{flex:1;display:grid;grid-auto-rows:1fr;gap:2.5cqmin;min-height:0}
 .gs-st-plot{position:relative;background:#ffffff0a;border:1px solid #ffffff1a;border-radius:2cqmin;min-height:0;overflow:hidden}

@@ -131,7 +131,10 @@
  .sw-monitor figcaption{flex-wrap:wrap;gap:4px}
  .sw-tag{font-size:10px;padding:2px 5px}
  .sw-monitor-name{font-size:12px}
- .sw-take{position:sticky;bottom:0;z-index:5;padding:6px;gap:6px}
+ .gs26-switcher{padding-bottom:84px}
+ /* Cut and Fade stay in reach while scrolling the scenes and sources. */
+ .sw-take{position:fixed;left:8px;right:8px;bottom:max(8px,env(safe-area-inset-bottom));z-index:50;padding:6px;gap:6px;box-shadow:0 -4px 18px #000a}
+ .sw-duration{flex:1 1 100px}
  .sw-take .sw-cut,.sw-take .sw-fade{min-height:48px;font-size:14px}
  .sw-keys{display:none}
  .sw-scenes{display:flex;overflow-x:auto;scroll-snap-type:x mandatory;padding-bottom:4px}
