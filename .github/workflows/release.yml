@@ -2,7 +2,8 @@ name: Release
 # Tag-triggered GitHub Release: Windows, Linux (x86_64 + arm64), Android and
 # macOS, built with the same scripts/ci/frontend.py bootstrap and build.py code
 # paths as the build-only CI (platforms.yml), plus optional uploads to
-# TestFlight and the Google Play internal track. This is the ONLY workflow that
+# TestFlight (optionally to named beta groups) and a Google Play testing track
+# (internal, alpha or beta; never production). This is the ONLY workflow that
 # uses production signing material, all of it from secrets; see
 # docs/releasing.md. Untrusted pull requests never run it. The version job
 # refuses any run that is not from a protected ref, or whose tag is not on
@@ -27,6 +28,20 @@ name: Release
         required: false
         type: boolean
         default: true
+      play_track:
+        description: Google Play testing track (tag pushes use the PLAY_TRACK repository variable, default internal)
+        required: false
+        type: choice
+        options:
+        - internal
+        - alpha
+        - beta
+        default: internal
+      testflight_groups:
+        description: Comma-separated TestFlight beta groups to add the build to (empty uses the TESTFLIGHT_GROUPS variable; none = internal testers only)
+        required: false
+        type: string
+        default: ''
 permissions:
   contents: read
 concurrency:
@@ -343,18 +358,21 @@ jobs:
           cat release-assets/SHA256SUMS
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
-  # Store uploads: TestFlight (App Store Connect, never submitted for review)
-  # and the Google Play internal testing track only. Each job skips with a
-  # notice when its store secrets are unset; the GitHub Release (publish) does
-  # not depend on either job.
+  # Store uploads: TestFlight (App Store Connect, never submitted for App Store
+  # review; optionally added to TESTFLIGHT_GROUPS, with a beta app review for
+  # external groups) and one Google Play testing track (PLAY_TRACK: internal,
+  # alpha or beta; production is refused). Each job skips with a notice when
+  # its store secrets are unset; the GitHub Release (publish) does not depend
+  # on either job. Inputs and variables reach the driver only through env.
   testflight:
     needs: version
     if: ${{ !inputs.dry_run && needs.version.outputs.guarded == 'true' }}
     environment: release
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 180
     env:
       CI_FRONTEND_TARGET: ios
+      TESTFLIGHT_GROUPS: ${{ inputs.testflight_groups || vars.TESTFLIGHT_GROUPS }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -395,7 +413,7 @@ jobs:
     - name: Verify IPA identity, version and signature
       if: steps.store.outputs.enabled == 'true'
       run: python scripts/ci/frontend.py release-store-verify
-    - name: Upload to TestFlight
+    - name: Upload to TestFlight and add to the selected beta groups
       if: steps.store.outputs.enabled == 'true'
       env:
         APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
@@ -414,6 +432,7 @@ jobs:
     env:
       CI_FRONTEND_TARGET: android
       ANDROID_EXPECTED_CERT_SHA256: ${{ vars.ANDROID_EXPECTED_CERT_SHA256 }}
+      PLAY_TRACK: ${{ inputs.play_track || vars.PLAY_TRACK || 'internal' }}
     steps:
     - uses: actions/checkout@v4
       with:
@@ -421,7 +440,7 @@ jobs:
     - uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    - name: Google Play secrets configured
+    - name: Google Play secrets configured, testing track allowed
       id: store
       env:
         PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_B64 }}
@@ -467,7 +486,7 @@ jobs:
     - name: Verify AAB signer, package and versionCode
       if: steps.store.outputs.enabled == 'true'
       run: python scripts/ci/frontend.py release-store-verify
-    - name: Upload to the Play internal track
+    - name: Upload to the selected Play testing track
       if: steps.store.outputs.enabled == 'true'
       env:
         PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_B64 }}

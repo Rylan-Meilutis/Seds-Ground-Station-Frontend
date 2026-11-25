@@ -216,11 +216,108 @@ class ReleaseWorkflow(unittest.TestCase):
             self.assertNotIn(forbidden, raw)
         self.assertIn("release-checksums", raw)
 
+    def test_play_track_is_a_testing_track_choice_defaulting_to_internal(self):
+        inputs = self.workflow["on"]["workflow_dispatch"]["inputs"]
+        track = inputs["play_track"]
+        self.assertEqual((track["type"], track["options"], track["default"]),
+                         ("choice", ["internal", "alpha", "beta"], "internal"))
+        self.assertEqual(track["options"], list(ci.PLAY_TRACKS))
+        for spec in inputs.values():
+            self.assertNotIn("production", [str(o).lower() for o in spec.get("options", [])])
+        self.assertNotIn("production", json.dumps([job.get("env", {}) for job in self.jobs.values()]).lower())
+        play = self.jobs["play"]
+        # Dispatch uses the input; tag pushes (no inputs) the read-only repository variable.
+        self.assertEqual(play["env"]["PLAY_TRACK"], "${{ inputs.play_track || vars.PLAY_TRACK || 'internal' }}")
+        self.assertEqual(self.step("play", "Google Play secrets configured, testing track allowed")["run"],
+                         "python scripts/ci/frontend.py release-store-check --store play")
+        groups = inputs["testflight_groups"]
+        self.assertEqual((groups["type"], groups["default"], groups["required"]), ("string", "", False))
+        self.assertEqual(self.jobs["testflight"]["env"]["TESTFLIGHT_GROUPS"],
+                         "${{ inputs.testflight_groups || vars.TESTFLIGHT_GROUPS }}")
+        # Inputs and variables never reach a run: script, only env.
+        for name, job in self.jobs.items():
+            for step in job["steps"]:
+                self.assertNotRegex(step.get("run", ""), r"\$\{\{\s*(inputs|vars)\.", (name, step.get("name")))
+        # Room for the App Store Connect processing wait after the upload.
+        self.assertGreaterEqual(self.jobs["testflight"]["timeout-minutes"],
+                                120 + ci.ASC_PROCESSING_TIMEOUT // 60 - 60)
+
     def test_build_only_ci_still_has_no_production_credentials(self):
         raw = (ROOT / ".github/workflows/platforms.yml").read_text()
         self.assertNotIn("secrets.", raw)
         self.assertNotIn("release-", raw)
         self.assertNotIn("--final", raw)
+
+
+PROMOTE_SECRETS = {"play": {"PLAY_SERVICE_ACCOUNT_JSON_B64"},
+                   "testflight": {"APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID"}}
+
+
+class PromoteWorkflow(unittest.TestCase):
+    """promote.yml: moves an existing build between testing tracks/groups only,
+    guarded like the release, no build and no signing material."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.raw = (ROOT / ".github/workflows/promote.yml").read_text()
+        cls.workflow = yaml.safe_load(cls.raw)
+        cls.jobs = cls.workflow["jobs"]
+
+    def test_manual_only_and_testing_tracks_only(self):
+        self.assertEqual(set(self.workflow["on"]), {"workflow_dispatch"})
+        inputs = self.workflow["on"]["workflow_dispatch"]["inputs"]
+        self.assertTrue(inputs["tag"]["required"])
+        self.assertEqual(inputs["play_from_track"]["options"], ["internal", "alpha"])
+        self.assertEqual(inputs["play_to_track"]["options"], ["none", "alpha", "beta"])
+        self.assertEqual(inputs["play_to_track"]["default"], "none")
+        self.assertEqual(inputs["testflight_groups"]["default"], "")
+        self.assertEqual(self.workflow["permissions"], {"contents": "read"})
+        for spec in inputs.values():
+            self.assertNotIn("production", spec.get("options", []))
+        for forbidden in ["release-store-build", "release-store-upload", "--final", "gh release", "pull_request",
+                          "upload-artifact"]:
+            self.assertNotIn(forbidden, self.raw)
+
+    def test_guarded_like_the_release(self):
+        version = self.jobs["version"]
+        self.assertEqual(version["steps"][0]["with"], {"ref": "refs/tags/${{ env.RELEASE_TAG }}", "fetch-depth": 0})
+        guard = next(s for s in version["steps"] if s.get("id") == "guard")
+        self.assertEqual(guard["run"], "python scripts/ci/frontend.py release-guard")
+        self.assertEqual(guard["env"], {"RELEASE_DRY_RUN": "false"})
+        self.assertEqual(secrets_in(version), set())
+        self.assertNotIn("environment", version)
+        self.assertEqual(set(self.jobs), {"version", "play", "testflight"})
+        for name in ["play", "testflight"]:
+            job = self.jobs[name]
+            self.assertEqual(job["needs"], "version")
+            self.assertTrue(job["if"].startswith("${{ needs.version.outputs.guarded == 'true' && "), name)
+            self.assertEqual(job["environment"], "release")
+            self.assertEqual(job["steps"][0]["with"]["ref"], "${{ needs.version.outputs.ref }}")
+        self.assertIn("inputs.play_to_track != 'none'", self.jobs["play"]["if"])
+        self.assertIn("inputs.testflight_groups != ''", self.jobs["testflight"]["if"])
+        self.assertEqual(self.jobs["play"]["env"]["PLAY_TRACK"], "${{ inputs.play_to_track }}")
+        self.assertEqual(self.jobs["play"]["env"]["PLAY_PROMOTE_FROM"], "${{ inputs.play_from_track }}")
+        self.assertEqual(self.jobs["testflight"]["env"]["TESTFLIGHT_GROUPS"], "${{ inputs.testflight_groups }}")
+
+    def test_secrets_only_in_step_env_of_the_store_steps_and_cleanup_last(self):
+        for name, job in self.jobs.items():
+            self.assertEqual(secrets_in(job), PROMOTE_SECRETS.get(name, set()), name)
+            for step in job["steps"]:
+                self.assertNotRegex(step.get("run", ""), r"\$\{\{", (name, step.get("name")))
+                used = secrets_in(step)
+                if used:
+                    self.assertTrue(step["run"].startswith("python scripts/ci/frontend.py release-store-"), step)
+                    self.assertEqual(secrets_in(step.get("env", {})), used)
+        for name, store in [("play", "play-promote"), ("testflight", "testflight-promote")]:
+            steps = self.jobs[name]["steps"]
+            runs = [s.get("run") for s in steps]
+            check = runs.index(f"python scripts/ci/frontend.py release-store-check --store {store}")
+            promote = runs.index("python scripts/ci/frontend.py release-store-promote")
+            self.assertLess(check, promote)
+            self.assertEqual(steps[check]["id"], "store")
+            self.assertEqual(steps[promote]["if"], "steps.store.outputs.enabled == 'true'")
+            self.assertEqual(steps[-1], {"name": "Delete signing material", "if": "always()",
+                                         "run": "python scripts/ci/frontend.py release-cleanup"})
 
 
 class ReleaseDriver(unittest.TestCase):

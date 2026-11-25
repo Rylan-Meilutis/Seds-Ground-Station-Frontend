@@ -3,7 +3,9 @@
 `bootstrap`/`build` are build-only CI: Android uses ephemeral development
 signing and never production credentials. The `release-*` actions run only in
 the tag-triggered release workflow (.github/workflows/release.yml), which is
-the one place production signing material (GitHub secrets) is used.
+the one place production signing material (GitHub secrets) is used, and in
+the manual promote workflow (.github/workflows/promote.yml), which uses only
+the store API keys to move an existing build between testing tracks/groups.
 """
 from __future__ import annotations
 
@@ -581,10 +583,14 @@ KEYCHAIN_NAME = "release.keychain-db"
 # as protected (rulesets in docs/releasing.md).
 RELEASE_BRANCHES = ("main", "dev")
 # Store uploads. They go ONLY to TestFlight (an App Store Connect build, never
-# submitted for review) and to the Play internal testing track. Nothing here
-# can create a public App Store or Play release.
+# submitted for App Store review; optionally added to named beta groups, which
+# for external groups means a *beta* app review) and to a Play testing track:
+# internal, alpha (closed) or beta (open). Nothing here can create a public App
+# Store or Play production release.
 IOS_BUNDLE_ID = "com.UBSEDS.GS26"
-PLAY_TRACK = "internal"
+PLAY_TRACK = "internal"                       # default testing track
+PLAY_TRACKS = ("internal", "alpha", "beta")   # promotion order; never "production"
+PLAY_NOTES_LIMIT = 500
 PLAY_API = "https://androidpublisher.googleapis.com/androidpublisher/v3/applications"
 PLAY_UPLOAD_API = "https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications"
 PLAY_SCOPE = "https://www.googleapis.com/auth/androidpublisher"
@@ -595,6 +601,9 @@ PLAY_STORE_SECRETS = ("PLAY_SERVICE_ACCOUNT_JSON_B64",)
 STORES = {
     "testflight": ("ios", IOS_STORE_SECRETS, IOS_STORE_SECRETS + NOTARY_API_SECRETS),
     "play": ("android", PLAY_STORE_SECRETS, PLAY_STORE_SECRETS + ANDROID_RELEASE_SECRETS),
+    # promote.yml: no build, so no signing material beyond the store API keys.
+    "testflight-promote": ("ios", NOTARY_API_SECRETS, NOTARY_API_SECRETS),
+    "play-promote": ("android", PLAY_STORE_SECRETS, PLAY_STORE_SECRETS),
 }
 STORE_OUTPUTS = {"ios": Path("dist/ipas/UBSEDS GS.ipa"), "android": Path("dist/SEDS GS.aab")}
 
@@ -1151,23 +1160,74 @@ def release_guard(tag, branches=RELEASE_BRANCHES):
 
 
 # ---------------------------------------------------------------------------
-# Store uploads (TestFlight and the Play internal track). Each store job first
+# Store uploads (TestFlight and a Play testing track). Each store job first
 # runs `release-store-check`; with none of its store secrets set it skips with
-# a notice and the GitHub Release is unaffected.
+# a notice and the GitHub Release is unaffected. The check also validates the
+# selected Play track / TestFlight groups, so a bad value fails before any build.
+
+STORE_TITLES = {"testflight": "TestFlight upload", "play": "Google Play testing-track upload",
+                "testflight-promote": "TestFlight beta-group distribution",
+                "play-promote": "Google Play track promotion"}
+
+
+def play_track(value=None):
+    """The Play testing track to use: PLAY_TRACK (a workflow_dispatch input or
+    the repository variable), default internal. Only internal, alpha (closed
+    testing) and beta (open testing); production and anything else is refused."""
+    raw = os.environ.get("PLAY_TRACK", "") if value is None else value
+    track = (raw or "").strip().lower() or PLAY_TRACK
+    if track == "production":
+        raise RuntimeError("PLAY_TRACK=production is refused: the release workflow only uploads to testing tracks "
+                           f"({', '.join(PLAY_TRACKS)}). Promote to production by hand in Play Console.")
+    if track not in PLAY_TRACKS:
+        raise RuntimeError(f"PLAY_TRACK must be one of {', '.join(PLAY_TRACKS)}, got {raw!r}")
+    return track
+
+
+TESTFLIGHT_GROUP_NAME = re.compile(r"[^\x00-\x1f\x7f,]{1,100}")
+
+
+def testflight_groups(value=None):
+    """TESTFLIGHT_GROUPS: comma-separated App Store Connect beta group names
+    (input, else repository variable). Empty or "none" means no groups: the
+    build reaches only the internal testers, as before."""
+    raw = os.environ.get("TESTFLIGHT_GROUPS", "") if value is None else value
+    raw = (raw or "").strip()
+    if raw.lower() in {"", "none"}:
+        return []
+    groups = []
+    for name in (part.strip() for part in raw.split(",")):
+        if not name:
+            continue
+        if not TESTFLIGHT_GROUP_NAME.fullmatch(name):
+            raise RuntimeError(f"TESTFLIGHT_GROUPS has an invalid group name {name!r}")
+        if name not in groups:
+            groups.append(name)
+    if len(groups) > 20:
+        raise RuntimeError("TESTFLIGHT_GROUPS names more than 20 groups")
+    return groups
+
+
+def store_options(store):
+    if store.startswith("play"):
+        return {"track": play_track()}
+    return {"groups": ",".join(testflight_groups())}
+
 
 def store_check(store):
     _target, enabling, required = STORES[store]
+    options = store_options(store)
     if not any(os.environ.get(name, "").strip() for name in enabling):
-        title = {"testflight": "TestFlight upload skipped", "play": "Google Play upload skipped"}[store]
-        message = (f"None of {', '.join(enabling)} is set, so this release is not uploaded to "
-                   f"{'TestFlight' if store == 'testflight' else 'the Play internal track'}. "
+        title = STORE_TITLES[store] + " skipped"
+        message = (f"None of {', '.join(enabling)} is set, so this release is not sent to "
+                   f"{'TestFlight' if store.startswith('testflight') else 'Google Play'}. "
                    "See docs/releasing.md to enable it.")
         print(f"::notice title={title}::{message}", flush=True)
         job_summary([f"### {title}", message])
         github_file("GITHUB_OUTPUT", {"enabled": "false"})
         return False
-    require_secrets(required, {"testflight": "TestFlight upload", "play": "Google Play internal-track upload"}[store])
-    github_file("GITHUB_OUTPUT", {"enabled": "true"})
+    require_secrets(required, STORE_TITLES[store])
+    github_file("GITHUB_OUTPUT", {"enabled": "true", **options})
     return True
 
 
@@ -1369,6 +1429,254 @@ def upload_testflight(info):
     return "uploaded"
 
 
+# App Store Connect API: TestFlight beta groups. Uses the same API key as the
+# altool upload (APPLE_NOTARY_KEY_*), as an ES256 JWT signed by openssl.
+ASC_API = "https://api.appstoreconnect.apple.com"
+ASC_AUDIENCE = "appstoreconnect-v1"
+ASC_TOKEN_LIFETIME = 20 * 60          # Apple's maximum
+ASC_TOKEN_REFRESH = 15 * 60
+ASC_PROCESSING_TIMEOUT = 60 * 60
+ASC_POLL_INTERVAL = 60
+TESTFLIGHT_NOTES_LIMIT = 4000
+NOTES_LOCALE = "en-US"
+# Every App Store Connect call this driver can make. Nothing that submits for
+# App Store review (appStoreVersionSubmissions, reviewSubmissions) or touches
+# an App Store version is reachable; betaAppReviewSubmissions is TestFlight's
+# beta review for external groups.
+ASC_ALLOWED = (
+    ("GET", r"/v1/apps"),
+    ("GET", r"/v1/builds"),
+    ("GET", r"/v1/betaGroups"),
+    ("POST", r"/v1/builds/[A-Za-z0-9-]+/relationships/betaGroups"),
+    ("GET", r"/v1/betaBuildLocalizations"),
+    ("POST", r"/v1/betaBuildLocalizations"),
+    ("PATCH", r"/v1/betaBuildLocalizations/[A-Za-z0-9-]+"),
+    ("GET", r"/v1/betaAppReviewSubmissions"),
+    ("POST", r"/v1/betaAppReviewSubmissions"),
+)
+
+
+def asc_allowed(method, path):
+    if not any(method == m and re.fullmatch(pattern, path) for m, pattern in ASC_ALLOWED):
+        raise RuntimeError(f"Refusing App Store Connect call {method} {path}: not a TestFlight beta-group call")
+
+
+def ensure_release_signing_dir():
+    directory = release_signing_dir()
+    return directory if directory.is_dir() else release_signing_dir(create=True)
+
+
+def release_notes(tag, limit):
+    """docs/release-notes/<tag>.md as plain text for a store, cut to limit."""
+    if not RELEASE_TAG.fullmatch(tag or ""):
+        return None
+    path = ROOT / "docs" / "release-notes" / f"{tag}.md"
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8").strip()
+    if len(text) > limit:
+        text = text[:limit - 1].rstrip() + "…"
+    return text or None
+
+
+def der_ecdsa_to_raw(der, size=32):
+    """openssl writes an ECDSA signature as DER SEQUENCE{r, s}; a JWS ES256
+    signature is r || s, each 32 bytes big-endian."""
+    def length(i):
+        first = der[i]
+        if first < 0x80:
+            return first, i + 1
+        count = first & 0x7F
+        return int.from_bytes(der[i + 1:i + 1 + count], "big"), i + 1 + count
+    try:
+        if der[0] != 0x30:
+            raise ValueError
+        _total, i = length(1)
+        raw = b""
+        for _ in range(2):
+            if der[i] != 0x02:
+                raise ValueError
+            count, i = length(i + 1)
+            raw += int.from_bytes(der[i:i + count], "big").to_bytes(size, "big")
+            i += count
+        return raw
+    except (IndexError, ValueError, OverflowError):
+        raise RuntimeError("openssl returned a malformed ECDSA signature") from None
+
+
+def asc_credentials():
+    require_secrets(NOTARY_API_SECRETS, "App Store Connect API")
+    key_id = os.environ["APPLE_NOTARY_KEY_ID"].strip()
+    issuer = os.environ["APPLE_NOTARY_ISSUER_ID"].strip()
+    if not re.fullmatch(r"[A-Z0-9]{6,20}", key_id):
+        raise RuntimeError("APPLE_NOTARY_KEY_ID does not look like an App Store Connect key ID")
+    print(f"::add-mask::{issuer}", flush=True)
+    return key_id, issuer
+
+
+def asc_token(key_id, issuer, now=None):
+    """ES256 App Store Connect JWT. The .p8 exists on disk only while openssl
+    signs; the token is masked in the log."""
+    now = int(time.time() if now is None else now)
+    header = b64url(json.dumps({"alg": "ES256", "kid": key_id, "typ": "JWT"}).encode())
+    claims = b64url(json.dumps({"iss": issuer, "iat": now, "exp": now + ASC_TOKEN_LIFETIME,
+                                "aud": ASC_AUDIENCE}).encode())
+    unsigned = f"{header}.{claims}".encode()
+    key_path = ensure_release_signing_dir() / f"asc-{secrets.token_hex(8)}.p8"
+    private_write(key_path, decode_secret("APPLE_NOTARY_KEY_P8_B64"))
+    try:
+        signature = subprocess.run(["openssl", "dgst", "-sha256", "-sign", str(key_path)], input=unsigned,
+                                   capture_output=True)
+    finally:
+        key_path.unlink(missing_ok=True)
+    if signature.returncode or not signature.stdout:
+        raise RuntimeError("Could not sign the App Store Connect token with APPLE_NOTARY_KEY_P8_B64")
+    token = unsigned.decode() + "." + b64url(der_ecdsa_to_raw(signature.stdout))
+    print(f"::add-mask::{token}", flush=True)
+    return token
+
+
+class AscError(RuntimeError):
+    def __init__(self, status, message):
+        super().__init__(f"App Store Connect API HTTP {status}: {message}")
+        self.status, self.message = status, message
+
+
+def asc_error_message(raw):
+    try:
+        errors = json.loads(raw).get("errors") or []
+        return "; ".join(f"{e.get('code')}: {e.get('detail') or e.get('title')}" for e in errors) or "no detail"
+    except (ValueError, AttributeError):
+        return raw[:500].decode("utf-8", errors="replace") if isinstance(raw, bytes) else str(raw)[:500]
+
+
+class AppStoreConnect:
+    """call(method, path, body=None, query=None) against the App Store Connect
+    API; only ASC_ALLOWED calls; a fresh token before each one expires."""
+
+    def __init__(self, key_id, issuer, clock=time.time):
+        self.key_id, self.issuer, self.clock = key_id, issuer, clock
+        self.token, self.issued = None, 0
+
+    def __call__(self, method, path, body=None, query=None):
+        asc_allowed(method, path)
+        now = self.clock()
+        if self.token is None or now - self.issued > ASC_TOKEN_REFRESH:
+            self.token, self.issued = asc_token(self.key_id, self.issuer, now), now
+        url = ASC_API + path + ("?" + urllib.parse.urlencode(query) if query else "")
+        headers = {"Authorization": f"Bearer {self.token}"}
+        data = None
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json"
+        request = urllib.request.Request(url, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                raw = response.read()
+        except urllib.error.HTTPError as error:
+            raise AscError(error.code, asc_error_message(error.read())) from None
+        return json.loads(raw) if raw.strip() else {}
+
+
+def asc_wait_for_build(info, app_id, call, *, timeout, interval, sleep, clock):
+    """The App Store Connect build for this version and build number once it
+    has processed (VALID), or None when timeout passes first."""
+    query = {"filter[app]": app_id, "filter[version]": info["build"],
+             "filter[preReleaseVersion.version]": info["version"],
+             "filter[preReleaseVersion.platform]": "IOS", "limit": "10"}
+    deadline = clock() + timeout
+    while True:
+        builds = call("GET", "/v1/builds", query=query).get("data") or []
+        if len(builds) > 1:
+            raise RuntimeError(f"App Store Connect lists {len(builds)} builds for {info['version']} "
+                               f"({info['build']})")
+        if builds:
+            state = (builds[0].get("attributes") or {}).get("processingState")
+            if state == "VALID":
+                return builds[0]
+            if state in {"FAILED", "INVALID"}:
+                raise RuntimeError(f"App Store Connect processing of {info['version']} ({info['build']}) "
+                                   f"ended {state}; see the email from App Store Connect")
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return None
+        sleep(min(interval, remaining))
+
+
+def set_what_to_test(build_id, text, call, locale=NOTES_LOCALE):
+    found = call("GET", "/v1/betaBuildLocalizations", query={"filter[build]": build_id, "limit": "50"})
+    existing = [d for d in found.get("data") or [] if (d.get("attributes") or {}).get("locale") == locale]
+    if existing:
+        call("PATCH", f"/v1/betaBuildLocalizations/{existing[0]['id']}",
+             body={"data": {"type": "betaBuildLocalizations", "id": existing[0]["id"],
+                            "attributes": {"whatsNew": text}}})
+    else:
+        call("POST", "/v1/betaBuildLocalizations",
+             body={"data": {"type": "betaBuildLocalizations", "attributes": {"locale": locale, "whatsNew": text},
+                            "relationships": {"build": {"data": {"type": "builds", "id": build_id}}}}})
+
+
+def testflight_distribute(info, groups, call, *, timeout=ASC_PROCESSING_TIMEOUT, interval=ASC_POLL_INTERVAL,
+                          sleep=time.sleep, clock=time.monotonic):
+    """Add this release's TestFlight build to the named beta groups. Waits for
+    processing (a timeout only warns). If a group is external, sets What to
+    Test from the release notes and submits the build for *beta* app review.
+    Never submits anything for App Store review."""
+    if not groups:
+        return "no-groups"
+    apps = call("GET", "/v1/apps", query={"filter[bundleId]": IOS_BUNDLE_ID}).get("data") or []
+    app = next((a["id"] for a in apps if (a.get("attributes") or {}).get("bundleId") == IOS_BUNDLE_ID), None)
+    if not app:
+        raise RuntimeError(f"App Store Connect has no app with bundle id {IOS_BUNDLE_ID} for this API key")
+    build = asc_wait_for_build(info, app, call, timeout=timeout, interval=interval, sleep=sleep, clock=clock)
+    if build is None:
+        message = (f"{info['version']} ({info['build']}) was still processing after {timeout // 60} min, so it "
+                   f"was not added to {', '.join(groups)}. Run promote.yml with this tag and the groups once "
+                   "it has processed.")
+        print(f"::warning title=TestFlight processing::{message}", flush=True)
+        job_summary(["### TestFlight groups", message])
+        return "processing-timeout"
+    build_id = build["id"]
+    listed = call("GET", "/v1/betaGroups", query={"filter[app]": app, "limit": "200"}).get("data") or []
+    by_name = {(g.get("attributes") or {}).get("name"): g for g in listed}
+    missing = [name for name in groups if name not in by_name]
+    if missing:
+        raise RuntimeError(f"No TestFlight beta group named {', '.join(missing)}; the app has "
+                           f"{', '.join(sorted(n for n in by_name if n)) or 'no groups'}")
+    chosen = [by_name[name] for name in groups]
+    external = [name for name, group in zip(groups, chosen) if not group["attributes"].get("isInternalGroup")]
+    notes = release_notes(info["tag"], TESTFLIGHT_NOTES_LIMIT)
+    if notes:
+        set_what_to_test(build_id, notes, call)
+    elif external:
+        print("::warning title=TestFlight What to Test::No docs/release-notes/"
+              f"{info['tag']}.md, so What to Test is not set; beta app review for external groups needs it",
+              flush=True)
+    if external and (build.get("attributes") or {}).get("usesNonExemptEncryption") is None:
+        print("::warning title=TestFlight export compliance::The build has no encryption answer "
+              "(ITSAppUsesNonExemptEncryption); answer it in App Store Connect or beta review cannot start",
+              flush=True)
+    call("POST", f"/v1/builds/{build_id}/relationships/betaGroups",
+         body={"data": [{"type": "betaGroups", "id": group["id"]} for group in chosen]})
+    review = ""
+    if external:
+        submitted = call("GET", "/v1/betaAppReviewSubmissions", query={"filter[build]": build_id}).get("data") or []
+        if submitted:
+            state = (submitted[0].get("attributes") or {}).get("betaReviewState") or "submitted"
+            review = f" Beta app review was already requested ({state})."
+        else:
+            call("POST", "/v1/betaAppReviewSubmissions",
+                 body={"data": {"type": "betaAppReviewSubmissions",
+                                "relationships": {"build": {"data": {"type": "builds", "id": build_id}}}}})
+            review = " Submitted for beta app review (external groups); testers get it once Apple approves."
+    job_summary(["### TestFlight groups",
+                 f"Added {info['version']} ({info['build']}) to {', '.join(groups)}"
+                 + (f" (external: {', '.join(external)})." if external else " (internal only).")
+                 + review + (" What to Test set from the release notes." if notes else "")
+                 + " Not submitted for App Store review."])
+    return "distributed"
+
+
 def b64url(data):
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
 
@@ -1433,29 +1741,62 @@ def play_call(token, method, url, *, body=None, data=None, content_type="applica
     return json.loads(raw) if raw.strip() else {}
 
 
-def play_release(version_code, name, status):
-    return {"track": PLAY_TRACK, "releases": [{"name": name, "versionCodes": [str(version_code)], "status": status}]}
+def play_release(version_code, name, status, track=PLAY_TRACK, notes=None):
+    if track not in PLAY_TRACKS:
+        raise RuntimeError(f"Refusing Play track {track!r}")
+    release = {"name": name, "versionCodes": [str(version_code)], "status": status}
+    if notes:
+        release["releaseNotes"] = [{"language": NOTES_LOCALE, "text": notes}]
+    return {"track": track, "releases": [release]}
 
 
-def upload_play(info, call=play_call):
-    """One edit: upload the AAB, put exactly its versionCode on the internal
-    track, commit. A versionCode Play has already seen is not re-uploaded."""
-    require_secrets(PLAY_STORE_SECRETS, "Google Play internal-track upload")
+def play_service_token():
     try:
         account = json.loads(decode_secret("PLAY_SERVICE_ACCOUNT_JSON_B64"))
         private_key = account["private_key"].encode()
         account["client_email"]
     except (ValueError, KeyError, TypeError, AttributeError):
         raise RuntimeError("PLAY_SERVICE_ACCOUNT_JSON_B64 is not a base64 service-account JSON key") from None
-    key_path = release_signing_dir() / "play-service-account.pem"
+    key_path = ensure_release_signing_dir() / "play-service-account.pem"
     private_write(key_path, private_key)
     try:
-        token = google_access_token(account, key_path)
+        return google_access_token(account, key_path)
     finally:
         key_path.unlink(missing_ok=True)
+
+
+def play_codes(track_body):
+    return {str(code) for release in track_body.get("releases", []) for code in release.get("versionCodes", [])}
+
+
+def play_set_track(call, token, edit_url, track, info, notes):
+    """PUT exactly this versionCode on track and commit the edit. Status is
+    completed, or draft while Play still treats the app as a draft app."""
+    status = "completed"
+    for attempt in range(2):
+        call(token, "PUT", f"{edit_url}/tracks/{track}",
+             body=play_release(info["version_code"], info["name"], status, track, notes))
+        try:
+            call(token, "POST", f"{edit_url}:commit")
+            return status
+        except PlayError as error:
+            # An app that has never been published accepts only draft releases.
+            if attempt or "draft" not in error.message.lower():
+                raise
+            status = "draft"
+
+
+def upload_play(info, call=play_call, track=None):
+    """One edit: upload the AAB, put exactly its versionCode on the selected
+    testing track (PLAY_TRACK, default internal), commit. A versionCode Play
+    has already seen is not re-uploaded."""
+    track = play_track(track)
+    require_secrets(PLAY_STORE_SECRETS, "Google Play testing-track upload")
+    token = play_service_token()
     package = IOS_BUNDLE_ID
     aab = ROOT / STORE_OUTPUTS["android"]
     base = f"{PLAY_API}/{package}/edits"
+    notes = release_notes(info["tag"], PLAY_NOTES_LIMIT)
     edit = call(token, "POST", base, body={})["id"]
     committed = False
     try:
@@ -1465,28 +1806,15 @@ def upload_play(info, call=play_call):
         except PlayError as error:
             if not re.search(r"version code .*already been used|apkUpgradeVersionConflict", error.message, re.IGNORECASE):
                 raise
-            track = call(token, "GET", f"{base}/{edit}/tracks/{PLAY_TRACK}")
-            codes = {code for release in track.get("releases", []) for code in release.get("versionCodes", [])}
-            if str(info["version_code"]) not in codes:
+            if str(info["version_code"]) not in play_codes(call(token, "GET", f"{base}/{edit}/tracks/{track}")):
                 raise RuntimeError(f"versionCode {info['version_code']} was already used on Play but is not on the "
-                                   f"{PLAY_TRACK} track; bump Dioxus.toml build") from None
-            job_summary(["### Google Play", f"versionCode {info['version_code']} is already on the {PLAY_TRACK} track."])
+                                   f"{track} track; promote it with promote.yml, or bump Dioxus.toml build") from None
+            job_summary(["### Google Play", f"versionCode {info['version_code']} is already on the {track} track."])
             return "already-uploaded"
         if str(uploaded.get("versionCode")) != str(info["version_code"]):
             raise RuntimeError(f"Play reports versionCode {uploaded.get('versionCode')}, expected {info['version_code']}")
-        status = "completed"
-        for attempt in range(2):
-            call(token, "PUT", f"{base}/{edit}/tracks/{PLAY_TRACK}",
-                 body=play_release(info["version_code"], info["name"], status))
-            try:
-                call(token, "POST", f"{base}/{edit}:commit")
-                committed = True
-                break
-            except PlayError as error:
-                # An app that has never been published accepts only draft releases.
-                if attempt or "draft" not in error.message.lower():
-                    raise
-                status = "draft"
+        status = play_set_track(call, token, f"{base}/{edit}", track, info, notes)
+        committed = True
     finally:
         if not committed:
             try:
@@ -1494,17 +1822,67 @@ def upload_play(info, call=play_call):
             except PlayError:
                 pass
     job_summary(["### Google Play", f"Uploaded versionCode {info['version_code']} ({info['name']}) to the "
-                 f"**{PLAY_TRACK}** testing track as a {status} release."
+                 f"**{track}** testing track as a {status} release"
+                 + (" with release notes." if notes else ".")
                  + (" Roll it out from Play Console (the app has never been published)." if status == "draft" else "")])
     return "uploaded"
+
+
+def promote_play(info, from_track, to_track, call=play_call):
+    """Put the versionCode already on from_track on a later testing track
+    (internal -> alpha -> beta). Never production; the source track is kept."""
+    source, target = play_track(from_track), play_track(to_track)
+    if PLAY_TRACKS.index(source) >= PLAY_TRACKS.index(target):
+        raise RuntimeError(f"Promotion goes {' -> '.join(PLAY_TRACKS)}; {source} -> {target} is not a promotion")
+    require_secrets(PLAY_STORE_SECRETS, "Google Play track promotion")
+    token = play_service_token()
+    base = f"{PLAY_API}/{IOS_BUNDLE_ID}/edits"
+    code = str(info["version_code"])
+    edit = call(token, "POST", base, body={})["id"]
+    committed = False
+    try:
+        if code not in play_codes(call(token, "GET", f"{base}/{edit}/tracks/{source}")):
+            raise RuntimeError(f"versionCode {code} ({info['tag']}) is not on the {source} track")
+        if code in play_codes(call(token, "GET", f"{base}/{edit}/tracks/{target}")):
+            job_summary(["### Google Play", f"versionCode {code} is already on the {target} track."])
+            return "already-promoted"
+        status = play_set_track(call, token, f"{base}/{edit}", target, info,
+                                release_notes(info["tag"], PLAY_NOTES_LIMIT))
+        committed = True
+    finally:
+        if not committed:
+            try:
+                call(token, "DELETE", f"{base}/{edit}")
+            except PlayError:
+                pass
+    job_summary(["### Google Play", f"Promoted versionCode {code} ({info['name']}) from {source} to "
+                 f"**{target}** as a {status} release. Production is never touched."])
+    return "promoted"
 
 
 def store_upload(name, tag):
     info = release_version(tag)
     if name == "ios":
-        return upload_testflight(info)
+        groups = testflight_groups()
+        outcome = upload_testflight(info)
+        if groups:
+            testflight_distribute(info, groups, AppStoreConnect(*asc_credentials()))
+        return outcome
     if name == "android":
         return upload_play(info)
+    raise RuntimeError(f"{name} is not a store target")
+
+
+def store_promote(name, tag):
+    """promote.yml: move an existing release between testing tracks/groups."""
+    info = release_version(tag)
+    if name == "ios":
+        groups = testflight_groups()
+        if not groups:
+            raise RuntimeError("TESTFLIGHT_GROUPS names no beta group to add the build to")
+        return testflight_distribute(info, groups, AppStoreConnect(*asc_credentials()), timeout=10 * 60)
+    if name == "android":
+        return promote_play(info, os.environ.get("PLAY_PROMOTE_FROM", ""), os.environ.get("PLAY_TRACK", ""))
     raise RuntimeError(f"{name} is not a store target")
 
 
@@ -1515,18 +1893,19 @@ def main():
                                            "release-android-signing", "release-macos-signing", "release-ios-signing",
                                            "release-build", "release-verify", "release-stage", "release-checksums",
                                            "release-store-check", "release-store-build", "release-store-verify",
-                                           "release-store-upload", "release-cleanup"])
+                                           "release-store-upload", "release-store-promote", "release-cleanup"])
     parser.add_argument("--target", choices=[p["target"] for p in PLATFORMS], default=os.environ.get("CI_FRONTEND_TARGET"))
     parser.add_argument("--profile", choices=["debug", "release"], default=os.environ.get("CI_FRONTEND_PROFILE", "release"))
     parser.add_argument("--tag", help="release-version: the pushed tag, e.g. v0.3.1b36")
     parser.add_argument("--assets", help="release-checksums: directory holding every downloaded asset")
     parser.add_argument("--release-targets", help="release-checksums: comma-separated targets that were built")
-    parser.add_argument("--store", choices=sorted(STORES), help="release-store-check: testflight or play")
+    parser.add_argument("--store", choices=sorted(STORES), help="release-store-check: the store (or promotion) to check")
     args = parser.parse_args()
     if args.action in {"bootstrap", "build", "release-build", "release-verify", "release-stage",
-                       "release-store-build", "release-store-verify", "release-store-upload"} and not args.target:
+                       "release-store-build", "release-store-verify", "release-store-upload",
+                       "release-store-promote"} and not args.target:
         parser.error(f"{args.action} needs --target or CI_FRONTEND_TARGET")
-    if args.action in {"release-guard", "release-store-verify", "release-store-upload"}:
+    if args.action in {"release-guard", "release-store-verify", "release-store-upload", "release-store-promote"}:
         args.tag = args.tag or os.environ.get("RELEASE_TAG")
         if not args.tag:
             parser.error(f"{args.action} needs --tag or RELEASE_TAG")
@@ -1555,6 +1934,8 @@ def main():
         store_verify(args.target, args.tag)
     elif args.action == "release-store-upload":
         store_upload(args.target, args.tag)
+    elif args.action == "release-store-promote":
+        store_promote(args.target, args.tag)
     elif args.action == "release-android-signing":
         prepare_android_release_signing()
     elif args.action == "release-macos-signing":

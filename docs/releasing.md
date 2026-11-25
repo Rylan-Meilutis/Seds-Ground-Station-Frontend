@@ -4,9 +4,11 @@ Pushing a tag `v<version>b<build>` runs `.github/workflows/release.yml`. It
 builds the release apps, signs Android and macOS with the production
 identities from repository secrets, and publishes a GitHub Release named
 `Version <version> Build <build>`, like the earlier releases. When their
-secrets exist it also uploads the iOS app to **TestFlight** and an Android App
-Bundle to the **Google Play internal testing track**. Nothing ever goes to a
-public App Store or Play release.
+secrets exist it also uploads the iOS app to **TestFlight** (optionally into
+named beta groups) and an Android App Bundle to a **Google Play testing
+track**: internal by default, or alpha (closed) / beta (open). Nothing ever
+goes to a public App Store or Play production release; see
+[Testing tracks and groups](#testing-tracks-and-groups).
 
 The run refuses to sign anything unless it comes from a protected ref and the
 tag's commit is on `main` or `dev` (section 0).
@@ -22,8 +24,8 @@ tag's commit is on `main` or `dev` (section 0).
 | `macos` macos-intel | macos-15-intel | `UBSEDS.GS_x86_64.dmg` (Intel, Developer ID, notarized and stapled) |
 | `publish` | ubuntu-24.04 | all of the above, plus `SHA256SUMS` (not in a dry run) |
 | `dry-run` | ubuntu-24.04 | manual dry runs only: checks the signed set, publishes nothing |
-| `testflight` | macos-15 | `UBSEDS GS.ipa` (App Store signed) uploaded to App Store Connect / TestFlight; not a GitHub asset |
-| `play` | ubuntu-24.04 | `SEDS GS.aab` (arm64-v8a, upload-key signed) uploaded to the Play **internal** track; not a GitHub asset |
+| `testflight` | macos-15 | `UBSEDS GS.ipa` (App Store signed) uploaded to App Store Connect / TestFlight, then added to `TESTFLIGHT_GROUPS` if set; not a GitHub asset |
+| `play` | ubuntu-24.04 | `SEDS GS.aab` (arm64-v8a, upload-key signed) uploaded to the `PLAY_TRACK` testing track (default **internal**); not a GitHub asset |
 
 The names are the ones GitHub showed for v0.3.1b35 (GitHub turns spaces into
 dots). There are a few differences:
@@ -117,8 +119,10 @@ either way.
   with a fresh throwaway key and labelled not-for-distribution. macOS CI builds
   are unsigned.
 - `tests/test_ci_release.py` enforces where secrets can appear:
-  - only in `release.yml`;
-  - only in the `android`, `macos`, `testflight` and `play` jobs;
+  - only in `release.yml` and `promote.yml`;
+  - only in the `android`, `macos`, `testflight` and `play` jobs (in
+    `promote.yml`, only the store API keys, in its `play` and `testflight`
+    jobs);
   - only in step `env:`, never in `run:` text;
   - in each signing job, the last step is `release-cleanup` with `if: always()`.
 - The signing files are decoded into `$RUNNER_TEMP/seds-release-signing/`
@@ -330,7 +334,7 @@ To ship the watch app later, choose one:
   reads. `--final` then has to allow `watchos`.
 - Move the watch build to an `xcodebuild archive` with cloud signing.
 
-### Android → Google Play internal track
+### Android → Google Play testing track
 
 | Secret | Value |
 |---|---|
@@ -347,7 +351,9 @@ Once:
    then create a service account and a JSON key for it.
 3. Play Console → Users and permissions: invite the service account's email,
    with access to `com.UBSEDS.GS26` only and the "Release to testing tracks"
-   permission (plus "View app information").
+   permission (plus "View app information"). Do **not** grant "Release to
+   production"; the workflow refuses production anyway, and without that
+   permission Play refuses it too.
 4. Set the secret, then delete the JSON file:
    `base64 -i play-uploader.json | gh secret set PLAY_SERVICE_ACCOUNT_JSON_B64 -R "$R"`.
 
@@ -364,17 +370,18 @@ The `play` job:
      `versionCode` is the one derived from the tag.
 3. Uploads through the Play Developer API directly, with stdlib plus `openssl`
    for the service-account JWT and no third-party action. In one edit it
-   uploads the bundle, sets the `internal` track to exactly that
-   `versionCode`, and commits.
+   uploads the bundle, sets the selected track (`PLAY_TRACK`, default
+   `internal`) to exactly that `versionCode` with status `completed`, adds the
+   release notes, and commits.
 
 Special cases:
 
-- If Play still treats the app as a draft (never published), the internal
-  release is created as a draft. Roll it out in Play Console.
-- If the `versionCode` is already on the internal track (a rerun), nothing is
+- If Play still treats the app as a draft (never published), the release is
+  created as a draft. Roll it out in Play Console.
+- If the `versionCode` is already on the selected track (a rerun), nothing is
   uploaded.
-- If the `versionCode` was used on another track, the job fails. Bump the
-  Dioxus build.
+- If the `versionCode` was used on another track, the job fails. Promote it
+  with `promote.yml`, or bump the Dioxus build.
 
 ### Certificate expiry
 
@@ -388,6 +395,103 @@ Special cases:
 The jobs warn starting 30 days before expiry. To renew: renew in the developer
 portal, export again and update the secret. Regenerate the App Store profile
 with the new distribution certificate.
+
+## Testing tracks and groups
+
+By default a release reaches only internal testers: the Play **internal**
+track, and the TestFlight internal testers (who get every processed build).
+Wider testing is opt-in and never reaches production.
+
+| Setting | Where | Values | Default |
+|---|---|---|---|
+| `play_track` | Release run input (manual runs) | `internal`, `alpha` (closed testing), `beta` (open testing) | `internal` |
+| `PLAY_TRACK` | repository **variable** (tag pushes) | the same three | `internal` when unset |
+| `testflight_groups` | Release run input (manual runs) | comma-separated TestFlight beta group names; `none` for internal testers only | empty: use the variable |
+| `TESTFLIGHT_GROUPS` | repository **variable** (tag pushes, and manual runs with an empty input) | the same | unset: internal testers only |
+
+- `release-store-check` validates both before any build. `production`, or
+  any other track name, fails the job. The Play calls themselves accept only
+  the three testing tracks.
+- A manual run uses its `play_track` input (default `internal`) and ignores
+  the `PLAY_TRACK` variable. A tag push uses the variable.
+- The workflows only read these variables. Rylan or the Mac agent sets them,
+  for example:
+
+  ```sh
+  gh variable set PLAY_TRACK -R "$R" --body alpha
+  gh variable set TESTFLIGHT_GROUPS -R "$R" --body "Launch Crew"
+  gh variable delete TESTFLIGHT_GROUPS -R "$R"   # back to internal testers only
+  ```
+
+- Release notes: if `docs/release-notes/<tag>.md` exists, its text becomes
+  the Play release notes (`en-US`, cut to 500 characters) and the TestFlight
+  "What to Test" (`en-US`, cut to 4000 characters, set only when groups are
+  named). Markdown is passed through as written, so keep the first 500
+  characters readable as plain text.
+
+### Play tracks
+
+The `alpha` and `beta` tracks must exist and have testers set up in Play
+Console (closed testing: a tester list or Google group; open testing: enabled
+countries). An app that has never been published accepts only draft
+releases, as on internal.
+
+### TestFlight groups
+
+With `TESTFLIGHT_GROUPS` set, after the altool upload (or a "Redundant Binary
+Upload" rerun) `release-store-upload` uses the App Store Connect API with the
+same `APPLE_NOTARY_KEY_*` key (an ES256 JWT signed by `openssl`; the `.p8` is
+on disk only while it signs):
+
+1. Finds the app by bundle id, then polls `GET /v1/builds` (app, build number,
+   marketing version, iOS) every minute until the build is `VALID`. After 60
+   minutes it gives up with a **warning**, not a failure; add the groups later
+   with `promote.yml`. `FAILED` or `INVALID` processing fails the job.
+2. Looks the names up in `GET /v1/betaGroups`. An unknown name fails the job
+   and lists the app's groups.
+3. If release notes exist, sets "What to Test" (`betaBuildLocalizations`).
+4. Adds the build to all the groups
+   (`POST /v1/builds/{id}/relationships/betaGroups`).
+5. If any group is **external**, submits the build for *beta* app review
+   (`POST /v1/betaAppReviewSubmissions`), unless it already was. External
+   testers get it after Apple approves.
+
+The driver refuses every App Store Connect call that is not on its allowlist,
+so it cannot submit for App Store review or edit an App Store version.
+
+Before the first external group:
+
+- Fill in App Store Connect → TestFlight → Test Information (beta app
+  description, feedback email, review contact).
+- The app has no `ITSAppUsesNonExemptEncryption` in its Info.plist, so each
+  build needs the export-compliance answer in App Store Connect. Until it has
+  one, beta review cannot start (the job warns).
+- The API key needs the App Manager (or Admin) role to manage beta groups and
+  submit for beta review. Developer is enough only for the upload.
+
+The `testflight` job timeout is 180 minutes, to fit the processing wait.
+
+### Promotion (`promote.yml`)
+
+Actions → Promote → Run workflow, **from `main` or `dev`**:
+
+| Input | Effect |
+|---|---|
+| `tag` | the released tag, e.g. `v0.3.1b36` |
+| `play_from_track` / `play_to_track` | put that tag's `versionCode` from `internal` or `alpha` onto a later track (`alpha`, `beta`). `none` (default) leaves Play alone. The source track keeps its release |
+| `testflight_groups` | add that tag's TestFlight build to these groups (waits up to 10 minutes for processing). Empty leaves TestFlight alone |
+
+```sh
+gh workflow run promote.yml -R "$R" --ref dev -f tag=v0.3.1b36 -f play_from_track=internal -f play_to_track=alpha
+gh workflow run promote.yml -R "$R" --ref dev -f tag=v0.3.1b36 -f testflight_groups="Launch Crew"
+```
+
+It is guarded like the release: `release-guard` (protected ref, tag on `main`
+or `dev`), and its store jobs run in the `release` environment. It builds and
+signs nothing, and needs only `PLAY_SERVICE_ACCOUNT_JSON_B64` or the
+`APPLE_NOTARY_KEY_*` secrets. Promotion only goes up
+(internal → alpha → beta). Play production and App Store review stay manual,
+in the consoles.
 
 ## 3. Cut the release
 
@@ -403,13 +507,16 @@ git push origin v0.3.1b36
   workflow **from `main` or `dev`**, with `tag` set to e.g. `v0.3.1b36`, "skip
   macOS" as needed and **"dry run" unticked**. Or:
   `gh workflow run release.yml -R "$R" --ref main -f tag=v0.3.1b36 -f skip_macos=true -f dry_run=false`.
+  Add `-f play_track=alpha` and/or `-f testflight_groups="Launch Crew"` to
+  widen testing for that run (see
+  [Testing tracks and groups](#testing-tracks-and-groups)).
 - A manual run is a **dry run by default**:
   - it builds and signs: Android, with the apksigner check against
     `ANDROID_EXPECTED_CERT_SHA256`, and macOS unless skipped;
   - it keeps the signed assets as the run's `release-<target>` artifacts for
     7 days;
   - it does not create or edit a GitHub Release, and does not upload to
-    TestFlight or Play;
+    TestFlight or Play (the track and group inputs are ignored);
   - it builds the **head of the branch it was started from** (`main` or `dev`),
     so the tag does not have to exist yet. Pushing a tag would publish. The
     `tag` input still names the version and must match `Cargo.toml` and

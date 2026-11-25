@@ -1,0 +1,129 @@
+name: Promote
+# Manual promotion of an already released build between TESTING tracks only:
+# a Play versionCode from one testing track to a later one (internal -> alpha
+# -> beta), and/or the TestFlight build of that tag into more beta groups.
+# Nothing is built or signed. It never touches Play production or App Store
+# review. Guarded like release.yml: dispatched from a protected main or dev,
+# the tag on main or dev, store jobs in the release environment. See
+# docs/releasing.md.
+'on':
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Released tag whose build to promote, e.g. v0.3.1b36
+        required: true
+        type: string
+      play_from_track:
+        description: Play track the versionCode is on now
+        required: false
+        type: choice
+        options:
+        - internal
+        - alpha
+        default: internal
+      play_to_track:
+        description: Play testing track to promote to (none = leave Play alone)
+        required: false
+        type: choice
+        options:
+        - none
+        - alpha
+        - beta
+        default: none
+      testflight_groups:
+        description: Comma-separated TestFlight beta groups to add the build to (empty = leave TestFlight alone)
+        required: false
+        type: string
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      guarded: ${{ steps.guard.outputs.guarded }}
+      ref: ${{ steps.guard.outputs.ref }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: refs/tags/${{ env.RELEASE_TAG }}
+        fetch-depth: 0
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Protected ref, tag on main or dev
+      id: guard
+      env:
+        RELEASE_DRY_RUN: 'false'
+      run: python scripts/ci/frontend.py release-guard
+    - name: Tag matches Cargo.toml version and Dioxus.toml build
+      run: python scripts/ci/frontend.py release-version --tag "$RELEASE_TAG"
+  play:
+    needs: version
+    if: ${{ needs.version.outputs.guarded == 'true' && inputs.play_to_track != 'none' }}
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI_FRONTEND_TARGET: android
+      PLAY_PROMOTE_FROM: ${{ inputs.play_from_track }}
+      PLAY_TRACK: ${{ inputs.play_to_track }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.version.outputs.ref }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Google Play secret configured, testing track allowed
+      id: store
+      env:
+        PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_B64 }}
+      run: python scripts/ci/frontend.py release-store-check --store play-promote
+    - name: Promote the versionCode to the selected Play testing track
+      if: steps.store.outputs.enabled == 'true'
+      env:
+        PLAY_SERVICE_ACCOUNT_JSON_B64: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON_B64 }}
+      run: python scripts/ci/frontend.py release-store-promote
+    - name: Delete signing material
+      if: always()
+      run: python scripts/ci/frontend.py release-cleanup
+  testflight:
+    needs: version
+    if: ${{ needs.version.outputs.guarded == 'true' && inputs.testflight_groups != '' }}
+    environment: release
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      CI_FRONTEND_TARGET: ios
+      TESTFLIGHT_GROUPS: ${{ inputs.testflight_groups }}
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        ref: ${{ needs.version.outputs.ref }}
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: App Store Connect key configured, group names valid
+      id: store
+      env:
+        APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
+        APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+        APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      run: python scripts/ci/frontend.py release-store-check --store testflight-promote
+    - name: Add the TestFlight build to the selected beta groups
+      if: steps.store.outputs.enabled == 'true'
+      env:
+        APPLE_NOTARY_KEY_P8_B64: ${{ secrets.APPLE_NOTARY_KEY_P8_B64 }}
+        APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+        APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+      run: python scripts/ci/frontend.py release-store-promote
+    - name: Delete signing material
+      if: always()
+      run: python scripts/ci/frontend.py release-cleanup
