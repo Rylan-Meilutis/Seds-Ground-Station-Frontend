@@ -305,7 +305,7 @@ pub(crate) const PAGE_CSS: &str = r#"
 .gs26-pid-legend { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12px; color:var(--pid-text); padding-top:6px; }
 .gs26-pid-legend-item { display:inline-flex; align-items:center; gap:6px; }
 .gs26-pid-dot { display:inline-block; width:12px; height:12px; border-radius:3px; box-sizing:border-box; }
-@media (max-width:640px) { .gs26-pid-page { padding:6px; } .gs26-pid-desc { display:none; } }
+@media (max-width:640px) { .gs26-pid-page { padding:6px; } .gs26-pid-desc { display:none; } .gs26-pid-wrap[data-full=true] .gs26-pid-legend { display:none; } }
 "#;
 
 /// The panel shown full screen (`FULLSCREEN_JS`).
