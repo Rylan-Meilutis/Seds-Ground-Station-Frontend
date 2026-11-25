@@ -83,7 +83,7 @@ try {
  await page.setViewportSize({width:1280,height:860});
  // A replay bundle on a fresh device: the same tabs, from the file.
  await page.getByLabel('Open replay file').setInputFiles(fixture('replay-bundle/flight.gsreplay'));
- await page.getByText('Offline replay — flight.gsreplay',{exact:true}).waitFor();
+ await page.getByText('Replay: flight.gsreplay',{exact:true}).waitFor();
  await open('Dashboard');await open('Data');await open('Live diagrams');await open('Map');await open('3D replay');
  await open('Firmware Update',['Board firmware does not report its build','Flight Computer (FC)']);
  await open('Motor & flight');
@@ -104,7 +104,7 @@ try {
  // A bundle with the station positions at export: the map, the 3D map and the
  // 3D replay place the ground station and RRLS from it.
  await page.getByLabel('Open replay file').setInputFiles({name:'stations.gsreplay',mimeType:'application/octet-stream',buffer:bundleWithStations()});
- await page.getByText('Offline replay — stations.gsreplay',{exact:true}).waitFor();
+ await page.getByText('Replay: stations.gsreplay',{exact:true}).waitFor();
  await open('Map');
  await page.locator('.gs26-map-stations [data-station="GS"]').waitFor({timeout:20000});
  assert.match(await page.locator('.gs26-map-stations').innerText(),/RRLS 31\.75520, -102\.04180 · saved, manual entry/);
@@ -118,7 +118,7 @@ try {
  await page.locator('[data-camera="station"]').first().waitFor({state:'attached',timeout:60000});
  // A portable replay file too.
  await page.getByLabel('Open replay file').setInputFiles(fixture('replay-export/flight.json'));
- await page.getByText('Offline replay — flight.json',{exact:true}).waitFor();
+ await page.getByText('Replay: flight.json',{exact:true}).waitFor();
  await open('Data');
  if(shots)await page.screenshot({path:`${shots}/local-station-replay-file.png`});
  await page.getByRole('button',{name:'Back to demo'}).click();await page.getByText('Demo mode — no station connected',{exact:true}).waitFor();

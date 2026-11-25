@@ -1218,10 +1218,12 @@ Two file types open with no station:
   `replay.json` on its own.
 
 A portable replay file (`*.seds-replay.json`) opens on any device with no
-station connected and nothing cached: **Explore offline** on the connection
-page (native) or a failed-connection card (web, native) opens `/preview`;
-**Open replay file** (or dropping the file on the window, or opening it from
-another app) loads it. The live dashboard then runs against a local station
+station connected and nothing cached: **Open replay file** on the connection
+page (native) or a failed-connection card (web, native), dropping the file on
+either, or opening it from another app goes straight to its replay at
+`/preview` without starting demo mode ([offline-preview.md](offline-preview.md#opening-a-replay-file));
+**Explore offline** opens demo mode, whose bar also has **Open replay file**.
+The live dashboard then runs against a local station
 serving the file (section 11): its Dashboard (the file's layout
 `state_tab`), Data, Live diagrams, Map, 3D replay, Connection Status and Data
 Export tabs read the file's rows, played from the first row; commands answer

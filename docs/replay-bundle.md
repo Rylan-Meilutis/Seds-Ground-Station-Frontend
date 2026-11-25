@@ -14,8 +14,8 @@ station connected, on any device with nothing cached:
 
 Producers: GroundStation26 `GET /api/recordings/{id}/bundle`, available as
 **Download replay bundle** in the Recordings panel. Consumers: the UI's live
-dashboard on a local station (**Explore offline → Open replay file**, drop
-the file on the window, or open it from another app;
+dashboard on a local station (**Open replay file** on the connection screen,
+drop the file on it, or open it from another app;
 [offline-preview.md](offline-preview.md)), and GroundStation26
 `POST /api/recordings/import`.
 
@@ -548,15 +548,22 @@ A recording is limited by the replay export: 200,000 rows and 64 MiB of rows.
 - UI `tests/offline-preview-browser.mjs`: opens the bundle in a fresh browser
   profile and drives the live dashboard's tabs on it, with zero network;
   downloads the CSV from Data Export and compares it with the station's.
+- UI `tests/open-replay-browser.mjs`: on a fresh profile with no station,
+  **Open replay file** on the connection-failure card opens the bundle
+  straight into its replay (never demo mode), its tabs render with zero
+  network after the file is chosen, **Leave replay** returns, a dropped
+  replay file opens, a damaged file is reported without a demo.
 
 ## Opening files from other apps
 
 A `.gsreplay` bundle (and, where noted, a `*.seds-replay.json` replay) opens
-in the offline replay view (`/preview`) when another app hands it over. The
+in the replay view (`/preview`) when another app hands it over. The
 platform code reads the file and passes it to `src/opened_file.rs`
-(`offer(name, bytes)`); the app root then navigates to the replay view, which
-takes it (`take()`) and opens it like a file picked in the view. A file over
-192 MiB is not read whole; the view shows a message instead.
+(`offer_from(name, bytes, path)`); the app root then navigates to the replay
+view, which takes it (`take_opened()`) on entry and opens it directly, without
+starting demo mode. **Open replay file** and drag and drop on the connection
+screens use the same hand-off ([offline-preview.md](offline-preview.md#opening-a-replay-file)).
+A file over 192 MiB is not read whole; the view shows a message instead.
 
 | Platform | Registration | Delivery |
 | --- | --- | --- |
@@ -565,10 +572,11 @@ takes it (`take()`) and opens it like a file picked in the view. A file over
 | Android | `platform/android/AndroidManifest.xml`: `VIEW` by media type; `VIEW` by name (`.*\\.gsreplay`, `.*\\.seds-replay\\.json`) for `application/zip`, `application/octet-stream`, `application/json` on `content`/`file`; `SEND`; the activity is `singleTask` | `MainActivity` (patched by `build.py`) → `OpenedFileBridge` copies the URI into the cache → Rust pulls it through JNI |
 | Linux | `.desktop` `MimeType=application/vnd.seds.gsreplay+zip;`, `Exec=… %f`; shared-mime-info `usr/share/mime/packages/ubseds-groundstation.xml` (glob `*.gsreplay`) | Path as the first argument |
 | Windows | NSIS installer: `HKCU\Software\Classes\.gsreplay` → `UBSEDS.GroundStation.Replay`, `shell\open\command` `"…exe" "%1"` (the IExpress fallback installer does not register it) | Path as the first argument |
-| Web | Not registered (no web app manifest) | Use the file picker or drag and drop |
+| Web | Not registered (no web app manifest) | **Open replay file** or drag and drop on the connection-failure card or the replay view |
 
 On Apple platforms `*.seds-replay.json` is not claimed (claiming all JSON
-would put the app in every JSON share sheet); open it from the replay view.
+would put the app in every JSON share sheet); open it with **Open replay
+file** on the connection page.
 A desktop file opened while the app is running starts a second window.
 
 How to test on a device:
@@ -593,6 +601,8 @@ How to test on a device:
   run `groundstation_frontend path/to/flight.gsreplay` (installed launcher:
   `ubseds-groundstation`, Windows: `"UBSEDS GroundStation.exe"`).
 
-Expected: the app shows the offline replay view with the file's banner
-("Offline replay — flight.gsreplay"); a file over 192 MiB or a damaged file
-shows a message in the view.
+Expected: the app shows the replay with the file's banner
+("Replay: flight.gsreplay"), with no demo mode first, also on a device that
+has never been connected; a file over 192 MiB or a damaged file shows a
+message in the view ("No replay open") with the way back. On a desktop the
+file then appears under "Recent replays" on the connection page.

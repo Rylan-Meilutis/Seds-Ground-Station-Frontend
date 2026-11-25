@@ -31,7 +31,7 @@ try {
  await page.getByText(/This bundle has no recorded camera video/).waitFor();
  // The media bundle: paused at 30 s, the voice burst (30.0-30.2 s) is on air.
  await page.getByLabel('Open replay file').setInputFiles(fixture('replay-bundle/media.gsreplay'));
- await page.getByText('Offline replay — media.gsreplay',{exact:true}).waitFor();
+ await page.getByText('Replay: media.gsreplay',{exact:true}).waitFor();
  await mission();
  const seek=async ms=>page.getByLabel('Position').evaluate((e,v)=>{e.value=String(v);e.dispatchEvent(new Event('change',{bubbles:true}));},ms);
  if(await page.getByRole('button',{name:'Pause'}).count())await page.getByRole('button',{name:'Pause'}).click();

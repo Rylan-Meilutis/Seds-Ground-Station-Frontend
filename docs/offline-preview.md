@@ -3,17 +3,63 @@
 With no station connected, the app runs its normal dashboard against a
 station answered on the device, at `/preview`:
 
-- native: **Explore offline** on the connection page or after a connection
-  failure, or opening a `.gsreplay` file from another app
-  ([replay-bundle.md](replay-bundle.md#opening-files-from-other-apps));
-- web: **Explore offline** on the connection-failure card, or open
-  `/preview` directly.
+- a replay file: **Open replay file** on the connection page (native) or the
+  connection-failure card (web, native), dropping the file on either, a
+  recent replay on the connection page (desktop), or opening the file from
+  another app ([replay-bundle.md](replay-bundle.md#opening-files-from-other-apps)).
+  These go straight to the replay; demo mode is never started on the way
+  (below, "Opening a replay file");
+- demo mode: **Explore offline** on the connection page or after a
+  connection failure; on the web, `/preview` opened directly.
 
 There is one UI. Every tab, card, chart, diagram and control is the live
 dashboard's own code, driven by a local station instead of a Ground Station.
-A slim bar above the dashboard says what is playing and offers play/pause, a
-position slider, 1–50× speed, **Open replay file**, **Back to demo** and
-**Exit** (back to connection setup).
+A slim bar above the dashboard says what is playing ("Replay: flight.gsreplay",
+"Predicted replay — …" or "Demo mode — no station connected") and offers
+play/pause, a position slider, 1–50× speed, **Open replay file**, **Back to
+demo** (only after entering through Explore offline) and the way out:
+**Back to connection** (native) or **Leave replay** (web), or **Exit** back to
+the dashboard for a flight plan's predicted replay.
+
+## Opening a replay file
+
+The connection page and the connection-failure card carry **Open replay
+file** (a file input: the system document picker on iOS and Android, the
+file dialog on desktops, the browser's picker on the web) with "or drop a
+.gsreplay file here" on desktops and browsers, where the whole screen takes a
+dropped file. It needs no station address, sign-in or stored setting, so it
+works on a device that has never been connected.
+
+Every way in uses the same hand-off as a file opened from another app
+(`src/opened_file.rs`, `offer_from`): the file is read on the connection
+screen (a file over 192 MiB is refused there, before it is read), the app root
+moves to `/preview`, and the replay view takes the file when it mounts
+(`offline_preview::starting_session`). The view builds the demo only when no
+file was handed over. A file that does not open (not a bundle, damaged, too
+large) is reported in the view under "No replay open", with **Open replay
+file** and the way back; no demo starts in its place.
+
+Recent replays (desktop only): a replay opened from a path on Linux, macOS
+or Windows (picked, dropped, double-clicked or named on the command line) is
+remembered by name and path, newest first, at most five, in
+`<data dir>/gs26/recent_replays.json` (`src/recent_replays.rs`). The
+connection page lists those whose file still exists; one click opens it
+again. Phones hand over copies or security-scoped URLs that do not outlive
+the session and the browser never sees a path, so neither lists recent
+files.
+
+Zero cost while connected: nothing above runs until a file is chosen. The
+connection page and the failure card are shown only with no station
+connected; the hand-off slot is empty and no local station exists on the
+dashboard route (`Dashboard` asserts this in debug builds).
+
+Tests: `offline_preview::tests` (a handed-over file opens as a replay with no
+demo built beside it; a file that does not open builds nothing; the hand-off
+is taken once), `recent_replays::tests`, `opened_file::tests`, and
+`tests/open-replay-browser.mjs` (release web bundle on a fresh profile:
+connection-failure card → Open replay file → the replay's tabs, zero network
+after the file is chosen, Leave replay, a dropped replay file, a damaged
+file reported without a demo).
 
 ## How it works
 
@@ -90,8 +136,8 @@ socket commands, HTTP 409 with the same text for writes).
 
 ## Replay files
 
-**Open replay file** (or dropping the file on the window, or opening it from
-another app) loads a replay bundle (`*.gsreplay`) or a portable
+**Open replay file** (on the connection screen or in this bar), dropping the
+file on either, or opening it from another app loads a replay bundle (`*.gsreplay`) or a portable
 `*.seds-replay.json`. The replay plays from its first row. Every route the
 bundle snapshots is served from it, the exports are produced from it byte for
 byte as the station produces them ([replay-bundle.md](replay-bundle.md)),
