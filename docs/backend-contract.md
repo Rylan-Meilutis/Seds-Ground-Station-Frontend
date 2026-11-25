@@ -853,6 +853,11 @@ GroundStation26 `docs/frontend/api.md` ("Firmware OTA endpoints") and
 | --- | --- | --- | --- | --- | --- |
 | GET | `/api/live_streams` | → `LiveStreamConfig` ([detail](backend-api.md#get-apilive_streams), [manager](api-examples/live-streams.json) / [viewer](api-examples/live-streams-viewer.json) examples) | Live stream tab, studio, custom dashboard, recorded replay | view_data | H |
 | POST | `/api/live_streams/control` | `BroadcastState` → `BroadcastState` ([detail](backend-api.md#post-apilive_streamscontrol)) | studio, rundown, live stream tab | `can_manage_stream` | M |
+| GET | `/api/studio` | → `StudioView`: `revision`, `program_url`, `program_scene_id`, `on_air`, `transition {kind: cut\|fade, duration_ms}`, `take_seq`, `layouts[]`, `scenes[]`, `sources[]`, `presets[]`, `limits` ([fixture](../tests/fixtures/backend-contract/studio/view.json), section 5.12.1) | Stream manager (`stream_switcher.rs`), polled every 2 s | `can_manage_stream` | H (status line) |
+| POST | `/api/studio/layouts` | `{revision, layouts}` → `StudioView`; 409 on a stale revision, 400 when a scene still fills a removed layout/slot | Stream manager layout editor | `can_manage_stream` | M (draft kept) |
+| POST | `/api/studio/scenes` | `{revision, scenes}` → `StudioView`; 409 stale, 400 invalid (unknown source, two diagrams, deleting the Program scene) | Stream manager scene editor | `can_manage_stream` | M (draft kept) |
+| POST | `/api/studio/take` | `{scene_id, transition}` → `StudioView` ([request](../tests/fixtures/backend-contract/studio/take.request.json)); no revision, always applies; sets `broadcast.layout = "studio"` | Cut / Fade, hotkeys | `can_manage_stream` | M |
+| GET | `/api/dashboard_status` | → the programme telemetry snapshot (`stats`, `t_clock`, ...) | Stream manager live thumbnails | view_data | thumbnails show no value |
 | GET | `/api/stream-roles` | → `Account[]` ([detail](backend-api.md#get--post-apistream-roles)) | Broadcast studio | stream_admin / admin | M |
 | POST | `/api/stream-roles` | `Grant` → any | same | stream_admin / admin | M |
 | GET | `/api/video/transcode/hosts` | → `TranscodeHosts` | Broadcast studio | `can_manage_stream` | H |
@@ -870,6 +875,39 @@ GroundStation26 `docs/frontend/api.md` ("Firmware OTA endpoints") and
 
 Native webview allow-list only (no request is made by the UI): `/program`,
 `/player`, `/studio-audio`, `/recorded-vehicle`. See section 5.15.
+
+#### 5.12.1 Stream manager: layouts, scenes and sources
+
+Generic: the UI lists whatever the station sends and draws a source by its
+`view`; nothing in the UI names a camera, diagram or scene.
+
+- `Layout {id, name, slots[]}`; `Slot {id, x, y, width, height, z}` in percent
+  of a 16:9 frame (`z` 0–9, back to front). Slots are at least 5 % and inside
+  the frame; ids are `[A-Za-z0-9_-]` up to 48 characters. Up to 32 layouts of
+  1–12 slots.
+- `Scene {id, name, layout_id, sources: {slot id: source id}, program_bar}`.
+  Up to 24 scenes (hotkeys 1–9 take the first nine). A source fills one slot
+  of a scene; a scene shows at most one live diagram.
+- `Source {id, kind, view, label, state, transparent, stream_id?, hidden?,
+  preview_url?}`. `kind` is `camera`, `telemetry`, `overlay` or `graphic`;
+  `state` is `live`, `no_signal`, `stale` or `ready`. Ids: `camera:<stream>`,
+  `camera-auto:<n>` (the n-th visible live camera), `diagram:<id>` (the
+  station's `/api/diagrams` views, plus `diagram:mode`, the view of the
+  station's mode), `telemetry:{stats,plot,tclock,map,model,recorded-replay}`,
+  `overlay:{lower-third,tclock-bug,stats-bar}` (transparent),
+  `graphic:{title,slate}`. `preview_url` is a ticketed live camera preview.
+- `presets[]`: the station's aspect presets (`full`, `pip`, `side_by_side`,
+  `grid_2x2`, `lower_third`) as slot lists for the layout editor.
+- Preview is local to each operator. The programme page draws a scene with
+  `program_url&scene=<id>` (Preview monitor), the programme with
+  `&monitor=1` (muted, no controls), and one source with
+  `&source=<id>[&transparent=1]` (an OBS browser source). The page's
+  `/api/media-assets/program/state` then carries `studio` (the resolved scene:
+  `{scene_id, name, program_bar, mode, take_seq, transition, slots[{..., source:
+  {id, kind, view, label, transparent, stream_id}}]}`, [fixture](../tests/fixtures/backend-contract/studio/program-scene.json)).
+  `scene=` and `source=` require stream-manager access.
+- `POST /api/live_streams/control` never changes `broadcast.studio`; it may
+  keep `layout: "studio"` only while the Program scene exists.
 
 Detail: [media-and-dashboard.md](media-and-dashboard.md),
 [broadcast-studio.md](broadcast-studio.md), GroundStation26
@@ -934,12 +972,12 @@ the UI calls is served, with the methods the UI uses. Remaining differences:
 | `/program`, `/player`, `/recorded-vehicle` | In the native webview document allow-list (`src/native_navigation.rs:48`) | Not routed (programme and recorded vehicle moved to `/api/media-assets/program` and `/api/media-assets/recorded-vehicle`; `/studio-audio` and `/radio` are routed) | None; allow-list entries are dead and could be removed |
 | `GET /tiles` (no tile path) | Connection-test probe | Only `/tiles/{z}/{x}/{y}` is routed, so the probe gets 404 | None; 404 is accepted as reachable |
 | `GET /api/gps` | Only the native connection test | Served | Route kept only for the probe |
-| `docs/backend-api.md` | Still lists `POST /api/calibration/capture_zero`, `capture_span`, `refit` and `GET /api/dashboard_status` as recommended | Served | The UI no longer calls them; treat that doc as partly stale for those rows |
+| `docs/backend-api.md` | Still lists `POST /api/calibration/capture_zero`, `capture_span` and `refit` as recommended | Served | The UI no longer calls them; treat that doc as partly stale for those rows |
 
 Backend routes the UI does not call (not discrepancies, listed so another team
 knows they are optional for this UI): `/api/alert_conditions`,
 `/api/alerts/history/clears`, `/api/fc_estimator`, `/api/flight_maxima`,
-`/api/mission_phase`, `/api/network_diagnostics`, `/api/dashboard_status`,
+`/api/mission_phase`, `/api/network_diagnostics`,
 `/api/calibration/capture_zero`, `/api/calibration/capture_span`,
 `/api/calibration/refit`, `/api/calibration/chamber_pt`,
 `/api/loadcell_calibration/*`, `/api/firmware/updates`, `/api/sd_download/fc`,
@@ -978,6 +1016,7 @@ for another vehicle should only need to supply different data on these routes.
 | Station modes and labels, simulation pairing | `/api/station-modes`, `/api/station_mode` |
 | Fill targets, flight setup, GSE sequence parameters | `/api/fill_targets`, `/api/flight_setup`, `/api/gse/config`, `/api/gse/status` |
 | Camera angles, broadcast stats, programme | `/api/live_streams` |
+| Stream manager layouts, scenes, sources (cameras, diagrams, telemetry views, overlays, graphics), aspect presets | `/api/studio` |
 | Watch actions | `/api/watch/actions` |
 | Safety text, checklists | `/api/safety/about`, `/api/checklists` |
 | Firmware targets | `/api/firmware/targets` |
@@ -1673,6 +1712,11 @@ section 5. WebSocket upgrades are listed as `GET`.
 
 - `GET /api/live_streams`
 - `POST /api/live_streams/control`
+- `GET /api/studio`
+- `POST /api/studio/layouts`
+- `POST /api/studio/scenes`
+- `POST /api/studio/take`
+- `GET /api/dashboard_status`
 - `GET /api/stream-roles`
 - `POST /api/stream-roles`
 - `GET /api/video/transcode/hosts`

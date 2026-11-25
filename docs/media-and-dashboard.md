@@ -20,9 +20,14 @@ may suspend capture when the app itself is backgrounded.
 
 **Stream Manager** is available to users with stream-management access
 (`stream_master`, `stream_admin`, or the existing `StreamControl` grant, subject
-to the backend's stream-viewer restriction). It exposes delay, audience crew
-audio, label, layout, featured camera and feed visibility controls. Stream admins
-can assign stream-master roles there. Choose **3D model** for a model-only program or **Cameras + 3D model** for a mixed grid. Otherwise the model appears only when there are no available cameras; Dashboard never renders the model. The backend enforces every change.
+to the backend's stream-viewer restriction). It is a visual vision mixer:
+Preview and Program monitors, scene thumbnails, source tiles (cameras, live
+diagrams and other telemetry views, overlays, graphics) dragged into a scene's
+slots, a layout editor, Cut/Fade and hotkeys; see
+[broadcast studio](broadcast-studio.md#stream-manager). **Broadcast settings**
+holds delay, audience crew audio, label, rundown and replay controls. Stream
+admins can assign stream-master roles there. Dashboard never renders the model.
+The backend enforces every change.
 
 In **Cameras & Recordings**, permitted users choose a camera and select **Start
 sharing camera**. The browser asks for camera permission; video becomes a source
