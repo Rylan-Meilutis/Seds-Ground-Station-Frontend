@@ -14,6 +14,8 @@ mod log_redaction;
 mod native_storage;
 mod native_voice_audio;
 mod opened_file;
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
+mod recent_replays;
 #[cfg(target_os = "ios")]
 mod startup_diagnostics;
 #[cfg(not(target_arch = "wasm32"))]

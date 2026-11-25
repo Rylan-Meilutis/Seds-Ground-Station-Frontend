@@ -3,7 +3,7 @@
 //! file manager double-click or the command line (docs/replay-bundle.md,
 //! "Opening files from other apps").
 //!
-//! Platform code calls [`offer`] (or [`offer_path`]) from any thread, before
+//! Platform code calls [`offer_from`] (or [`offer_path`]) from any thread, before
 //! or after the app has mounted. The newest file waits in one slot; the
 //! listener installed by [`use_opened_file_listener`] moves
 //! [`OPENED_FILE_REVISION`] to match, the app root then navigates to the
@@ -23,8 +23,17 @@ pub(crate) const MAX_BYTES: usize = 192 << 20;
 pub(crate) static OPENED_FILE_REVISION: GlobalSignal<u64> = Signal::global(|| 0);
 
 enum Pending {
-    File(String, Vec<u8>),
+    File(Opened),
     Rejected(String),
+}
+
+/// A file handed to the app: its name, contents and, where the app can open
+/// it again later by path (desktop), where it lives.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Opened {
+    pub name: String,
+    pub bytes: Vec<u8>,
+    pub path: Option<std::path::PathBuf>,
 }
 
 static PENDING: Mutex<Option<Pending>> = Mutex::new(None);
@@ -35,24 +44,29 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn too_large(name: &str) -> String {
+pub(crate) fn too_large(name: &str) -> String {
     format!("{name} is larger than 192 MiB, the largest replay this app opens.")
 }
 
-/// Hands a file's name and contents to the app; a newer file replaces one not
-/// yet taken. Safe from any thread and before the app has mounted.
-// The web build has no opener (no PWA manifest or launch queue yet).
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+#[cfg(test)]
 pub(crate) fn offer(name: String, bytes: Vec<u8>) {
+    offer_from(name, bytes, None);
+}
+
+/// Hands a file's name, contents and (on a desktop, for the recent replays
+/// list) location to the app; a newer file replaces one not yet taken. Safe
+/// from any thread and before the app has mounted. The connection screens'
+/// **Open replay file** (picker, drag and drop, recent files) offers through
+/// here too, so every way in reaches the replay view the same way.
+pub(crate) fn offer_from(name: String, bytes: Vec<u8>, path: Option<std::path::PathBuf>) {
     if bytes.len() > MAX_BYTES {
         reject(too_large(&name));
     } else {
-        deposit(Pending::File(name, bytes));
+        deposit(Pending::File(Opened { name, bytes, path }));
     }
 }
 
 /// Reports a file that could not be read, in the replay view.
-#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn reject(message: String) {
     deposit(Pending::Rejected(message));
 }
@@ -69,11 +83,17 @@ fn wake() {
     }
 }
 
-/// The waiting file, once.
+/// The waiting file's name and contents, once.
+#[cfg(test)]
 pub(crate) fn take() -> Option<(String, Vec<u8>)> {
+    take_opened().map(|opened| (opened.name, opened.bytes))
+}
+
+/// The waiting file, once.
+pub(crate) fn take_opened() -> Option<Opened> {
     let mut slot = lock(&PENDING);
     match slot.take() {
-        Some(Pending::File(name, bytes)) => Some((name, bytes)),
+        Some(Pending::File(opened)) => Some(opened),
         other => {
             *slot = other;
             None
@@ -120,12 +140,23 @@ fn offer_path_limited(name: Option<String>, path: &std::path::Path, limit: usize
     });
     match result {
         Ok(bytes) if bytes.len() > limit => reject(too_large(&name)),
-        Ok(bytes) => offer(name, bytes),
+        Ok(bytes) => offer_from(name, bytes, reopenable(path)),
         Err(error) => {
             crate::debug_log::append(&format!("[opened-file] could not read {}: {error}", path.display()));
             reject(format!("Could not read {name}: {error}"));
         }
     }
+}
+
+/// Where the file can be opened again later. Android hands over a cache
+/// copy that is deleted once read, and iOS a security-scoped or Inbox URL,
+/// so only desktop files are remembered.
+#[cfg(not(target_arch = "wasm32"))]
+fn reopenable(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    if cfg!(any(target_os = "android", target_os = "ios")) {
+        return None;
+    }
+    std::fs::canonicalize(path).ok()
 }
 
 /// `Event::Opened` (iOS scene/app delegate, macOS `application:openURLs:`):
@@ -258,12 +289,15 @@ mod android {
     }
 }
 
+/// The slot is process-wide; tests that offer files take turns.
+#[cfg(test)]
+pub(crate) static TEST_TURN: Mutex<()> = Mutex::new(());
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
 
-    /// The slot is process-wide; tests take turns.
-    static TURN: Mutex<()> = Mutex::new(());
+    use super::TEST_TURN as TURN;
 
     #[test]
     fn newest_offer_is_taken_once() {
