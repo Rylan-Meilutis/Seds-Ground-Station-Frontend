@@ -150,7 +150,7 @@ fn OwnedBoardAbortReadiness(show_hitl_interlocks: bool) -> Element {
 /// The HITL interlock toggles in the order of the primary's mode
 /// configuration settings, with the names used when the layout gives none.
 const HITL_INTERLOCKS: [(&str, &str); 4] = [
-    ("TogglePlumbingDelayInterlock", "Retraction minimum 45 seconds"),
+    ("TogglePlumbingDelayInterlock", "Retraction minimum time"),
     ("ToggleChecklistInterlock", "Checklist enforcement"),
     ("ToggleSupplyInterlock", "Nitrogen/nitrous one at a time"),
     ("ToggleBoardStateProofInterlock", "Board state checks"),

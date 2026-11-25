@@ -1515,8 +1515,8 @@ mod tests {
         assert!(valid(&cards));
         let battery = |sender: &str| cards.iter().find(|c| c.data_type == "BATTERY_VOLTAGE" && c.sender == sender).unwrap().max;
         assert_eq!(battery("PB"), 8.4, "AV bay source full_voltage");
-        assert_eq!(battery("VB"), 15.2);
-        assert_eq!(battery("GB"), 15.2);
+        assert_eq!(battery("VB"), 16.85);
+        assert_eq!(battery("GB"), 16.85);
         let valves: Vec<&str> = cards.iter().filter(|c| c.data_type == "VALVE_STATE").map(|c| c.label.as_str()).collect();
         assert_eq!(valves, ["Pilot", "Vent", "Dump", "Igniter", "Nitrogen", "Nitrous", "Fill Lines"], "the state view's display labels, never the data tab's identifiers");
         let chamber = cards.iter().find(|c| c.data_type == "COMBUSTION_CHAMBER_PRESSURE").unwrap();

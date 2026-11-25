@@ -306,8 +306,8 @@ pub(super) fn PlumbingDriveSelector(theme: ThemeConfig) -> Element {
                 style: "box-sizing:border-box;width:100%;min-width:0;min-height:44px;padding:8px;font:inherit;background:{theme.button_background};color:{theme.text_primary};border:1px solid {theme.border};border-radius:6px;",
                 onchange: move |event| { draft.set(Some(event.value())); release.set(false); },
                 option { value: "stepper", disabled: current["board"]["capabilities"]["stepper"] != true, "Stepper · existing travel profile" }
-                option { value: "h_bridge", disabled: true, "H-bridge · extend / retract, 45 seconds" }
-                option { value: "auxiliary", disabled: current["board"]["capabilities"]["auxiliary"] != true, "Auxiliary output · retract only, 45 seconds" }
+                option { value: "h_bridge", disabled: true, "H-bridge · extend / retract" }
+                option { value: "auxiliary", disabled: current["board"]["capabilities"]["auxiliary"] != true, "Auxiliary output · retract only, timed" }
             }
             p { style: "margin:0;color:{theme.text_muted};", "Actuator selection: {board_mode}. Timed motion does not verify physical fill-line position." }
             if let Some((failed, text)) = apply {
