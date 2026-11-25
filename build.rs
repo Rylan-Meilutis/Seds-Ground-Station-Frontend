@@ -95,6 +95,9 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     // Recovery search: the track recorded in the background while sharing (iOS only).
     let search_src = manifest_dir.join("assets/SearchTrackShim.m");
     println!("cargo:rerun-if-changed={}", search_src.display());
+    // Crew voice: audio-session reports and the speaker route (iOS only).
+    let voice_audio_src = manifest_dir.join("assets/VoiceAudioShim.m");
+    println!("cargo:rerun-if-changed={}", voice_audio_src.display());
     let mut sources = vec![
         (src, out_dir.join("LocationShim.o")),
         (media_src, out_dir.join("MediaWebViewShim.o")),
@@ -103,6 +106,7 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
         sources.push((watch_src, out_dir.join("WatchBridge.o")));
         sources.push((proximity_src, out_dir.join("ProximityShim.o")));
         sources.push((search_src, out_dir.join("SearchTrackShim.o")));
+        sources.push((voice_audio_src, out_dir.join("VoiceAudioShim.o")));
     }
     for (source, obj) in &sources {
         let mut cmd = Command::new("xcrun");
@@ -149,6 +153,7 @@ fn build_apple_objc(manifest_dir: &Path, target: &str) {
     println!("cargo:rustc-link-lib=objc");
     if ios {
         println!("cargo:rustc-link-lib=framework=WatchConnectivity");
+        println!("cargo:rustc-link-lib=framework=AVFoundation");
     }
 }
 

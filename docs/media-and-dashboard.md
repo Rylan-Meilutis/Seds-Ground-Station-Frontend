@@ -37,6 +37,86 @@ the device. Browser capture requires HTTPS or localhost. Native builds include
 Apple usage descriptions and Android camera/audio permissions; device-specific
 WebView support still applies.
 
+## Crew voice in the native apps
+
+The apps show the station's `/radio` page in an iframe, so voice runs on each
+platform's web view: WKWebView (iOS, macOS), WebKitGTK (Linux), the Android
+WebView and WebView2 (Windows). The dashboard's `gs26-session` message tells
+the page which app it is in (`app.platform`, and on iOS the microphone
+permission), so refusals name the right setting and the page never says
+"this browser" inside an app.
+
+**Noise suppression.** WebKit has no `noiseSuppression` microphone
+constraint (Safari, the iOS and macOS apps and WebKitGTK all report it
+unsupported; checked in WebKitGTK), so the page used to grey the control out
+with "unavailable in this browser". Now the page uses the platform's own
+suppression where the microphone reports it running (Chromium: browsers, the
+Android WebView, WebView2) and otherwise the built-in suppressor in
+`station_ui/scripts/voice-worklet.js` (spectral, 16 kHz, about 13 dB less
+steady noise, 16 ms delay). The status says what runs: **Noise suppression:
+on (system)**, **on (built-in)**, **off**, or **on (system; this device keeps
+it on)** when a device refuses to turn its own off. The built-in one is never
+stacked on a running system one.
+
+**iOS audio.** WebKit owns the app's audio session while the microphone is
+open and interrupts the page's AudioContext whenever the session changes
+(the microphone opening, a call or Siri, some route changes, background). An
+interrupted context stops the audio processor: the call looks connected but
+nothing is sent or heard, and the old page never restarted it. The page now
+resumes the context on every interruption and on the next touch, focus or
+return to the page, and says "Voice audio was paused by the system. Tap this
+page to resume." when WebKit wants a gesture. Separately, play-and-record
+plays through the receiver (earpiece) when no headset is connected; the
+app's `assets/VoiceAudioShim.m` moves output to the speaker in exactly that
+case (`src/native_voice_audio.rs`, `speaker_override_wanted`) and never
+changes the category, mode or a chosen headset, Bluetooth or AirPlay route.
+Every route change, interruption, media-services reset and return to the
+foreground is logged as `[voice-audio] ...` (category, mode, ports, sample
+rate, microphone permission), and the page logs `[voice] audio context ...`
+to the Web Inspector console.
+
+### iOS device checklist
+
+Use a release build on a phone (not the simulator), a station over HTTPS
+(self-signed with TLS verification skipped is fine), and a second participant
+on a laptop. Afterwards export the app's log from Settings (the log list
+under maintenance) and check the `[voice-audio]` lines; Safari's Web
+Inspector on a Mac shows the page's `[voice]` console lines live in a
+debug build.
+
+1. Fresh install: open Voice Chat, Join voice. iOS asks for the microphone
+   once. The log shows `[voice-audio] install` then a `route
+   (CategoryChange)` line with `category PlayAndRecord`.
+2. No headset: the laptop talks; the phone plays it from the speaker at
+   normal volume, not the earpiece. The log shows `speaker-override`.
+3. Hold to talk on the phone: the laptop hears it; the input meter moves.
+4. Ring/silent switch on silent: incoming voice still plays.
+5. Wired or Bluetooth headset: output stays on the headset (no override line).
+   Unplug it: output returns to the speaker.
+6. Receive a phone call or invoke Siri during voice, then return: audio
+   resumes by itself, or after one tap with the "paused by the system"
+   notice. The log shows `interruption (began)` and `(ended)`.
+7. Lock the phone for 10 s and unlock: voice resumes (one tap at most) or
+   the page says it disconnected; it never stays silent while showing
+   connected.
+8. Deny the microphone in Settings → Privacy & Security → Microphone and join:
+   the page says "Microphone access is off for this app" and names that
+   setting. Allow it again and join.
+9. Noise suppression: the status reads **Noise suppression: on (built-in)**
+   (never "this browser"). With a fan near the phone, toggle it off and on
+   while talking; the laptop hears the fan come and go. **off** shows when off.
+10. macOS app: steps 3, 8 (System Settings wording) and 9.
+11. Android app: the status reads **on (system)** on most phones; on a phone
+    whose microphone ignores the setting it reads **on (built-in)**.
+12. Linux and Windows apps: step 9; Windows reads **on (system)**.
+
+`node tests/station-voice_native.test.cjs` covers the page logic above
+(noise choice and labels per platform, refusal text per platform, the
+resume after an interruption); `node tests/station-voice_audio.cjs` covers
+the built-in suppressor; `cargo test native_voice_audio` covers the route
+decision and the report parsing; `tests/test_native_media_pages.py` checks
+the shim is built for iOS only and never sets the category.
+
 ## Backend coordination
 
 Deploy the matching GroundStation26 backend changes with this frontend. Embedded

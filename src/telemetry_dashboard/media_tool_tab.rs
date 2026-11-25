@@ -87,6 +87,8 @@ fn send_session(id: &str, token: Option<&str>, visible: bool) {
     let id = serde_json::to_string(id).unwrap();
     let payload = serde_json::json!({
         "type": "gs26-session", "token": token.unwrap_or(""), "visible": visible,
+        // The page names this platform's settings and never says "browser" in an app.
+        "app": crate::native_voice_audio::page_info(),
     });
     document::eval(&format!(
         r#"

@@ -204,5 +204,56 @@ class StationPageExplanations(unittest.TestCase):
         self.assertIn("hls.min.js", manifest)
 
 
+class IosCrewVoiceAudio(unittest.TestCase):
+    """iOS crew voice: the audio-session guard and what the page is told."""
+
+    def test_voice_audio_shim_is_built_for_ios_only_with_avfoundation(self):
+        build_rs = (ROOT / "build.rs").read_text()
+        self.assertIn('"assets/VoiceAudioShim.m"', build_rs)
+        ios_block = build_rs[build_rs.index("if ios {\n        sources.push"):]
+        self.assertIn('out_dir.join("VoiceAudioShim.o")', ios_block[:ios_block.index("}")])
+        self.assertIn("cargo:rustc-link-lib=framework=AVFoundation", build_rs)
+        shim = (ROOT / "assets/VoiceAudioShim.m").read_text()
+        self.assertIn("void gs26_voice_audio_install(", shim)
+        self.assertIn("fn gs26_voice_audio_install(", (ROOT / "src/native_voice_audio.rs").read_text())
+
+    def test_shim_reports_and_only_moves_output_when_rust_asks(self):
+        shim = (ROOT / "assets/VoiceAudioShim.m").read_text()
+        # WebKit owns the category while the microphone is open; never fight it.
+        for call in ["setCategory:", "setMode:", "setActive:"]:
+            self.assertNotIn(call, shim)
+        for note in ["AVAudioSessionRouteChangeNotification", "AVAudioSessionInterruptionNotification",
+                     "AVAudioSessionMediaServicesWereResetNotification", "UIApplicationDidBecomeActiveNotification"]:
+            self.assertIn(note, shim)
+        report = shim[shim.index("static void GS26VoiceAudioReport"):]
+        self.assertLess(report.index("if (!g_voice_audio_callback(json.UTF8String))"),
+                        report.index("overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker"))
+
+    def test_media_webview_installs_the_guard_and_pages_learn_the_platform(self):
+        media = (ROOT / "src/native_media.rs").read_text()
+        self.assertIn("crate::native_voice_audio::install();", media)
+        tab = (ROOT / "src/telemetry_dashboard/media_tool_tab.rs").read_text()
+        self.assertIn('"app": crate::native_voice_audio::page_info()', tab)
+        voice = (ROOT / "station_ui/scripts/voice.js").read_text()
+        self.assertIn("appInfo = event.data.app", voice)
+
+    def test_voice_page_never_says_browser_inside_an_app(self):
+        voice = (ROOT / "station_ui/scripts/voice.js").read_text()
+        for marker in ["noise-suppression", "audio-resume", "join-errors"]:
+            self.assertIn(f"// <{marker}>", voice)
+            self.assertIn(f"// </{marker}>", voice)
+        for line in voice.splitlines():
+            if "this browser" in line:
+                self.assertIn("inNativeApp()", line, line)
+        self.assertNotIn("Check this browser", voice)
+
+    def test_microphone_starts_the_audio_resume_and_noise_choice(self):
+        voice = (ROOT / "station_ui/scripts/voice.js").read_text()
+        join = voice[voice.index("$('join').onclick"):]
+        self.assertLess(join.index("watchAudio(s)"), join.index("getUserMedia"))
+        self.assertIn("...noiseConstraint($('noise-suppression').checked)", join)
+        self.assertLess(join.index("s.node=new AudioWorkletNode"), join.index("applyNoise(s);await resumeAudio(s,'microphone started')"))
+
+
 if __name__ == "__main__":
     unittest.main()

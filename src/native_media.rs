@@ -267,6 +267,8 @@ static CONFIGURED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool
 pub(crate) fn use_station_media_webview(base: String) {
     use dioxus::prelude::*;
     crate::native_navigation::remember_live_station(&base);
+    // iOS: report the audio session and keep crew voice off the earpiece.
+    crate::native_voice_audio::install();
     // Server-side renders and previews have no desktop window to configure.
     let window = use_hook(try_consume_context::<dioxus_desktop::DesktopContext>);
     use_hook(|| {

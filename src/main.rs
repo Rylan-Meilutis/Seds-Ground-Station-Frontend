@@ -12,6 +12,7 @@ mod native_station;
 mod debug_log;
 mod log_redaction;
 mod native_storage;
+mod native_voice_audio;
 mod opened_file;
 #[cfg(target_os = "ios")]
 mod startup_diagnostics;
