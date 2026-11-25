@@ -3,7 +3,9 @@
 // (src/telemetry_dashboard/live_diagrams/derive.rs), fed by the delayed
 // programme snapshot (`telemetry.diagram`), so the diagram stays in step with
 // the delayed video. Builds the SVG once per topology and then only changes
-// classes and text. Read-only: nothing here sends a command.
+// classes and text. Read-only: nothing here sends a command. A full-screen
+// button (shown only while the pointer moves, so a captured programme never
+// shows it) uses the Fullscreen API, else covers the viewport; Esc leaves.
 'use strict';
 (function () {
   const NS = 'http://www.w3.org/2000/svg';
@@ -31,6 +33,10 @@
 .gs-pd .vl{font-size:13px;font-weight:650}.gs-pd .vs{font-size:12px;font-weight:700}.gs-pd .v.open .vs{fill:#3fd13f}.gs-pd .v.pending .vs{fill:#fab219}.gs-pd .v.stale .vs,.gs-pd .v.unknown .vs,.gs-pd .v.manual .vs{fill:#9fb0c0;font-weight:500}
 .gs-pd .rl{font-size:12px;fill:#9fb0c0}.gs-pd .rv{font-size:20px;font-weight:700;font-variant-numeric:tabular-nums}
 .gs-pd .r.stale .rv,.gs-pd .r.missing .rv{fill:#7b8a99;font-weight:500}.gs-pd .r.warn .rv{fill:#fab219}
+.gs-pd .r.ovr .rv{fill:#ff6b6b}
+.gs-pd-fs{margin-left:auto;font:inherit;font-size:1.6vh;font-weight:600;padding:.6vh 1vw;border-radius:1vh;border:1px solid #3a4a5c;background:#152132;color:#e5ecf2;cursor:pointer;opacity:0;transition:opacity .3s}
+.gs-pd.awake .gs-pd-fs,.gs-pd-fs:focus-visible{opacity:1}
+.gs-pd-full{position:fixed!important;inset:0!important;z-index:2147483000;display:block!important}
 .gs-pd-legend{display:flex;flex-wrap:wrap;gap:.6vh 1.6vw;font-size:1.6vh;color:#cbd5e1}
 .gs-pd-legend i{display:inline-block;width:2.4vw;height:.6vh;margin-right:.5vw;vertical-align:middle;border-radius:3px}
 @media (prefers-reduced-motion: reduce){.gs-pd .a.on{animation:none}}`;
@@ -45,13 +51,16 @@
   const age = (ms) => { const s = Math.max(0, Math.floor(ms / 1000)); return s < 60 ? `${s} s` : s < 3600 ? `${Math.floor(s / 60)} min` : `${Math.floor(s / 3600)} h`; };
 
   function resolve(b, input, staleMs) {
-    let value = null, ageMs = null;
+    let value = null, ageMs = null, ovr = null;
+    staleMs = b.stale_ms || staleMs;
     if (b.telemetry) {
       const rows = (input.rows || []).filter((r) => r.t === b.telemetry && (!b.sender || r.s === b.sender));
       rows.sort((x, y) => (x.age_ms ?? 1e12) - (y.age_ms ?? 1e12));
-      const row = rows[0];
-      const v = row?.v?.[b.index || 0];
-      if (typeof v === 'number' && Number.isFinite(v)) { value = v * (b.scale ?? 1); ageMs = row.age_ms ?? null; }
+      const row = rows[0], i = b.index || 0;
+      const v = row?.v?.[i];
+      // ADC over range (diagrams::program_inputs): never a number, OVR or −OVR.
+      if (row && ((row.over_range || 0) >>> i) & 1) { ovr = ((row.over_range_low || 0) >>> i) & 1 ? '−OVR' : 'OVR'; ageMs = row.age_ms ?? null; }
+      else if (typeof v === 'number' && Number.isFinite(v)) { value = v * (b.scale ?? 1); ageMs = row.age_ms ?? null; }
     } else if (typeof b.constant === 'number') value = b.constant;
     else if (b.board) { const s = (input.boards || []).find((x) => x.s === b.board); if (s) { value = s.seen; ageMs = s.age_ms ?? null; } }
     else if (b.control) { const c = (input.controls || []).find((x) => x.cmd === b.control); if (c && c.actuated != null) value = c.actuated; }
@@ -59,7 +68,7 @@
       if (b.status.startsWith('topology:')) { const t = input.status?.topology?.[b.status.slice(9)]; if (t) { value = t.online; ageMs = t.age_ms ?? null; } }
       else { const s = input.status?.[b.status]; if (s != null && s !== '') value = s; }
     }
-    return { value, ageMs, stale: ageMs != null && ageMs > staleMs, assumed: !!b.assumed };
+    return { value, ageMs, ovr, stale: ageMs != null && ageMs > staleMs, assumed: !!b.assumed };
   }
   const truthy = (v) => (typeof v === 'boolean' ? v : typeof v === 'number' ? v >= 0.5 : null);
 
@@ -134,6 +143,8 @@
     const readings = {};
     for (const r of topo.readings || []) {
       const res = resolve(r.value, input, r.stale_ms || staleMs);
+      const ago = res.stale && res.ageMs != null ? ` · ${age(res.ageMs)} ago` : '';
+      if (res.ovr) { readings[r.id] = { text: res.ovr + ago, stale: res.stale, ovr: true }; continue; }
       if (res.value == null) { readings[r.id] = { text: r.missing_text || '—', missing: true }; continue; }
       let text;
       if (typeof res.value === 'string') text = res.value;
@@ -141,7 +152,7 @@
       else text = (r.format === 'integer' ? Math.round(res.value).toString() : res.value.toFixed(r.precision || 0)) + (r.unit ? ` ${r.unit}` : '');
       const n = typeof res.value === 'number' ? res.value : null;
       const warn = n != null && ((r.warn_above != null && n >= r.warn_above) || (r.warn_below != null && n <= r.warn_below));
-      readings[r.id] = { text: (res.assumed ? '≈ ' : '') + text + (warn ? ' ▲' : '') + (res.stale && res.ageMs != null ? ` · ${age(res.ageMs)} ago` : ''), stale: res.stale, warn };
+      readings[r.id] = { text: (res.assumed ? '≈ ' : '') + text + (warn ? ' ▲' : '') + ago, stale: res.stale, warn };
     }
     return { igt, valves, nodes, edges, readings };
   }
@@ -165,6 +176,12 @@
     const head = document.createElement('div'); head.className = 'gs-pd-head'; root.appendChild(head);
     const title = document.createElement('span'); title.textContent = topo.title; head.appendChild(title);
     const badge = document.createElement('span'); badge.className = 'gs-pd-badge'; head.appendChild(badge);
+    const fs = document.createElement('button'); fs.type = 'button'; fs.className = 'gs-pd-fs'; head.appendChild(fs);
+    fs.addEventListener('click', () => (holder.classList.contains('gs-pd-full') ? leaveFull() : enterFull(holder)));
+    full.label(holder, fs);
+    let sleepTimer = 0;
+    const wake = () => { root.classList.add('awake'); clearTimeout(sleepTimer); sleepTimer = setTimeout(() => root.classList.remove('awake'), 2500); };
+    root.addEventListener('pointermove', wake); root.addEventListener('pointerdown', wake); fs.addEventListener('focus', wake);
     const [x, y, w, h] = topo.view_box;
     const svg = el('svg', { viewBox: `${x} ${y} ${w} ${h}`, preserveAspectRatio: 'xMidYMid meet', role: 'img', 'aria-label': topo.title }, root);
     const refs = { root, badge, svg, frames: {}, edges: {}, nodes: {}, valves: {}, readings: {} };
@@ -257,7 +274,7 @@
     for (const rd of topo.readings || []) {
       const r = refs.readings[rd.id], s = st.readings[rd.id];
       r.g.style.display = visible(rd.when, st.igt) ? '' : 'none';
-      r.g.setAttribute('class', `r${s.stale ? ' stale' : ''}${s.missing ? ' missing' : ''}${s.warn ? ' warn' : ''}`);
+      r.g.setAttribute('class', `r${s.stale ? ' stale' : ''}${s.missing ? ' missing' : ''}${s.warn ? ' warn' : ''}${s.ovr ? ' ovr' : ''}`);
       r.value.textContent = s.text;
     }
   }
@@ -295,6 +312,32 @@
   }
   window.gsVehicleSilhouette = Object.assign(vehicleSilhouette, { valid: validVehicle, generic: GENERIC_VEHICLE });
 
+  // Full screen: the Fullscreen API (prefixed on Safari) on the diagram's
+  // holder, and in any case the holder covers the viewport (`gs-pd-full`),
+  // which is what an iPhone gets. Esc, the platform's exit and the button leave.
+  const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+  const full = {
+    holder: null,
+    label(holder, button) { const on = holder.classList.contains('gs-pd-full'); button.textContent = on ? 'Exit full screen' : 'Full screen'; button.setAttribute('aria-pressed', String(on)); button.title = on ? 'Leave full screen (Esc)' : 'Show the diagram full screen (Esc leaves)'; },
+    set(holder, on) { holder.classList.toggle('gs-pd-full', on); this.holder = on ? holder : null; const b = holder.querySelector('.gs-pd-fs'); if (b) this.label(holder, b); },
+  };
+  function enterFull(holder) {
+    full.set(holder, true);
+    const request = holder.requestFullscreen || holder.webkitRequestFullscreen;
+    if (request) { try { request.call(holder)?.catch?.(() => {}); } catch (_) { /* overlay only */ } }
+  }
+  function leaveFull() {
+    const holder = full.holder; if (!holder) return;
+    if (fsElement()) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document)?.catch?.(() => {}); } catch (_) { /* already out */ } }
+    full.set(holder, false);
+  }
+  if (typeof document !== 'undefined') {
+    const changed = () => { if (!fsElement() && full.holder) leaveFull(); };
+    document.addEventListener('fullscreenchange', changed);
+    document.addEventListener('webkitfullscreenchange', changed);
+    document.addEventListener('keydown', (e) => { if ((e.key === 'Escape' || e.key === 'Esc') && full.holder) { e.preventDefault(); leaveFull(); } });
+  }
+
   let current = null;
   window.gsProgramDiagram = {
     derive,
@@ -305,6 +348,7 @@
       if (!current || current.holder !== holder || current.key !== key) current = { holder, key, refs: build(holder, topology) };
       update(current.refs, topology, input || {});
     },
-    hide(holder) { if (current && current.holder === holder) { holder.textContent = ''; current = null; } },
+    hide(holder) { if (full.holder === holder) leaveFull(); if (current && current.holder === holder) { holder.textContent = ''; current = null; } },
+    enterFull, leaveFull,
   };
 })();
