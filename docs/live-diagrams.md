@@ -2,12 +2,38 @@
 
 ## Live diagrams tab
 
-**Live diagrams** (`live-diagrams`) draws four live views:
+**Live diagrams** (`live-diagrams`) draws **one combined view per station
+mode**, opened automatically:
 
-- **Fill system**: the real plumbing. Each valve shows whether it is open, closed, pending or stale. Each line shows which fluid is flowing. Pressures and masses sit where they are measured.
-- **AV bay**: boards, buses, the radio, sensors, the estimator, pyro channels, outputs and SD logging.
-- **System overview**: the network topology with live link health.
-- **Test stand**: load cells and thrust. In IGT the rocket appears as a second body.
+| Station mode | View | Shows |
+| --- | --- | --- |
+| Normal, HITL, testing | **Flight: fill system and vehicle on the pad** (`flight`) | The fill plumbing with the KG50 under the motor (fill mass), and the vehicle's AV bay: boards, buses, the radio to the GS and RRLS, sensors, the estimator, pyro channels, outputs and SD logging. No KG1000, no chamber PT. |
+| Test fire | **Test fire: fill system and motor on the stand** (`test_fire`) | The fill plumbing and the motor on the stand with the KG50, the KG1000 (thrust) and the chamber PT. No AV bay. |
+| Integrated ground test | **Integrated ground test: stand and rocket** (`ground_test`) | The test-fire view; while the test runs, the rocket on the ground as a second body with its replaying FC. |
+| Any (picked by hand) | **System overview** (`network`) | The network topology with live board and link health. |
+
+In every view each valve shows whether it is open, closed, pending or stale,
+each line shows which fluid is flowing, and pressures and masses sit where they
+are measured.
+
+The view comes from the station's layout (`live_diagram`, which GroundStation
+resolves per mode). A layout without it (an older station or replay bundle)
+falls back to the mode flags: `test_fire_mode`, the IGT status, else flight
+(`live_diagrams::mode_view`). The operator can pick any other view from the
+toolbar; the mode's view is marked **mode** and comes first. A change of
+station mode returns to the new mode's view. A bundle from the old per-system
+set still opens: its `fill`, `av_bay` and `stand` views are listed after the
+others.
+
+### Full screen
+
+Every view has a **Full screen** button in its title row (live, demo, replay
+and broadcast size alike).
+
+- Browsers, WebView2, WebKitGTK and Android: the Fullscreen API on the diagram panel (prefixed on Safari).
+- iPhone, or a webview that refuses the API: the panel covers the whole viewport (`data-full`, fixed, above everything, inside the safe areas).
+- **Esc**, the platform's own exit and **Exit full screen** leave.
+- The SVG fills the screen at its aspect ratio, so it stays crisp, and keeps updating at 10 Hz.
 
 The AV-bay and IGT views draw the station's vehicle true to scale from
 `GET /api/vehicle/geometry` (a frame's `vehicle` box); see [vehicle geometry](vehicle-geometry.md).
@@ -40,16 +66,23 @@ larger text, for a wall display or OBS window capture.
 
 The Stream Manager camera layout and the rundown scene lists offer:
 
-- **Live diagram: fill system**
-- **Live diagram: AV bay**
+- **Live diagram: this station mode** (`diagram-mode`)
+- **Live diagram: flight (fill + vehicle)**
+- **Live diagram: test fire stand**
+- **Live diagram: integrated ground test**
 - **Live diagram: system overview**
-- **Live diagram: test stand**
+
+A saved scene of the old set (`diagram-fill`, `-av_bay`, `-stand`) shows its
+successor. The programme page has the same full-screen button, shown only while
+the pointer moves (a captured programme never shows it); Esc leaves.
 
 The programme page draws them with `station_ui/scripts/program-diagram.js`,
 from the delayed programme snapshot, so the diagram stays in step with the
 delayed video. These controls need stream-manager permission, as before.
 `tests/station-program-diagram.test.cjs` checks that the programme applies the
-dashboard's rules.
+dashboard's rules (including OVR, the per-binding staleness and full screen).
+`tests/live-diagrams-browser.mjs` drives the tab in demo mode and a test-fire
+replay: each mode's view, full-screen enter and exit, and a phone width.
 
 ## Raw streams tab
 

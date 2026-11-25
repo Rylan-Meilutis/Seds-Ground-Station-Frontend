@@ -1491,4 +1491,10 @@ Flight dashboards/programs hide GSE fill data from Launch onward. Test-fire
 retains it and shows calibrated 1000 kg load-cell thrust in newtons (kg × 9.80665).
 Recorded/calibrated sensor values remain in their original units.
 
+The layout response also includes `live_diagram`: the Live diagrams view for the
+mode it is served in (`flight` in normal, HITL and testing; `test_fire`;
+`ground_test` in an integrated ground test), resolved by the station from the
+layout file's `live_diagrams` map (mode → view id). See
+[live-diagrams.md](live-diagrams.md).
+
 Flight-state wire codes follow the flight computer: `11` is `Descent`, `12` is `Reefing`, and `13` is `Landed`. Layout, vehicle and rundown phase maps returned by the backend include `flight_phase_version: 1`. Saved maps without that field are converted on read, preserving their original numeric phase meaning; this requires no database migration. Vehicle and broadcast mutations require `flight_phase_version: 1` in the vehicle or rundown object. Requests from an older UI that drops this field are rejected without changing saved settings; reload the updated UI before editing. New clients preserve the returned version when editing a map and omit version 0 when talking to older backends.

@@ -25,8 +25,8 @@ with a different rocket imports its `.ork` at the station; nothing here changes.
 - **Live diagrams**: a frame with a `vehicle` box draws the side profile nose up, true to
   scale (about 28:1 for a 15 ft by 6 in rocket), highlighting the sections whose roles
   are listed (`src/telemetry_dashboard/live_diagrams/render.rs`, `VehicleView`). The
-  stand's IGT frame highlights the AV bay; the AV-bay view has a `vehicle` frame
-  highlighting the AV bay and recovery bay, with the separation marked.
+  ground-test view's rocket frame (IGT only) highlights the AV bay; the flight view
+  has a `rocket` frame highlighting the AV bay and recovery bay, with the separation marked.
 - **Programme**: the rocket inset and the diagram scenes draw the same silhouette
   (`window.gsVehicleSilhouette` in `station_ui/scripts/program-diagram.js`).
 
@@ -46,7 +46,7 @@ four fins. The bundled `vehicle.glb` stays as the model with no geometry at all.
   generic rocket is valid.
 - `backend_contract`: `vehicle/geometry` is a covered backend contract fixture
   (`tests/fixtures/backend-contract/vehicle/geometry.json`).
-- `live_diagrams::render_tests`: the IGT and AV-bay silhouettes render to scale.
+- `live_diagrams::render_tests`: the ground-test and flight silhouettes render to scale.
 - `node tests/vehicle-geometry.test.mjs`: parse/refuse, true-scale 3D with the node
   names, the generic fallback, flight and stand replays.
 - `node tests/station-program-diagram.test.cjs`: the programme silhouette.
