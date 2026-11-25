@@ -38,3 +38,31 @@ for(let i=0;i<8;i++)switched.process([[new Float32Array(128).fill(.5)]],[[new Fl
 const changed=switched.messages.filter(m=>m.type==='pcm');assert.equal(changed.length,1);assert.equal(changed[0].capture_id,2);
 assert.equal(new DataView(changed[0].buffer).getInt16(0,true),16384,'old destination partial samples cannot cross the boundary');
 console.log('PASS: destination epochs reset partial microphone packets and tag completed PCM');
+
+// Built-in noise suppression (WebKit has no noiseSuppression constraint).
+// Off by default, so the commentary studio and other users are unchanged.
+{
+  const {NoiseSuppressor16k}=sandbox;
+  assert.equal(typeof NoiseSuppressor16k,'function');
+  let seed=1;const random=()=>{seed=(seed*1103515245+12345)%2147483648;return seed/2147483648*2-1;};
+  const suppressor=new NoiseSuppressor16k();const second=16000;
+  let noiseIn=0,noiseOut=0,toneIn=0,toneOut=0;
+  for(let i=0;i<second*4;i++){
+    const noise=0.05*random(),tone=i>=second*3?0.3*Math.sin(2*Math.PI*440*i/16000):0,out=suppressor.process(noise+tone);
+    if(i>=second*2&&i<second*3){noiseIn+=noise*noise;noiseOut+=out*out;}
+    if(i>=second*3+4000){toneIn+=(noise+tone)**2;toneOut+=out*out;}
+  }
+  const noiseDb=10*Math.log10(noiseOut/noiseIn),toneDb=10*Math.log10(toneOut/toneIn);
+  assert(noiseDb<-10,`steady noise drops by more than 10 dB (${noiseDb.toFixed(1)} dB)`);
+  assert(Math.abs(toneDb)<0.5,`a tone well above the noise passes (${toneDb.toFixed(2)} dB)`);
+  // At unity gain the windows reconstruct the input exactly, 256 samples (16 ms) later.
+  const passthrough=new NoiseSuppressor16k(1),input=Array.from({length:2048},()=>random()),delayed=input.map(x=>passthrough.process(x));
+  for(let i=512;i<2048;i++)assert(Math.abs(delayed[i]-input[i-256])<1e-5,`sample ${i}`);
+  const off=new Processor();off.port.onmessage({data:{type:'settings',transmit:true,gain:1,volume:0}});
+  const on=new Processor();on.port.onmessage({data:{type:'settings',transmit:true,gain:1,volume:0}});on.port.onmessage({data:{type:'noise',enabled:true}});
+  for(let i=0;i<375*2;i++){const block=new Float32Array(128).map(()=>0.05*random());off.process([[block]],[[new Float32Array(128)]]);on.process([[block]],[[new Float32Array(128)]]);}
+  const energy=p=>p.messages.filter(m=>m.type==='pcm').slice(-25).reduce((sum,m)=>{const v=new Int16Array(m.buffer);return sum+v.reduce((a,x)=>a+x*x,0);},0);
+  assert(energy(on)<energy(off)/5,'the toggle puts the suppressor in the capture path');
+  on.port.onmessage({data:{type:'noise',enabled:false}});assert.equal(on.noise,null);
+  console.log(`PASS: built-in noise suppression (${noiseDb.toFixed(1)} dB on steady noise, ${toneDb.toFixed(2)} dB on a tone, 16 ms delay) and its toggle`);
+}
