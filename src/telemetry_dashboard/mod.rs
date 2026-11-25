@@ -103,7 +103,7 @@ mod proximity_lock_view;
 pub(crate) mod recovery_search;
 mod recovery_search_native;
 mod recovery_search_view;
-mod proximity_native;
+pub(crate) mod proximity_native;
 mod launch_zero_notice;
 mod recovery_status;
 mod report_studio;
