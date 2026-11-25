@@ -59,7 +59,7 @@ try {
  // The real dashboard's tabs, populated by the demo station.
  await open('Dashboard',['Fill box battery']);
  await open('Data',['Tank pressure','Fill loadcell']);
- await open('Live diagrams',['Fill system']);
+ await open('Live diagrams',['Flight: fill system and vehicle on the pad']);
  await open('Connection Status',['Healthy']);
  await open('Checklists',['Pad checks (demo)']);
  await open('Data Export',['Demo flight (this scenario)']);
