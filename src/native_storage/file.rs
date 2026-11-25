@@ -121,7 +121,13 @@ mod tests {
             "rename must not invalidate sidecar lock"
         );
         drop(holder);
-        assert!(fs4::fs_std::FileExt::try_lock_exclusive(&competing).unwrap());
+        // A child another test is starting holds a copy of every descriptor,
+        // and so of this lock, for the moment between its fork and exec.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !fs4::fs_std::FileExt::try_lock_exclusive(&competing).unwrap() {
+            assert!(std::time::Instant::now() < deadline, "dropping the handle releases the lock");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         drop(competing);
         fs::remove_dir_all(dir).unwrap();
     }

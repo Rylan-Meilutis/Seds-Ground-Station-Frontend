@@ -513,6 +513,12 @@ pub(crate) fn install() {
 mod tests {
     use super::*;
 
+    /// Held by every test that reads or changes the process-wide output state.
+    fn output_state_for_test() -> std::sync::MutexGuard<'static, ()> {
+        static OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        OWNER.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
     fn report(category: &str, outputs: &[&str]) -> SessionReport {
         SessionReport {
             event: "route".into(),
@@ -632,6 +638,7 @@ mod tests {
 
     #[test]
     fn page_messages_set_the_choice_and_bump_the_revision() {
+        let _state = output_state_for_test();
         let before = revision();
         page_message(&serde_json::json!({"type": "gs26-audio-output", "choice": "speaker", "active": true}));
         assert_eq!(output_snapshot().choice, Speaker);
@@ -666,6 +673,7 @@ mod tests {
 
     #[test]
     fn page_info_names_the_platform_and_the_microphone_permission() {
+        let _state = output_state_for_test();
         assert_eq!(page_info()["platform"], platform());
         // Desktop hosts choose the output in the web view, not natively.
         assert!(page_info().get("audio_output").is_none());
