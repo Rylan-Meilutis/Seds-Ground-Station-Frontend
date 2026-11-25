@@ -15,6 +15,9 @@
 # it those five tests are listed as skipped. It needs Docker, ffmpeg and the
 # loopback ports 18554, 19090, 19101, 19997 and 19998.
 #
+# A test started on its own without an input this script produces prints SKIP
+# and exits 77. Here every input is provided, so that is a failure too.
+#
 # Environment: PLAYWRIGHT_MODULE (path to playwright's index.mjs) and
 # CHROME_BINARY (a Chrome/Chromium executable) are required.
 set -uo pipefail
@@ -30,7 +33,7 @@ while [ $# -gt 0 ]; do
     --jobs) jobs=$2; shift ;;
     --skip-build) build=0 ;;
     --gs) gs=$2; shift ;;
-    -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift

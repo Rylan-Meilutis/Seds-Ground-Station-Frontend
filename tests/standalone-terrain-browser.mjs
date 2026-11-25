@@ -9,7 +9,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {pathToFileURL} from 'node:url';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'playwright');
-const html=process.env.GS_REPLAY_TERRAIN_HTML_PROOF;if(!html)throw Error('GS_REPLAY_TERRAIN_HTML_PROOF must identify the Rust-exported file');
+const html=process.env.GS_REPLAY_TERRAIN_HTML_PROOF;
+if(!html){console.error('SKIP standalone-terrain-browser.mjs: GS_REPLAY_TERRAIN_HTML_PROOF must name the Rust-exported standalone replay HTML; scripts/run-browser-suite.sh produces it');process.exit(77);}
 const shots=process.env.GS_UI_ARTIFACTS;
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY,args:['--use-angle=swiftshader','--enable-unsafe-swiftshader']});
 try{

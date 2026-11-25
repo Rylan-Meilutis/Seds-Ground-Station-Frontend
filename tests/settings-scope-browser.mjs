@@ -83,7 +83,7 @@ fixture+=`let observedPage=null;let observedPhase="settings-setup";try {
  await page.getByRole('button',{name:'Close',exact:true}).click();
  await calibrationPage.getByText('Advanced fit and manual point tools',{exact:true}).click();
  await calibrationPage.getByLabel('Known weight or reference value',{exact:true}).fill('2');
- await calibrationPage.getByLabel('Manual raw ADC reading',{exact:true}).fill('0.1');
+ await calibrationPage.getByLabel('Manual sensor reading (mV)',{exact:true}).fill('0.1');
  await calibrationPage.getByRole('button',{name:'Add/Update Point',exact:true}).click();
  await openLoadcellSettings();
  await page.waitForFunction(()=>document.getElementById('kg50-input').disabled);

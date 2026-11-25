@@ -1,7 +1,8 @@
 // Exercise actual Rust-produced inverted-label HTML, never a reconstructed exporter.
 import fs from 'node:fs';import path from 'node:path';import assert from 'node:assert/strict';import {pathToFileURL} from 'node:url';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'/tmp/rme-browser-profile/node_modules/playwright/index.mjs');
-const html=process.env.GS_REPLAY_INVERTED_HTML_PROOF;if(!html)throw Error('GS_REPLAY_INVERTED_HTML_PROOF must name actual Rust-exported inverted-label HTML');
+const html=process.env.GS_REPLAY_INVERTED_HTML_PROOF;
+if(!html){console.error('SKIP replay-valve-semantics-browser.mjs: GS_REPLAY_INVERTED_HTML_PROOF must name the Rust-exported standalone replay HTML; scripts/run-browser-suite.sh produces it');process.exit(77);}
 const fixture=JSON.parse(fs.readFileSync(new URL('./fixtures/offline-valve-semantics.json',import.meta.url)));
 const browser=await chromium.launch({headless:true,executablePath:process.env.CHROME_BINARY||'/home/rylan/.cache/ms-playwright/chromium-1248/chrome-linux64/chrome',args:['--use-gl=angle','--use-angle=swiftshader','--ignore-gpu-blocklist','--enable-webgl','--enable-unsafe-swiftshader']});const results=[];
 try{

@@ -21,12 +21,19 @@ let gseConfig={cold_flow_target_psi:null,nitrogen_target_psi:100,pressure_step_p
 const configSaves=[],calibrationRequests=[],selfTestConfirmations=[];
 let gseStatus=null, qualificationResets=0,gseUnavailable=false;
 let actionPolicy=example('action-policy');
+// A station lists its GSE sequence commands; the Actions tab shows the sequence
+// buttons and operation checks only for commands the policy names.
+for(const control of JSON.parse(fs.readFileSync('tests/fixtures/backend-contract/action-policy/get.json','utf8')).controls)
+  if(['ValveSelfTest','NitrogenTest','StartFill','PauseFill','CancelFill','Turbocharge'].includes(control.cmd))actionPolicy.controls.push(control);
 let adminAccounts=[{username:'test-admin',roles:['admin'],permissions:{view_data:true,send_commands:false,set_system_time:false,voice_transmit:false},command_access:{allowed_commands:[]},calibration_access:{view:false,edit:false},disabled:false}];
 const dashboardLayout=example('layout.full');
 for(const id of ['LOADCELL','DAQ']) dashboardLayout.data_tab.tabs.push({id,label:id,channels:[],subtabs:[
   {id:'large',label:'1000 kg',data_type:'KG1000',channels:['Raw'],chart:{enabled:true},chart_groups:[{title:'Fill %',data_type:'LOADCELL_FILL_PERCENT',channels:[0]}],summary_items:[{label:'Fill %',data_type:'LOADCELL_FILL_PERCENT',index:0}]},
   {id:'small',label:'50 kg',data_type:'KG50',channels:['Raw'],chart:{enabled:true},chart_groups:[],summary_items:[]}
 ]});
+// Default dashboard cards exist only for data types the station layout names.
+dashboardLayout.data_tab.tabs.find(tab=>tab.id==='DAQ').subtabs.find(tab=>tab.id==='small').summary_items=
+  [['50 kg','LOADCELL_50_WEIGHT_KG'],['Ox tank','OX_TANK_PRESSURE'],['Battery','BATTERY_VOLTAGE']].map(([label,data_type])=>({label,data_type,index:0}));
 
 const server=http.createServer(async(req,res)=>{
   const pathname=new URL(req.url,'http://localhost').pathname;

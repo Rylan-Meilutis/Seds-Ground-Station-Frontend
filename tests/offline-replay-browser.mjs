@@ -4,7 +4,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import {pathToFileURL,fileURLToPath} from 'node:url';
 const {chromium}=await import(process.env.PLAYWRIGHT_MODULE||'/tmp/rme-browser-profile/node_modules/playwright/index.mjs');
-const html=process.env.GS_REPLAY_HTML_PROOF;if(!html)throw Error('GS_REPLAY_HTML_PROOF must identify the actual Rust-exported file');
+const html=process.env.GS_REPLAY_HTML_PROOF;
+if(!html){console.error('SKIP offline-replay-browser.mjs: GS_REPLAY_HTML_PROOF must name the Rust-exported standalone replay HTML; scripts/run-browser-suite.sh produces it');process.exit(77);}
 const fixture=fileURLToPath(new URL('./fixtures/offline-flight.json',import.meta.url));
 const readableMeasurements=[];
 const longValve='SavedValve_'+ 'V'.repeat(117), longState='SavedState_'+ 'S'.repeat(117);
