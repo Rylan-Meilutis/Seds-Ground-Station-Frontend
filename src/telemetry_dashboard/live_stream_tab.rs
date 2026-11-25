@@ -228,14 +228,8 @@ pub(crate) fn LiveStreamTab(
             .gs26-program-player { width:100%; flex:1 0 420px; min-height:420px; border:0; background:#080d15; }
             .gs26-program-editor { padding:10px 0; }
             .gs26-program-workspace {display:flex;flex-direction:column;flex:1;min-height:0;min-width:0;}
-            .gs26-program-workspace[data-manager=true] {display:grid;grid-template-columns:minmax(280px,380px) minmax(0,1fr);gap:12px;overflow:hidden;}
-            .gs26-program-workspace[data-manager=true] > .gs26-program-editor {overflow:auto;min-height:0;padding:0;}
-            .gs26-program-workspace[data-manager=true] > .gs26-program-player {height:100%;min-height:0;}
-            @media(max-width:800px) {
-                .gs26-program-workspace[data-manager=true] {display:flex;overflow:auto;}
-                .gs26-program-workspace[data-manager=true] > .gs26-program-editor {overflow:visible;}
-                .gs26-program-workspace[data-manager=true] > .gs26-program-player {order:-1;flex:0 0 36vh;min-height:180px;position:sticky;top:0;z-index:2;}
-            }
+            .gs26-program-workspace[data-manager=true] {gap:12px;}
+            .gs26-program-workspace[data-manager=true] > .gs26-program-editor {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:12px;align-items:start;padding:0;}
 
             @media(max-width:500px) { .gs26-program-player { flex-basis:560px; min-height:560px; } }
         "#} }
@@ -249,72 +243,27 @@ pub(crate) fn LiveStreamTab(
                     }
                     if cfg.can_manage_stream {
                         button { onclick:move |_| { let next=!*edit_mode.read();edit_mode.set(next); },
-                            if *edit_mode.read() { "Close stream controls" } else { "Stream controls" }
+                            if *edit_mode.read() { "Hide broadcast settings" } else { "Broadcast settings" }
                         }
                     }
                 }
             }
             if manager_mode && config.read().is_some() && !cfg.can_manage_stream { p { "Stream-management permission is required to use these controls." } }
             if !status.read().is_empty() { p { role:"status", "{status}" } }
-            div {class:"gs26-program-workspace","data-manager":(manager_mode && cfg.can_manage_stream && *edit_mode.read() && !program_only).to_string(),
+            div {class:"gs26-program-workspace","data-manager":(manager_mode && cfg.can_manage_stream && !program_only).to_string(),
+            if manager_mode && cfg.can_manage_stream && !program_only {
+                // The visual stream manager carries its own Program monitor.
+                super::stream_switcher::StreamSwitcher { broadcast:cfg.broadcast.clone() }
+            }
+            else if cfg.program_url.is_empty() {p {"Waiting for the delayed broadcast program…"}}
+            else {iframe {class:"gs26-program-player",src:url,title:"Mission broadcast — delayed video, audio and telemetry",allow:"autoplay; fullscreen; screen-wake-lock"}}
+            // Broadcast settings, audio, rundown, instant replay and roles.
             if manager_mode && cfg.can_manage_stream && *edit_mode.read() && !program_only {
                 div {class:"gs26-program-editor",
                     super::stream_studio::StreamStudio { broadcast:cfg.broadcast.clone(), program_url:cfg.program_url.clone(), streams:cfg.streams.clone() }
                     super::stream_studio::ReplayControls {broadcast:cfg.broadcast.clone(),streams:cfg.streams.clone()}
-                    div {style:"display:flex;gap:10px;flex-wrap:wrap;padding:10px 0;",
-                        label { "Camera layout "
-                            select { value:cfg.broadcast.layout.clone(), onchange:{
-                                let broadcast=cfg.broadcast.clone();
-                                move |event: Event<FormData>| {
-                                    let mut request=broadcast.clone();request.layout=event.value();
-                                    authority.spawn(async move {
-                                        match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
-                                            Ok(saved)=>{let mut next=config.read().clone().unwrap_or_default();next.broadcast=saved;config.set(Some(next));},
-                                            Err(error)=>status.set(error),
-                                        }
-                                    });
-                                }
-                            }, option {value:"hero","Featured camera"} option {value:"grid","Camera grid"} option {value:"model","Rocket graphic"} option {value:"grid-model","Cameras + graphic"} option {value:"interview","Interview + picture-in-picture"} option {value:"map","Recovery map"} option {value:"recorded-replay","Recorded vehicle replay"}
-                                for (id, label) in super::live_diagrams::PROGRAM_SCENES { option {value:id,"{label}"} } }
-                        }
-                        label { "Featured camera "
-                            select { value:cfg.broadcast.featured_stream_id.clone(), onchange:{
-                                let broadcast=cfg.broadcast.clone();
-                                move |event: Event<FormData>| {
-                                    let mut request=broadcast.clone();request.featured_stream_id=event.value();
-                                    authority.spawn(async move {
-                                        match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
-                                            Ok(saved)=>{let mut next=config.read().clone().unwrap_or_default();next.broadcast=saved;config.set(Some(next));},
-                                            Err(error)=>status.set(error),
-                                        }
-                                    });
-                                }
-                            }, option {value:"","Automatic"}
-                                for feed in &cfg.streams { option {value:feed.id.clone(),"{feed.label}"} }
-                            }
-                        }
-                        for feed in &cfg.streams {
-                            label {
-                                input {r#type:"checkbox",checked:!cfg.broadcast.hidden_stream_ids.contains(&feed.id),onchange:{
-                                    let broadcast=cfg.broadcast.clone();let id=feed.id.clone();
-                                    move |event: Event<FormData>| {
-                                        let mut request=broadcast.clone();request.hidden_stream_ids.retain(|s|s!=&id);
-                                        if !event.checked(){request.hidden_stream_ids.push(id.clone());}
-                                        authority.spawn(async move {
-                                            match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&request).await {
-                                                Ok(saved)=>{let mut next=config.read().clone().unwrap_or_default();next.broadcast=saved;config.set(Some(next));},
-                                                Err(error)=>status.set(error),
-                                            }
-                                        });
-                                    }
-                                }} " {feed.label}"
-                            }
-                        }
-                    }
                 }
             }
-            if cfg.program_url.is_empty() {p {"Waiting for the delayed broadcast program…"}}
-            else {iframe {class:"gs26-program-player",src:url,title:"Mission broadcast — delayed video, audio and telemetry",allow:"autoplay; fullscreen; screen-wake-lock"}}
 
             }
         }

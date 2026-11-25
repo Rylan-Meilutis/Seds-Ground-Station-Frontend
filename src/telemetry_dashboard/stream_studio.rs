@@ -4,17 +4,6 @@ use crate::auth;
 use dioxus::prelude::*;
 use serde::{Deserialize, Serialize};
 
-fn camera_tiles(ids:&[String],template:&str,split:f64)->Vec<super::live_stream_tab::CameraTile>{
-    let ids=&ids[..ids.len().min(8)];let n=ids.len();
-    ids.iter().enumerate().filter_map(|(i,id)|{
-        if template=="featured"&&i>0{return None;}
-        let (x,y,width,height)=if template=="featured"||n==1{(0.,0.,100.,100.)}
-        else if template=="main-side"{if i==0{(0.,0.,split,100.)}else{(split,(i-1)as f64*100./(n-1)as f64,100.-split,100./(n-1)as f64)}}
-        else{let cols=if n<=4{2}else{3};let rows=n.div_ceil(cols);((i%cols)as f64*100./cols as f64,(i/cols)as f64*100./rows as f64,100./cols as f64,100./rows as f64)};
-        Some(super::live_stream_tab::CameraTile{stream_id:id.clone(),x,y,width,height})
-    }).collect()
-}
-
 #[derive(Clone,Default,Deserialize)]
 struct TranscodeHost {id:String,name:String,passed:bool,online:bool,capacity:usize,encoding_ms:u64,upload_bps:u64,download_bps:u64}
 #[derive(Clone,Default,Deserialize)]
@@ -42,41 +31,6 @@ fn TranscodingHosts()->Element{
     }}
 }
 
-#[component]
-fn LayoutDesigner(broadcast:BroadcastState,streams:Vec<super::live_stream_tab::LiveStreamSpec>)->Element{
-    let authority = neutral_request_owner::use_factory();
-    let mut order=use_signal(||{let mut ids:Vec<_>=broadcast.tiles.iter().map(|t|t.stream_id.clone()).collect();for s in &streams{if !ids.contains(&s.id){ids.push(s.id.clone());}}ids.truncate(8);ids});
-    let mut template=use_signal(||"grid".to_owned());let mut split=use_signal(||65.0);
-    let mut base=use_signal(||broadcast.clone());let mut busy=use_signal(||false);let mut message=use_signal(String::new);
-    let mut preview=use_signal(||true);let tiles=camera_tiles(&order(),&template(),split());
-    if !authority.current(){return neutral_request_owner::retired_notice();}
-    rsx!{section {class:"gs26-layout-designer","aria-label":"Camera layout designer",
-        h3 {"Live camera layout"}
-        details {class:"gs-info",summary {"How layouts apply"} p {"Arrange the tiles, choose a layout and resize the main camera. Save to fade the audience programme into this layout, including camera replays."}}
-        label {"Layout" select {"aria-label":"Camera layout",value:template(),onchange:move|e|template.set(e.value()),option {value:"grid","Grid"}option {value:"main-side","Main camera and side tiles"}option {value:"featured","Featured camera"}}}
-        if template()=="main-side"{label {"Main camera width" input {"aria-label":"Main camera width",r#type:"range",min:"35",max:"75",step:"1",value:split().to_string(),oninput:move|e|{if let Ok(v)=e.value().parse(){split.set(v);}}}}}
-        label {input {r#type:"checkbox",checked:preview(),onchange:move|e|preview.set(e.checked())}" Live previews"}
-        div {style:"position:relative;aspect-ratio:16/9;background:#050b12;min-height:200px;",
-            for (index,tile) in tiles.iter().enumerate(){
-                {let feed=streams.iter().find(|s|s.id==tile.stream_id);let label=feed.map(|s|s.label.clone()).unwrap_or_else(||tile.stream_id.clone());let source=feed.map(|s|s.url.clone()).unwrap_or_default();
-                rsx!{article {key:"{tile.stream_id}",style:format!("position:absolute;box-sizing:border-box;border:2px solid #65778c;overflow:hidden;left:{}%;top:{}%;width:{}%;height:{}%;",tile.x,tile.y,tile.width,tile.height),
-                    if preview()&&!source.is_empty(){iframe {src:super::live_stream_tab::media_url(&source),title:"{label} preview",allow:"autoplay",style:"position:absolute;inset:0;width:100%;height:100%;border:0;pointer-events:none;"}}
-                    div {style:"position:absolute;left:0;right:0;bottom:0;padding:4px;display:flex;gap:4px;align-items:center;background:#07111ee6;",
-                        span {style:"overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;","{label}"}
-                        button {r#type:"button",disabled:busy()||index==0,"aria-label":format!("Move {} earlier",label),onclick:move|_|{order.write().swap(index,index-1);},"←"}
-                        button {r#type:"button",disabled:busy()||index+1>=order().len(),"aria-label":format!("Move {} later",label),onclick:move|_|{order.write().swap(index,index+1);},"→"}
-                    }
-                }}}
-            }
-        }
-        button {disabled:busy()||tiles.is_empty(),onclick:move|_|{
-            let mut next=base();next.layout="tiles".into();next.tiles=camera_tiles(&order(),&template(),split());next.hidden_stream_ids.retain(|id|!next.tiles.iter().any(|t|&t.stream_id==id));if !authority.current(){return;}busy.set(true);
-            authority.spawn(async move{match authority.post::<BroadcastState,BroadcastState>("/api/live_streams/control",&next).await{Ok(saved)=>{base.set(saved);message.set("Layout saved".into());},Err(e)=>message.set(e)}busy.set(false);});
-        },"Save camera layout"}
-        button {disabled:busy(),onclick:move|_|{base.set(broadcast.clone());order.set(streams.iter().map(|s|s.id.clone()).take(8).collect());message.set("Current camera list loaded".into());},"Reload cameras"}
-        p {role:"status","{message}"}
-    }}
-}
 #[derive(Clone, Deserialize)]
 struct Account {
     username: String,
@@ -143,7 +97,6 @@ pub(super) fn StreamStudio(
         input {r#type:"url",readonly:true,"aria-label":"OBS browser source URL",value:format!("{}{}&clean=1",super::UrlConfig::base_http().trim_end_matches('/'),program_url)}
         CleanFeedLink {url:format!("{}{}&clean=1",super::UrlConfig::base_http().trim_end_matches('/'),program_url)}
       }
-      LayoutDesigner {broadcast:broadcast.clone(),streams:streams.clone()}
       TranscodingHosts {}
       InterviewEditor {broadcast:broadcast.clone(),streams}
       super::stream_rundown::RundownEditor {broadcast:broadcast.clone()}
@@ -344,33 +297,6 @@ fn InterviewEditor(
         if !message().is_empty(){p {role:"status","{message}"}}
     }}
 }
-
-#[cfg(test)]
-mod layout_tests {
-    use super::*;
-    #[test]
-    fn presets_keep_reordered_cameras_inside_canvas_without_overlap() {
-        for count in 1..=8 {
-            let ids:Vec<_>=(0..count).rev().map(|i|format!("camera-{i}")).collect();
-            for preset in ["grid","main-side","featured"] {
-                for split in [35.0,65.0,75.0] {
-                    let tiles=camera_tiles(&ids,preset,split);
-                    assert_eq!(tiles[0].stream_id,ids[0]);
-                    assert_eq!(tiles.len(),if preset=="featured"{1}else{count});
-                    for (i,a) in tiles.iter().enumerate() {
-                        assert!(a.x>=0.0&&a.y>=0.0&&a.width>=10.0&&a.height>=10.0&&a.x+a.width<=100.001&&a.y+a.height<=100.001);
-                        for b in &tiles[i+1..] {
-                            let intersection=(a.x+a.width).min(b.x+b.width)-a.x.max(b.x);
-                            let vertical=(a.y+a.height).min(b.y+b.height)-a.y.max(b.y);
-                            assert!(intersection<0.001||vertical<0.001);
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 
 #[component]
 fn CleanFeedLink(url: String) -> Element {

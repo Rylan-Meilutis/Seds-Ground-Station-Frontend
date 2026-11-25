@@ -10,6 +10,8 @@ const session={...example('auth-session.anonymous'),authenticated:true,anonymous
 let lists={revision:0,enforce_before_launch:false,checklists:[{id:'setup',title:'Setup',required_before_launch:true,items:[{id:'pressure',text:'Pressure checked',checked:false,completed_by:null,completed_at_ms:null}]},{id:'recovery',title:'Recovery',required_before_launch:false,items:[{id:'recover',text:'Recovery area clear',checked:false,completed_by:null,completed_at_ms:null}]}]};
 let cameraOnline=true;
 let broadcastState=example('live-streams').broadcast;
+// The station's studio view (backend contract fixture).
+const studio=JSON.parse(fs.readFileSync('tests/fixtures/backend-contract/studio/view.json','utf8'));
 let fillSource='kg50';
 let gseStatus=null, qualificationResets=0,gseUnavailable=false;
 let actionPolicy=example('action-policy');
@@ -69,6 +71,11 @@ const server=http.createServer(async(req,res)=>{
     next.revision++;
     if(next.replay && !next.replay.id){next.replay.id='fixture-replay';next.replay.started_at_ms=Date.now();next.replay.source_end_ms=Date.now()-10000;}
     broadcastState=next;res.setHeader('Content-Type','application/json');res.end(JSON.stringify(next));return;
+  }
+  if(pathname.startsWith('/api/studio')){
+    res.setHeader('Content-Type','application/json');
+    if(req.method==='POST'){let raw='';for await(const part of req)raw+=part;const body=JSON.parse(raw);if(body.revision!==undefined&&body.revision!==studio.revision){res.statusCode=409;res.end('Studio changed; reload before saving');return;}if(pathname==='/api/studio/layouts')studio.layouts=body.layouts;if(pathname==='/api/studio/scenes')studio.scenes=body.scenes;studio.revision++;}
+    res.end(JSON.stringify(studio));return;
   }
   if(pathname.startsWith('/api/')){
     res.setHeader('Content-Type','application/json');
@@ -238,17 +245,18 @@ try {
   assert.equal(await tabs.getByRole('link',{name:'Share camera',exact:true}).count(),entry.name==='publisher'?1:0);
   if(entry.name==='manager'){
    await tabs.getByRole('link',{name:'Stream Manager',exact:true}).click();
-   const designer=mobile.getByRole('region',{name:'Camera layout designer'});
-   await designer.waitFor();
-   await designer.getByLabel('Camera layout',{exact:true}).selectOption('main-side');
-   await designer.getByLabel('Main camera width',{exact:true}).fill('70');
-   await designer.getByRole('button',{name:'Move Pad wide later',exact:true}).click();
-   await designer.getByRole('button',{name:'Save camera layout',exact:true}).click();
-   await designer.getByText('Layout saved',{exact:true}).waitFor();
-   assert.equal(broadcastState.layout,'tiles');assert.equal(broadcastState.tiles[0].stream_id,'side');assert.equal(broadcastState.tiles[0].width,70);
-   broadcastState.revision++;
-   await designer.getByRole('button',{name:'Save camera layout',exact:true}).click();
-   await designer.getByText(/reload before saving/).waitFor();
+   // The phone layout of the visual stream manager: edit a layout with a preset and save it.
+   const manager=mobile.getByRole('region',{name:'Stream manager'});
+   await manager.getByRole('tab',{name:'Layout editor'}).click();
+   await manager.getByRole('group',{name:'Aspect presets'}).getByRole('button',{name:'Preset Side by side'}).click();
+   await manager.getByRole('button',{name:'Save layouts',exact:true}).click();
+   await manager.getByText('Layouts saved',{exact:true}).waitFor();
+   assert.deepEqual(studio.layouts[0].slots.map(s=>s.id),['left','right']);
+   studio.revision++;
+   await manager.getByRole('group',{name:'Aspect presets'}).getByRole('button',{name:'Preset 2 × 2'}).click();
+   await manager.getByRole('button',{name:'Save layouts',exact:true}).click();
+   await manager.getByText(/reload before saving/).waitFor();
+   assert(await mobile.evaluate(()=>document.querySelector('.gs26-switcher').scrollWidth<=document.querySelector('.gs26-switcher').clientWidth+1),'stream manager fits the phone');
    session.roles=[];
    await mobile.getByRole('navigation',{name:'Mission navigation'}).getByRole('link',{name:'Cameras & Recordings',exact:true}).waitFor({state:'detached',timeout:12000});
   }
