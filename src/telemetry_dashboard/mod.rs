@@ -143,6 +143,7 @@ mod settings_navigation;
 mod station_settings_request;
 mod stream_rundown;
 mod stream_studio;
+pub(crate) mod studio_model;
 pub mod types;
 pub(crate) mod over_range;
 mod flight_replay_panel;

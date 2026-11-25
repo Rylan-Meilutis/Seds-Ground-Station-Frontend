@@ -115,6 +115,11 @@ pub(crate) const COVERED: &[&str] = &[
     "station-modes/prepare-restart",
     "station-modes/snapshot",
     "station-modes/snapshot-after-switch",
+    // Stream manager: studio_model.rs `station_studio_view_decodes...`.
+    "studio/program-scene",
+    "studio/take",
+    "studio/take.request",
+    "studio/view",
     "terrain/heightmap",
     "terrain/heightmap-unavailable",
     "terrain/status-empty",
