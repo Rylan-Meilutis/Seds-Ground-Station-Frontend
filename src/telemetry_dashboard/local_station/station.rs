@@ -435,7 +435,7 @@ impl LocalStation {
     fn mode_line(&self) -> String {
         match &self.session.source {
             Source::Demo => "Demo mode — no station connected".into(),
-            Source::Replay { file_name } => format!("Offline replay — {file_name}"),
+            Source::Replay { file_name } => format!("Replay: {file_name}"),
         }
     }
 
