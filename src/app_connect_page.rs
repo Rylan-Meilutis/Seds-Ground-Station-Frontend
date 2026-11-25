@@ -72,9 +72,13 @@ pub fn Connect() -> Element {
         }
     });
 
+    let replay_status = use_signal(String::new);
+    let (on_dragover, on_drop) = replay_drop_target(replay_status);
     rsx! {
         div {
             class: "gs26-connect-screen",
+            ondragover: on_dragover,
+            ondrop: on_drop,
             style: format!(
                 "min-height:var(--gs26-app-height); height:var(--gs26-app-height); overflow:hidden; display:flex; align-items:center; justify-content:center; padding:24px 16px; background:{}; color:{}; font-family:var(--gs-font);",
                 theme.app_background, theme.text_primary
@@ -120,6 +124,10 @@ pub fn Connect() -> Element {
                 div {
                     class: "gs26-connect-body",
                     style: "flex:1 1 auto; min-height:0; overflow:auto; padding-right:4px;",
+                    div { class: "gs26-connect-replay", style: format!("margin:0 0 16px 0; padding:0 0 16px 0; border-bottom:1px solid {}; display:flex; flex-direction:column; gap:8px;", theme.border_soft),
+                        p { style: "margin:0; color:{theme.text_muted};", "Watch a recording with no station: open a replay file (.gsreplay or .seds-replay.json)." }
+                        OpenReplayFile { status: replay_status }
+                    }
                     p { style: "margin:0 0 16px 0; color:{theme.text_muted};",
                         "Enter the station host and port. Example: ",
                         code { "your-ground-station-url.com" }

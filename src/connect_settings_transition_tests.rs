@@ -275,3 +275,80 @@ async fn actual_app_content_entry_connect_settings_back_settings_has_no_panic() 
     }
     drop(dom);
 }
+
+/// [`app_entry_root`] plus the opened-file navigation `App` installs.
+fn app_entry_root_with_opened_files() -> Element {
+    use_opened_file_navigation();
+    app_entry_root()
+}
+
+/// A fresh device (no station ever configured): the Connect page offers
+/// **Open replay file**, and a file handed over from it (as the picker,
+/// drag and drop and recent files do) moves the app straight to the replay,
+/// with the file's banner and no demo built on the way.
+#[tokio::test(flavor = "current_thread")]
+async fn fresh_device_connect_page_opens_a_replay_file_without_demo_mode() {
+    const CHILD: &str = "GS_OPEN_REPLAY_CHILD";
+    if std::env::var(CHILD).as_deref() != Ok("1") {
+        let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let owned = std::env::temp_dir().join(format!("gs-open-replay-{}-{nonce}", std::process::id()));
+        std::fs::create_dir_all(&owned).unwrap();
+        let exact = format!("{}::fresh_device_connect_page_opens_a_replay_file_without_demo_mode", module_path!().split_once("::").unwrap().1);
+        let Some(mut child) = spawn_loopback_only_child(&exact, |command| {
+            command.env(CHILD, "1")
+                .env("XDG_DATA_HOME", owned.join("data")).env("XDG_CONFIG_HOME", owned.join("config")).env("XDG_CACHE_HOME", owned.join("cache"));
+        }) else {
+            std::fs::remove_dir_all(&owned).unwrap();
+            return;
+        };
+        let start = Instant::now();
+        let exit = loop {
+            if let Some(status) = child.try_wait().unwrap() { break Some(status); }
+            if start.elapsed() > Duration::from_secs(60) { child.kill().unwrap(); child.wait().unwrap(); break None; }
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        std::fs::remove_dir_all(&owned).unwrap();
+        assert!(exit.is_some_and(|status| status.success()), "isolated open-replay child failed: {exit:?}");
+        return;
+    }
+    assert!(only_loopback_visible());
+    let mut dom = VirtualDom::new(app_entry_root_with_opened_files);
+    dom.in_scope(ScopeId::ROOT, || assert!(UrlConfig::_stored_base_url().is_none(), "fresh device"));
+    dom.rebuild_in_place();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !component_names(&dom).iter().any(|name| name.ends_with("Connect")) {
+        assert!(Instant::now() < deadline, "launch route did not redirect to Connect");
+        dom.process_events();
+        dom.render_immediate_to_vec();
+    }
+    let html = dioxus::ssr::render(&dom);
+    assert!(html.contains("aria-label=\"Open replay file\""), "the Connect page offers Open replay file");
+    assert!(html.contains("or drop a .gsreplay file here"));
+    assert_eq!(telemetry_dashboard::local_station::live_sessions(), 0, "nothing replay-related exists on the Connect page");
+
+    let bundle = include_bytes!("../tests/fixtures/backend-contract/replay-bundle/flight.gsreplay");
+    crate::opened_file::offer_from("flight.gsreplay".into(), bundle.to_vec(), None);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        dom.process_events();
+        dom.render_immediate_to_vec();
+        if dioxus::ssr::render(&dom).contains("Replay: flight.gsreplay") { break; }
+        assert!(Instant::now() < deadline, "the replay did not open");
+    }
+    dom.in_scope(ScopeId::APP, || assert_eq!(dioxus::history::history().current_route(), "/preview"));
+    let html = dioxus::ssr::render(&dom);
+    assert!(!html.contains("Demo mode"), "no demo on the way");
+    assert!(!html.contains("Back to demo"));
+    assert!(html.contains("Back to connection"));
+    assert_eq!(telemetry_dashboard::local_station::live_sessions(), 1, "only the replay's session");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !telemetry_dashboard::station_link::is_local() {
+        assert!(Instant::now() < deadline, "the replay's station was not selected");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        dom.process_events();
+        dom.render_immediate_to_vec();
+    }
+    drop(dom);
+    assert!(!telemetry_dashboard::station_link::is_local(), "leaving drops the local station");
+}

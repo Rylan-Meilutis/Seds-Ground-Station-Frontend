@@ -548,7 +548,7 @@ pub(super) fn RecordingStorePanel(
                                             });
                                         }
                                     }, "Download database" }
-                                    button { disabled: busy(), title: "Everything needed to replay this recording with no station: rows, layout, calibration, diagrams, vehicle geometry, summaries and the CSV. Open it with Explore offline → Open replay file.", onclick: {
+                                    button { disabled: busy(), title: "Everything needed to replay this recording with no station: rows, layout, calibration, diagrams, vehicle geometry, summaries and the CSV. Open it with Open replay file on the connection screen.", onclick: {
                                         let id = capture.id.clone();
                                         move |_| {
                                             let id = id.clone();

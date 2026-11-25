@@ -1,0 +1,8 @@
+/* Open replay file: a file input dressed as a button, with the drop hint beside it. */
+.gs26-open-replay { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.gs26-open-replay-button { display: inline-flex; align-items: center; cursor: pointer; white-space: nowrap; font-size: 13px; line-height: 1.2; }
+.gs26-open-replay-button input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+.gs26-open-replay-button:focus-within { outline: 2px solid currentColor; outline-offset: 2px; }
+.gs26-open-replay-hint { font-size: 13px; }
+.gs26-recent-replays { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; min-width: 0; }
+.gs26-recent-replay { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

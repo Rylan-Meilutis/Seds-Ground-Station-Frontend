@@ -441,10 +441,14 @@ fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element 
             "Explore offline"
         }
     };
+    let replay_status = use_signal(String::new);
+    let (on_dragover, on_drop) = replay_drop_target(replay_status);
     rsx! {
         div {
             class: "gs26-connection-failure",
             style: shell_page_style(&theme),
+            ondragover: on_dragover,
+            ondrop: on_drop,
             style { {include_str!("connection_failure.css")} }
             div {
                 class: "gs26-connection-failure-card",
@@ -472,6 +476,10 @@ fn ConnectionFailedCard(message: String, on_retry: EventHandler<()>) -> Element 
                         },
                         "Retry"
                     }
+                }
+                div { class: "gs26-connection-failure-replay", style: "margin-top:12px; display:flex; flex-direction:column; gap:8px;",
+                    p { style: "margin:0; font-size:13px; color:{theme.text_muted};", "Or watch a recording on this device, with no station:" }
+                    OpenReplayFile { status: replay_status }
                 }
             }
         }
@@ -556,6 +564,7 @@ pub fn Login() -> Element {
 
 // Native connection setup page.
 include!("app_connect_page.rs");
+include!("app_replay_launch.rs");
 
 #[cfg(not(target_arch = "wasm32"))]
 #[component]
@@ -830,6 +839,7 @@ fn Preview() -> Element {
             theme: shell_theme(),
             page: from_dashboard.then(|| "vehicle".to_string()),
             bundle: pending,
+            exit_label: if from_dashboard { "Exit".to_string() } else { replay_exit_label().to_string() },
             on_exit: move |_| {
                 let _ = if from_dashboard { nav.replace(Route::Dashboard {}) } else { nav.replace(connect_route()) };
             },
