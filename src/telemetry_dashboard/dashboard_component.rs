@@ -4187,6 +4187,8 @@ fn TelemetryDashboardInner() -> Element {
                                             board_status: board_status,
                                             network_topology: network_topology,
                                             flight_state: flight_state,
+                                            layout_view: layout.live_diagram.clone(),
+                                            test_fire_mode: layout.test_fire_mode,
                                         }
                                     }
                                 },

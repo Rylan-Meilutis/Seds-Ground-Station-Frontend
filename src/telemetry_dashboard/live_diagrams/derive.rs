@@ -107,6 +107,7 @@ impl Resolved {
 }
 
 pub(crate) fn resolve(binding: &Binding, inputs: &dyn Inputs, stale_ms: i64) -> Resolved {
+    let stale_ms = binding.stale_ms.unwrap_or(stale_ms);
     let observed = if let Some(data_type) = &binding.telemetry {
         inputs.telemetry(data_type, binding.sender.as_deref(), binding.index)
     } else if let Some(value) = binding.constant {
@@ -529,7 +530,7 @@ pub(crate) fn reading_state(reading: &super::topology::Reading, inputs: &dyn Inp
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use super::super::topology::{self, BUNDLED};
+    use super::super::topology;
     use super::*;
     use std::collections::HashMap;
 
@@ -579,8 +580,14 @@ pub(crate) mod tests {
         }
     }
 
+    /// The flight view (normal, HITL, testing): the fill system and the vehicle.
     pub(crate) fn fill() -> Topology {
-        topology::parse(BUNDLED[0].1).unwrap()
+        topology::parse(topology::bundled_text("flight")).unwrap()
+    }
+
+    /// The three station-mode views; each carries the whole fill system.
+    pub(crate) fn mode_views() -> Vec<Topology> {
+        ["flight", "test_fire", "ground_test"].iter().map(|id| topology::parse(topology::bundled_text(id)).unwrap()).collect()
     }
 
     const PILOT: usize = 0;
@@ -589,7 +596,13 @@ pub(crate) mod tests {
 
     #[test]
     fn open_path_with_a_differential_flows_and_a_closed_valve_blocks() {
-        let topology = fill();
+        for topology in mode_views() {
+            open_path_flows_in(&topology);
+        }
+    }
+
+    fn open_path_flows_in(topology: &Topology) {
+        let topology = topology.clone();
         let mut fake = Fake::default();
         // Nitrogen open, QD connected (not retracted), tank at 200 psi below
         // the 1000 psi regulator set point.
@@ -692,7 +705,15 @@ pub(crate) mod tests {
 
     #[test]
     fn chamber_without_a_pt_reading_is_assumed_ambient() {
-        let topology = fill();
+        // The flight view has no chamber PT at all: always ambient.
+        let mut fake = Fake::default();
+        fake.valves([1., 0., 0., 0., 0., 0., 0.], 100)
+            .set("PRESSURE_TRANSDUCER_CALIBRATED", 0, 700.0, 100)
+            .set("COMBUSTION_CHAMBER_PRESSURE", 0, 699.0, 100);
+        let state = derive(&fill(), &fake);
+        assert!(state.nodes["chamber"].pressure.assumed);
+        assert_eq!(state.edges["feed_line"].flow, Flow::Flowing);
+        let topology = topology::parse(topology::bundled_text("test_fire")).unwrap();
         let mut fake = Fake::default();
         fake.valves([1., 0., 0., 0., 0., 0., 0.], 100).set("PRESSURE_TRANSDUCER_CALIBRATED", 0, 700.0, 100);
         let state = derive(&topology, &fake);
@@ -715,7 +736,7 @@ pub(crate) mod tests {
 
     #[test]
     fn links_follow_board_freshness() {
-        let topology = topology::parse(BUNDLED[1].1).unwrap();
+        let topology = fill();
         let mut fake = Fake::default();
         fake.boards.insert("FC".into(), 500);
         fake.boards.insert("PB".into(), 60_000);
@@ -725,5 +746,23 @@ pub(crate) mod tests {
         assert_eq!(state.edges[&fc.id].link, Some(Link::Up));
         assert_eq!(state.edges[&pb.id].link, Some(Link::Down));
         assert_eq!(state.edges[&pb.id].flow, Flow::Unknown);
+    }
+
+    /// One view per mode keeps each system's own staleness: the fill boards
+    /// at 5 s, the AV bay's radio data at 10 s (binding `stale_ms`).
+    #[test]
+    fn the_flight_view_keeps_the_av_bay_radio_staleness() {
+        let topology = fill();
+        let mut fake = Fake::default();
+        for board in ["FC", "VB"] {
+            fake.boards.insert(board.into(), 7_000);
+        }
+        fake.set("BATTERY_CURRENT", 0, 0.8, 7_000).set("PRESSURE_TRANSDUCER_CALIBRATED", 0, 300.0, 7_000);
+        let state = derive(&topology, &fake);
+        assert_eq!(state.nodes["fc"].online, Some(Link::Up), "AV bay: fresh for 10 s");
+        assert_eq!(state.nodes["vb"].online, Some(Link::Down), "fill: stale after 5 s");
+        assert!(!state.readings["pb_i"].stale && state.readings["tank_pt"].stale);
+        fake.boards.insert("FC".into(), 11_000);
+        assert_eq!(derive(&topology, &fake).nodes["fc"].online, Some(Link::Down));
     }
 }

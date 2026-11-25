@@ -337,6 +337,10 @@ pub(crate) struct Binding {
     /// The value is nominal, not measured (drawn with "≈").
     #[serde(default)]
     pub assumed: bool,
+    /// Older than this is stale, overriding the topology's (and a reading's)
+    /// `stale_ms`: the AV-bay radio data in the flight view (10 s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stale_ms: Option<i64>,
 }
 
 impl Binding {
@@ -395,6 +399,9 @@ pub(crate) fn validate(topology: &Topology) -> Result<(), Vec<String>> {
         }
         if binding.sender.is_some() && binding.telemetry.is_none() {
             err(format!("{owner}: sender is only valid with telemetry"));
+        }
+        if binding.stale_ms.is_some_and(|ms| ms <= 0) {
+            err(format!("{owner}: stale_ms must be positive"));
         }
         if !binding.scale.is_finite() || binding.scale == 0.0 {
             err(format!("{owner}: scale must be finite and non-zero"));
@@ -507,13 +514,20 @@ pub(crate) fn parse(text: &str) -> Result<Topology, Vec<String>> {
     Ok(topology)
 }
 
-/// The diagrams shipped with the client, in tab order.
+/// The diagrams shipped with the client: one view per station mode
+/// ([`super::mode_view`]), then the network overview.
 pub(crate) const BUNDLED: &[(&str, &str)] = &[
-    ("fill", include_str!("topologies/fill.json")),
-    ("av_bay", include_str!("topologies/av_bay.json")),
+    ("flight", include_str!("topologies/flight.json")),
+    ("test_fire", include_str!("topologies/test_fire.json")),
+    ("ground_test", include_str!("topologies/ground_test.json")),
     ("network", include_str!("topologies/network.json")),
-    ("stand", include_str!("topologies/stand.json")),
 ];
+
+/// Bundled view by id.
+#[cfg(test)]
+pub(crate) fn bundled_text(id: &str) -> &'static str {
+    BUNDLED.iter().find(|(i, _)| *i == id).map(|(_, t)| *t).unwrap_or_else(|| panic!("no bundled view `{id}`"))
+}
 
 pub(crate) fn bundled() -> Vec<Topology> {
     BUNDLED

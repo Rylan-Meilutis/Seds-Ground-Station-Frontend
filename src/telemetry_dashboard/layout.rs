@@ -7,6 +7,11 @@ pub struct LayoutConfig {
     pub flight_phase_version: u8,
     #[serde(default)]
     pub test_fire_mode: bool,
+    /// The live-diagram view for the station's mode (GroundStation resolves
+    /// the layout's `live_diagrams` map); absent from older stations and
+    /// replay bundles (`live_diagrams::mode_view` falls back to the mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_diagram: Option<String>,
     pub version: u32,
     #[serde(default)]
     pub branding: BrandingConfig,

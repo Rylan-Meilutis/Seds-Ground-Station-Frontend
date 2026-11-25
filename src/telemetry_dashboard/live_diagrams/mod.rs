@@ -1,7 +1,9 @@
-//! Live P&ID-style diagrams (docs/live-diagrams.md): fill system, AV bay in
-//! flight, system overview and test stand. Topologies are declarative JSON
-//! (`topology.rs`), state is derived by pure rules (`derive.rs`) and drawn as
-//! one SVG per diagram (`render.rs`) at 10 Hz.
+//! Live P&ID-style diagrams (docs/live-diagrams.md): one combined view per
+//! station mode (flight, test fire, integrated ground test), chosen from the
+//! station's layout (`live_diagram`), plus the system overview. Topologies are
+//! declarative JSON (`topology.rs`), state is derived by pure rules
+//! (`derive.rs`) and drawn as one SVG per diagram (`render.rs`) at 10 Hz. Each
+//! view can be shown full screen.
 pub(crate) mod derive;
 pub(crate) mod render;
 pub(crate) mod topology;
@@ -19,13 +21,15 @@ const RENDER_INTERVAL_MS: u64 = 100;
 
 /// Audience programme scenes (GroundStation `diagrams::is_scene`): the
 /// station draws the same topology, delayed with the video.
+/// `diagram-mode` follows the station mode's view; the older per-system
+/// scenes (`diagram-fill`, `-av_bay`, `-stand`) still resolve on the station.
 pub(crate) const PROGRAM_SCENES: &[(&str, &str)] = &[
-    ("diagram-fill", "Live diagram: fill system"),
-    ("diagram-av_bay", "Live diagram: AV bay"),
+    ("diagram-mode", "Live diagram: this station mode"),
+    ("diagram-flight", "Live diagram: flight (fill + vehicle)"),
+    ("diagram-test_fire", "Live diagram: test fire stand"),
+    ("diagram-ground_test", "Live diagram: integrated ground test"),
     ("diagram-network", "Live diagram: system overview"),
-    ("diagram-stand", "Live diagram: test stand"),
 ];
-const SELECTED_KEY: &str = "gs26_live_diagram_selected_v1";
 const PROGRAM_KEY: &str = "gs26_live_diagram_program_v1";
 
 async fn sleep_ms(ms: u64) {
@@ -228,11 +232,46 @@ struct RssiValue {
     source: String,
 }
 
-fn default_selection(topologies: &[Topology]) -> String {
-    let stand = super::igt::current_active();
-    persist_get(SELECTED_KEY)
-        .filter(|id| topologies.iter().any(|t| &t.id == id))
-        .unwrap_or_else(|| if stand { "stand".into() } else { "fill".into() })
+/// The view the station mode shows: the layout's `live_diagram` (the station
+/// resolves it per mode), else, for a layout without one (an older station or
+/// replay bundle), from the mode flags: test fire, integrated ground test or
+/// flight (normal, HITL, testing).
+pub(crate) fn mode_view(layout_view: Option<&str>, test_fire: bool, igt: bool) -> String {
+    match layout_view.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(view) => legacy_view(view).unwrap_or(view).to_string(),
+        None if igt => "ground_test".into(),
+        None if test_fire => "test_fire".into(),
+        None => "flight".into(),
+    }
+}
+
+/// The per-system views the mode views replaced.
+pub(crate) fn legacy_view(id: &str) -> Option<&'static str> {
+    match id {
+        "fill" | "av_bay" => Some("flight"),
+        "stand" => Some("ground_test"),
+        _ => None,
+    }
+}
+
+/// The topology to draw: the operator's pick if it exists, else the mode's
+/// view, else the first available.
+fn pick<'a>(list: &'a [Topology], chosen: Option<&str>, mode: &str) -> Option<&'a Topology> {
+    let find = |id: &str| list.iter().find(|t| t.id == id);
+    chosen.and_then(find).or_else(|| find(mode)).or_else(|| list.first())
+}
+
+/// Tab order: the mode's view first, then the other mode views, then the
+/// rest (the system overview, and any per-system view an older bundle serves).
+fn ordered(list: &[Topology], mode: &str) -> Vec<Topology> {
+    let rank = |t: &Topology| match t.id.as_str() {
+        id if id == mode => 0,
+        id if topology::BUNDLED.iter().any(|(b, _)| *b == id) => 1,
+        _ => 2,
+    };
+    let mut out = list.to_vec();
+    out.sort_by_key(|t| (rank(t), topology::BUNDLED.iter().position(|(b, _)| *b == t.id).unwrap_or(usize::MAX)));
+    out
 }
 
 fn persist_get(key: &str) -> Option<String> {
@@ -253,23 +292,122 @@ pub(crate) const PAGE_CSS: &str = r#"
 .gs26-pid-badge { font-size:12px; font-weight:700; letter-spacing:.05em; padding:2px 8px; border-radius:999px; border:1px solid currentColor; }
 .gs26-pid-badge[data-sim=true] { color:#d03b3b; }
 .gs26-pid-desc { font-size:12px; color:var(--pid-muted); margin:2px 0 6px; }
+.gs26-pid-tag { font-size:11px; font-weight:600; color:var(--pid-muted); margin-left:6px; }
+.gs26-pid-full-btn { margin-left:auto; font:inherit; font-size:13px; min-height:36px; padding:4px 12px; border-radius:10px; border:1px solid var(--pid-border); background:var(--pid-surface-alt); color:var(--pid-text); cursor:pointer; }
 .gs26-pid-svg { flex:1 1 auto; min-height:0; display:flex; align-items:center; justify-content:center; }
+.gs26-pid-wrap[data-program=false][data-full=false] { flex:0 0 auto; }
+.gs26-pid-wrap[data-program=false][data-full=false] .gs26-pid-svg > .gs26-pid { max-height:calc(100vh - 96px); }
+.gs26-pid-wrap[data-full=true] { position:fixed; inset:0; z-index:2147483000; width:auto; height:auto; max-width:none; aspect-ratio:auto; margin:0; border:0; border-radius:0; box-sizing:border-box;
+  padding:max(10px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); overflow:hidden; }
+.gs26-pid-wrap[data-full=true] .gs26-pid-svg > .gs26-pid { width:100%; height:100%; max-height:none; }
+.gs26-pid-wrap[data-full=true] .gs26-pid-desc { display:none; }
+.gs26-pid-wrap:fullscreen { width:100vw; height:100vh; }
 .gs26-pid-legend { display:flex; flex-wrap:wrap; gap:6px 14px; font-size:12px; color:var(--pid-text); padding-top:6px; }
 .gs26-pid-legend-item { display:inline-flex; align-items:center; gap:6px; }
 .gs26-pid-dot { display:inline-block; width:12px; height:12px; border-radius:3px; box-sizing:border-box; }
 @media (max-width:640px) { .gs26-pid-page { padding:6px; } .gs26-pid-desc { display:none; } }
 "#;
 
-/// The diagram with its title, provenance badge and legend; shared by the
-/// dashboard tab and the broadcast-size view.
+/// The panel shown full screen (`FULLSCREEN_JS`).
+const PANEL_ID: &str = "gs26-pid-panel";
+
+/// Full screen: the Fullscreen API where the platform has it for elements
+/// (browsers, WebView2, WebKitGTK; prefixed on Safari), and in any case the
+/// panel covers the viewport (`data-full`), which is all an iPhone, or a
+/// webview that refuses the API, gets. Esc, the platform's own exit and the
+/// panel's button all leave it; the script reports `exit` once.
+const FULLSCREEN_JS: &str = r#"
+const el = document.getElementById('gs26-pid-panel');
+let done = false;
+const current = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+const finish = () => {
+  if (done) return; done = true;
+  document.removeEventListener('fullscreenchange', onChange);
+  document.removeEventListener('webkitfullscreenchange', onChange);
+  document.removeEventListener('keydown', onKey, true);
+  if (current()) { try { (document.exitFullscreen || document.webkitExitFullscreen).call(document)?.catch?.(() => {}); } catch (_) {} }
+  delete window.__gs26PidExit;
+  dioxus.send('exit');
+};
+const onChange = () => { if (!current()) finish(); };
+const onKey = (e) => { if (e.key === 'Escape' || e.key === 'Esc') { e.preventDefault(); finish(); } };
+window.__gs26PidExit?.();
+window.__gs26PidExit = finish;
+done = false;
+document.addEventListener('fullscreenchange', onChange);
+document.addEventListener('webkitfullscreenchange', onChange);
+document.addEventListener('keydown', onKey, true);
+const request = el && (el.requestFullscreen || el.webkitRequestFullscreen);
+let native = false;
+if (request) {
+  try { const p = request.call(el); native = true; p?.catch?.(() => { native = false; }); } catch (_) { native = false; }
+}
+dioxus.send(native ? 'native' : 'overlay');
+el?.focus?.({ preventScroll: true });
+"#;
+
+/// Full-screen state of a diagram view and the handlers that change it.
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct Fullscreen {
+    pub on: Signal<bool>,
+}
+
+impl Fullscreen {
+    pub(crate) fn enter(mut self) {
+        if *self.on.peek() {
+            return;
+        }
+        self.on.set(true);
+        let mut on = self.on;
+        spawn(async move {
+            let mut script = document::eval(FULLSCREEN_JS);
+            while let Ok(message) = script.recv::<String>().await {
+                if message == "exit" {
+                    break;
+                }
+            }
+            on.set(false);
+        });
+    }
+    pub(crate) fn exit(mut self) {
+        document::eval("window.__gs26PidExit?.()");
+        self.on.set(false);
+    }
+}
+
+/// The diagram with its title, provenance badge, full-screen button and
+/// legend; shared by the dashboard tab and the broadcast-size view.
 #[component]
-pub(crate) fn DiagramPanel(topology: Topology, state: derive::DiagramState, program: bool, provenance: String) -> Element {
+pub(crate) fn DiagramPanel(
+    topology: Topology,
+    state: derive::DiagramState,
+    program: bool,
+    provenance: String,
+    #[props(default)] fullscreen: Option<Fullscreen>,
+    #[props(default)] mode_view: bool,
+) -> Element {
     let simulated = provenance != "Live";
+    let full = fullscreen.is_some_and(|f| *f.on.read());
     rsx! {
-        div { class: "gs26-pid-wrap", "data-program": program.to_string(), "data-diagram-panel": topology.id.clone(),
+        div { class: "gs26-pid-wrap", id: PANEL_ID, tabindex: "-1", "data-program": program.to_string(), "data-full": full.to_string(),
+            "data-diagram-panel": topology.id.clone(), role: if full { "dialog" } else { "group" },
+            "aria-label": "{topology.title}", "aria-modal": if full { "true" } else { "false" },
+            onkeydown: move |e: KeyboardEvent| {
+                if e.key() == Key::Escape && let Some(f) = fullscreen { f.exit(); }
+            },
             div { class: "gs26-pid-title",
                 strong { "{topology.title}" }
+                if mode_view { span { class: "gs26-pid-tag", "station mode view" } }
                 span { class: "gs26-pid-badge", "data-sim": simulated.to_string(), "{provenance}" }
+                if let Some(f) = fullscreen {
+                    if full {
+                        button { class: "gs26-pid-full-btn", r#type: "button", "data-fullscreen": "exit",
+                            title: "Leave full screen (Esc)", onclick: move |_| f.exit(), "Exit full screen" }
+                    } else {
+                        button { class: "gs26-pid-full-btn", r#type: "button", "data-fullscreen": "enter",
+                            title: "Show this diagram full screen (Esc leaves)", onclick: move |_| f.enter(), "Full screen" }
+                    }
+                }
             }
             if !program { p { class: "gs26-pid-desc", "{topology.description}" } }
             div { class: "gs26-pid-svg", render::DiagramSvg { topology: topology.clone(), state } }
@@ -284,11 +422,20 @@ pub(crate) fn LiveDiagramsTab(
     board_status: Signal<Vec<BoardStatusEntry>>,
     network_topology: Signal<NetworkTopologyMsg>,
     flight_state: Signal<String>,
+    /// The layout's `live_diagram` (the station's view for its mode).
+    #[props(default)]
+    layout_view: Option<String>,
+    #[props(default)]
+    test_fire_mode: bool,
 ) -> Element {
     super::vehicle_geometry::use_station_geometry();
     let mut topologies = use_signal(topology::bundled);
     let mut source_note = use_signal(|| "Client copy".to_string());
-    let mut selected = use_signal(|| default_selection(&topology::bundled()));
+    // The operator's pick, with the mode view it was made in: a change of
+    // station mode returns to the new mode's view.
+    let mut chosen = use_signal(|| None::<(String, String)>);
+    let fullscreen = Fullscreen { on: use_signal(|| false) };
+    let mode = mode_view(layout_view.as_deref(), test_fire_mode, super::igt::current_active());
     let mut program = use_signal(|| persist_get(PROGRAM_KEY).as_deref() == Some("1"));
     let mut tick = use_signal(|| 0u64);
     let mut rssi = use_signal(|| None::<String>);
@@ -326,9 +473,9 @@ pub(crate) fn LiveDiagramsTab(
         }
     });
     let _ = *tick.read();
-    let list = topologies.read().clone();
-    let current_id = selected.read().clone();
-    let Some(current) = list.iter().find(|t| t.id == current_id).or_else(|| list.first()).cloned() else {
+    let list = ordered(&topologies.read(), &mode);
+    let pick_now = chosen.read().as_ref().filter(|(m, _)| *m == mode).map(|(_, id)| id.clone());
+    let Some(current) = pick(&list, pick_now.as_deref(), &mode).cloned() else {
         return rsx! { p { role: "status", "No diagram topology is available." } };
     };
     let inputs = LiveInputs {
@@ -347,9 +494,11 @@ pub(crate) fn LiveDiagramsTab(
         div { class: "gs26-pid-page", style: "{vars}color:{theme.text_primary};",
             div { class: "gs26-pid-toolbar", role: "toolbar", "aria-label": "Diagram",
                 for t in list.iter() {
-                    button { key: "pick-{t.id}", r#type: "button", "aria-pressed": (t.id == current.id).to_string(),
-                        onclick: { let id = t.id.clone(); move |_| { super::persist::set_string(SELECTED_KEY, &id); selected.set(id.clone()); } },
+                    button { key: "pick-{t.id}", r#type: "button", "aria-pressed": (t.id == current.id).to_string(), "data-view": t.id.clone(),
+                        title: if t.id == mode { "The view for the station's current mode" } else { "Show this view instead of the mode's" },
+                        onclick: { let id = t.id.clone(); let mode = mode.clone(); move |_| chosen.set((id != mode).then(|| (mode.clone(), id.clone()))) },
                         "{t.title}"
+                        if t.id == mode { span { class: "gs26-pid-tag", "mode" } }
                     }
                 }
                 button { r#type: "button", "aria-pressed": is_program.to_string(),
@@ -359,7 +508,7 @@ pub(crate) fn LiveDiagramsTab(
                 }
                 span { class: "gs26-pid-note", "{source_note} · updates 10×/s" }
             }
-            DiagramPanel { topology: current, state, program: is_program, provenance: provenance_text() }
+            DiagramPanel { mode_view: current.id == mode, topology: current, state, program: is_program, provenance: provenance_text(), fullscreen }
         }
     }
 }
@@ -380,14 +529,46 @@ mod tests {
     #[test]
     fn station_topologies_replace_bundled_ones_and_invalid_files_are_ignored() {
         let mut fill: serde_json::Value = serde_json::from_str(topology::BUNDLED[0].1).unwrap();
-        fill["title"] = "Fill (station edit)".into();
+        fill["title"] = "Flight (station edit)".into();
         let mut broken = fill.clone();
         broken["id"] = "broken".into();
         broken["edges"][0]["to"] = "nowhere".into();
         let (merged, problems) = merge_station(topology::bundled(), DiagramsReply { diagrams: vec![fill, broken] });
-        assert_eq!(merged.iter().find(|t| t.id == "fill").unwrap().title, "Fill (station edit)");
+        assert_eq!(merged.iter().find(|t| t.id == "flight").unwrap().title, "Flight (station edit)");
         assert!(merged.iter().all(|t| t.id != "broken"));
         assert_eq!(problems.len(), 1);
         assert_eq!(merged.len(), topology::BUNDLED.len());
+    }
+
+    #[test]
+    fn each_station_mode_gets_its_view_and_old_layouts_fall_back_to_the_mode_flags() {
+        // The station's layout names the view (GroundStation `live_diagram`).
+        assert_eq!(mode_view(Some("test_fire"), true, false), "test_fire");
+        assert_eq!(mode_view(Some("flight"), false, true), "flight", "the layout wins");
+        // A layout without it (an older station or replay bundle).
+        assert_eq!(mode_view(None, false, false), "flight");
+        assert_eq!(mode_view(Some(" "), true, false), "test_fire");
+        assert_eq!(mode_view(None, false, true), "ground_test");
+        // A layout naming a per-system view of the old set.
+        assert_eq!(mode_view(Some("stand"), true, false), "ground_test");
+        assert_eq!(mode_view(Some("fill"), false, false), "flight");
+        for (_, id) in [("normal", "flight"), ("test_fire", "test_fire"), ("igt", "ground_test")] {
+            assert!(topology::BUNDLED.iter().any(|(b, _)| *b == id), "{id} is bundled");
+        }
+    }
+
+    #[test]
+    fn the_mode_view_comes_first_and_an_operator_pick_wins_while_it_exists() {
+        let mut list = topology::bundled();
+        // An old replay bundle also serves the per-system views.
+        let mut legacy = list[0].clone();
+        legacy.id = "fill".into();
+        list.push(legacy);
+        let order: Vec<String> = ordered(&list, "test_fire").into_iter().map(|t| t.id).collect();
+        assert_eq!(order, ["test_fire", "flight", "ground_test", "network", "fill"]);
+        assert_eq!(pick(&list, None, "flight").unwrap().id, "flight");
+        assert_eq!(pick(&list, Some("network"), "flight").unwrap().id, "network");
+        assert_eq!(pick(&list, Some("gone"), "test_fire").unwrap().id, "test_fire");
+        assert_eq!(pick(&list, None, "missing").unwrap().id, "flight", "first available");
     }
 }
