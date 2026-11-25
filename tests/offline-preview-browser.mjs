@@ -81,9 +81,18 @@ try {
   assert(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'no page overflow '+width);
   if(shots)await page.screenshot({path:`${shots}/local-station-demo-${width}.png`});}
  await page.setViewportSize({width:1280,height:860});
+ // A fresh popup, so its 5 s auto-dismiss is pending when the replay below
+ // replaces this dashboard.
+ await page.waitForTimeout(5500);
+ await page.getByRole('button',{name:/^Vent/}).first().click();
+ await page.getByText(/acknowledged\. Nothing was sent; no station is connected\./).first().waitFor();
+ const popupShownAt=Date.now();
  // A replay bundle on a fresh device: the same tabs, from the file.
  await page.getByLabel('Open replay file').setInputFiles(fixture('replay-bundle/flight.gsreplay'));
  await page.getByText('Replay: flight.gsreplay',{exact:true}).waitFor();
+ // That popup's auto-dismiss ends with the replaced dashboard.
+ assert(Date.now()-popupShownAt<5000,'the demo popup is still pending when the replay replaces the dashboard');
+ await page.waitForTimeout(6000);assert.deepEqual(errors,[],'a replaced dashboard leaves no task behind');
  await open('Dashboard');await open('Data');await open('Live diagrams');await open('Map');await open('3D replay');
  await open('Firmware Update',['Board firmware does not report its build','Flight Computer (FC)']);
  await open('Motor & flight');

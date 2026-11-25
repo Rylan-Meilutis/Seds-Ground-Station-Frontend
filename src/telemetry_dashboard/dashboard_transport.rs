@@ -402,6 +402,9 @@ fn dismiss_notification_remote(id:u64)->impl std::future::Future<Output=Result<(
     http_post_empty(&format!("/api/notifications/{id}/dismiss"))
 }
 
+/// Runs `fut` without tying it to the owner of any component signal. On the
+/// web it outlives the dashboard, so it must never touch a component signal;
+/// use [`spawn_with_signal_owner`] for work that does.
 #[cfg(target_arch = "wasm32")]
 fn spawn_detached<F>(fut: F)
 where
@@ -416,6 +419,15 @@ where
     F: Future<Output = ()> + 'static,
 {
     spawn(fut);
+}
+
+/// Runs `fut` for as long as the component that created `signal` is mounted,
+/// whichever scope called this. A delayed task that reads or writes the signal
+/// is cancelled with its owner instead of finding the value dropped.
+fn spawn_with_signal_owner<T: 'static>(signal: Signal<T>, fut: impl Future<Output = ()> + 'static) {
+    dioxus::core::Runtime::current().in_scope(signal.origin_scope(), || {
+        spawn(fut);
+    });
 }
 
 fn auth_ws_url(base_ws: &str) -> String {
@@ -592,6 +604,102 @@ mod notification_replay_tests {
     }
 }
 
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod notification_owner_tests {
+    use super::*;
+    use std::{cell::RefCell, time::Duration};
+
+    #[derive(Clone, Copy)]
+    struct Popups {
+        active: Signal<Vec<PersistentNotification>>,
+        history: Signal<Vec<PersistentNotification>>,
+        dismissed: Signal<Vec<DismissedNotification>>,
+        unread: Signal<Vec<u64>>,
+    }
+    thread_local! {
+        static POPUPS: RefCell<Option<Popups>> = const { RefCell::new(None) };
+        static SHOWN: RefCell<Option<Signal<bool>>> = const { RefCell::new(None) };
+    }
+    #[component]
+    fn Dashboard() -> Element {
+        let popups = Popups {
+            active: use_signal(Vec::new),
+            history: use_signal(Vec::new),
+            dismissed: use_signal(Vec::new),
+            unread: use_signal(Vec::new),
+        };
+        POPUPS.with(|slot| *slot.borrow_mut() = Some(popups));
+        rsx! { "{popups.active.read().len()}" }
+    }
+    fn app() -> Element {
+        let shown = use_signal(|| true);
+        SHOWN.with(|slot| *slot.borrow_mut() = Some(shown));
+        rsx! { if shown() { Dashboard {} } }
+    }
+    async fn run_for(dom: &mut VirtualDom, duration: Duration) {
+        let _ = tokio::time::timeout(duration, async {
+            loop {
+                dom.wait_for_work().await;
+                dom.render_immediate_to_vec();
+            }
+        })
+        .await;
+    }
+    fn notice(id: u64) -> PersistentNotification {
+        PersistentNotification {
+            id,
+            timestamp_ms: current_wallclock_ms(),
+            message: "fixture".into(),
+            persistent: false,
+            action_label: None,
+            action_cmd: None,
+        }
+    }
+    /// Receives a live notification from a scope other than the signals' owner.
+    fn receive(dom: &VirtualDom, id: u64) -> Popups {
+        let popups = POPUPS.with(|slot| slot.borrow().expect("mounted dashboard"));
+        dom.in_scope(ScopeId::ROOT, || {
+            apply_notifications_snapshot(
+                vec![notice(id)],
+                popups.active,
+                popups.history,
+                popups.dismissed,
+                popups.unread,
+                true,
+            );
+            assert_eq!(popups.active.peek().len(), 1, "popup shows");
+        });
+        popups
+    }
+    const PAST_AUTO_DISMISS: Duration = Duration::from_millis(NOTIFICATION_AUTO_DISMISS_MS as u64 + 700);
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn auto_dismiss_ends_with_the_dashboard_that_shows_the_popup() {
+        crate::auth::hold_station_identity_for_test();
+        let mut dom = VirtualDom::new(app);
+        dom.rebuild_in_place();
+
+        // Still mounted: the popup goes away by itself and is remembered.
+        let popups = receive(&dom, 9_001);
+        run_for(&mut dom, PAST_AUTO_DISMISS).await;
+        dom.in_scope(ScopeId::ROOT, || {
+            assert!(popups.active.peek().is_empty(), "popup auto-dismissed");
+            assert!(popups.dismissed.peek().iter().any(|n| n.id == 9_001));
+        });
+
+        // Leaving the dashboard with a popup up: its pending auto-dismiss must
+        // not read the dropped signals (dioxus panics on that).
+        receive(&dom, 9_002);
+        let shown = SHOWN.with(|slot| slot.borrow().expect("mounted app"));
+        dom.in_scope(ScopeId::ROOT, || {
+            let mut shown = shown;
+            shown.set(false);
+        });
+        run_for(&mut dom, PAST_AUTO_DISMISS).await;
+        assert!(popups.active.try_peek().is_err(), "the dashboard's signals were dropped");
+    }
+}
+
 fn notification_visible_on_snapshot(
     n: &PersistentNotification,
     seen: &HashSet<DismissedNotification>,
@@ -707,7 +815,7 @@ fn apply_notifications_snapshot(
         let ts = n.timestamp_ms;
         let mut notifications = notifications;
         let mut dismissed_notifications = dismissed_notifications;
-        spawn_detached(async move {
+        spawn_with_signal_owner(notifications, async move {
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::TimeoutFuture::new(NOTIFICATION_AUTO_DISMISS_MS).await;
 
