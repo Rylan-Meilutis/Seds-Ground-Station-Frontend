@@ -52,8 +52,8 @@ showNoisePlan();
 // headset), or Speaker; the dashboard sends the state in app.audio_output and
 // this page posts the operator's choice back (gs26-audio-output). Elsewhere
 // the page picks an output device with AudioContext.setSinkId where the
-// browser or web view has it (Chromium: browsers, WebView2), remembered in
-// this browser; without it the control stays hidden (the system default plays).
+// browser or web view has it (Chromium: browsers, WebView2), remembered per
+// browser; without it the control stays hidden (the system default plays).
 const OUTPUT_KEY='gs26-voice-output-device';
 const sinkSupported=typeof (window.AudioContext||window.webkitAudioContext)?.prototype?.setSinkId==='function';
 let dashboardOrigin=null,pendingOutput=null;

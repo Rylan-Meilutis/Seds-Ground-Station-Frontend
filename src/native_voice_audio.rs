@@ -110,6 +110,7 @@ struct OutputState {
     loaded: bool,
     choice: OutputChoice,
     /// Voice is joined with the microphone open on this page.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     active: bool,
     /// What is playing now, in words (`earpiece`, `speaker`, `Bluetooth` ...).
     route: Option<String>,
@@ -170,6 +171,7 @@ fn output_snapshot() -> OutputState {
 
 /// The page's `{"type":"gs26-audio-output","choice":"phone"|"speaker","active":bool}`:
 /// remember a new choice and apply the output now.
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub(crate) fn page_message(message: &serde_json::Value) {
     if message["type"] != "gs26-audio-output" {
         return;
@@ -212,6 +214,7 @@ fn set_route(route: Option<String>, available: bool) {
 }
 
 /// Applies the saved choice on this platform (nothing outside iOS/Android).
+#[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 fn apply() {
     #[cfg(target_os = "ios")]
     platform_ios::refresh();
