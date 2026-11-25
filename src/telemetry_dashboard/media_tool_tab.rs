@@ -12,11 +12,21 @@ pub(super) fn MediaToolTab(
 ) -> Element {
     let mut opened = use_signal(|| visible);
     let mut token = use_signal(crate::auth::current_token);
+    let mut shown_visible = use_signal(|| visible);
+    use_effect(use_reactive((&visible,), move |(visible,)| shown_visible.set(visible)));
     use_future(move || async move {
+        let mut audio_revision = crate::native_voice_audio::revision();
         loop {
             let next = crate::auth::current_token();
             if *token.peek() != next {
                 token.set(next);
+            }
+            // The audio output changed (the operator's choice, a headset, an
+            // interruption): give the page a fresh `app.audio_output`.
+            let revision = crate::native_voice_audio::revision();
+            if revision != audio_revision {
+                audio_revision = revision;
+                send_session(id, token.peek().as_deref(), *shown_visible.peek());
             }
             #[cfg(target_arch = "wasm32")]
             gloo_timers::future::TimeoutFuture::new(500).await;
@@ -24,6 +34,8 @@ pub(super) fn MediaToolTab(
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
     });
+    #[cfg(not(target_arch = "wasm32"))]
+    use_audio_output_messages(id);
     use_effect(use_reactive((&visible,), move |(visible,)| {
         if visible {
             opened.set(true);
@@ -79,6 +91,32 @@ fn use_native_preflight(base: String, path: &'static str, title: &'static str, o
         });
     }));
     notice.read().clone()
+}
+
+/// The voice page's `gs26-audio-output` messages (the operator's Phone /
+/// Speaker choice and whether voice is joined), from this tab's own frame and
+/// origin only, go to `native_voice_audio`, which applies them on iOS and
+/// Android.
+#[cfg(not(target_arch = "wasm32"))]
+fn use_audio_output_messages(id: &'static str) {
+    use_future(move || async move {
+        let frame = serde_json::to_string(id).unwrap();
+        let mut script = document::eval(&format!(
+            r#"
+            window.addEventListener('message', event => {{
+                const frame = document.getElementById({frame});
+                if (!frame || event.source !== frame.contentWindow) return;
+                if (event.origin !== new URL(frame.src, location.href).origin) return;
+                const data = event.data;
+                if (data?.type !== 'gs26-audio-output') return;
+                dioxus.send({{type: data.type, choice: String(data.choice), active: !!data.active}});
+            }});
+            "#
+        ));
+        while let Ok(message) = script.recv::<serde_json::Value>().await {
+            crate::native_voice_audio::page_message(&message);
+        }
+    });
 }
 
 fn send_session(id: &str, token: Option<&str>, visible: bool) {

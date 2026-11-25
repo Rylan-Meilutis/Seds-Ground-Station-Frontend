@@ -217,7 +217,7 @@ class IosCrewVoiceAudio(unittest.TestCase):
         self.assertIn("void gs26_voice_audio_install(", shim)
         self.assertIn("fn gs26_voice_audio_install(", (ROOT / "src/native_voice_audio.rs").read_text())
 
-    def test_shim_reports_and_only_moves_output_when_rust_asks(self):
+    def test_shim_reports_and_applies_only_the_override_rust_answers(self):
         shim = (ROOT / "assets/VoiceAudioShim.m").read_text()
         # WebKit owns the category while the microphone is open; never fight it.
         for call in ["setCategory:", "setMode:", "setActive:"]:
@@ -226,8 +226,25 @@ class IosCrewVoiceAudio(unittest.TestCase):
                      "AVAudioSessionMediaServicesWereResetNotification", "UIApplicationDidBecomeActiveNotification"]:
             self.assertIn(note, shim)
         report = shim[shim.index("static void GS26VoiceAudioReport"):]
-        self.assertLess(report.index("if (!g_voice_audio_callback(json.UTF8String))"),
-                        report.index("overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker"))
+        self.assertLess(report.index("int action = g_voice_audio_callback(json.UTF8String);"),
+                        report.index("overrideOutputAudioPort:port"))
+        self.assertIn("action == 1 ? AVAudioSessionPortOverrideSpeaker : AVAudioSessionPortOverrideNone", report)
+        # A new choice from the page is applied at once, not at the next route change.
+        self.assertIn("void gs26_voice_audio_refresh(void)", shim)
+        self.assertIn("fn gs26_voice_audio_refresh();", (ROOT / "src/native_voice_audio.rs").read_text())
+
+    def test_android_bridge_selects_the_communication_device_and_is_kept(self):
+        bridge = (ROOT / "platform/android/kotlin/com/ubseds/gs26/VoiceAudioBridge.kt").read_text()
+        for call in ["MODE_IN_COMMUNICATION", "setCommunicationDevice", "isSpeakerphoneOn = speaker",
+                     "clearCommunicationDevice", "registerAudioDeviceCallback", "external fun nativeOnDevicesChanged"]:
+            self.assertIn(call, bridge)
+        rules = (ROOT / "platform/android/proguard-rules.pro").read_text()
+        self.assertIn("-keep class com.ubseds.gs26.VoiceAudioBridge { *; }", rules)
+        rust = (ROOT / "src/native_voice_audio.rs").read_text()
+        self.assertIn("Java_com_ubseds_gs26_VoiceAudioBridge_nativeOnDevicesChanged", rust)
+        for method in ['"devices"', '"select"', '"legacy"', '"current"', '"release"']:
+            self.assertIn(method, rust)
+            self.assertIn(f"fun {method.strip(chr(34))}(context: Context", bridge)
 
     def test_media_webview_installs_the_guard_and_pages_learn_the_platform(self):
         media = (ROOT / "src/native_media.rs").read_text()

@@ -3,6 +3,7 @@
 -keep class com.ubseds.gs26.ProximityBridge { *; }
 -keep class com.ubseds.gs26.SearchTrackBridge { *; }
 -keep class com.ubseds.gs26.OpenedFileBridge { *; }
+-keep class com.ubseds.gs26.VoiceAudioBridge { *; }
 -keep,includedescriptorclasses class org.rustls.platformverifier.** { *; }
 -keep public class com.google.vending.licensing.ILicensingService { void <init>(); }
 -keep public class com.android.vending.licensing.ILicensingService { void <init>(); }

@@ -47,6 +47,72 @@ $('noise-suppression').disabled=!noiseSupported;
 if(!noiseSupported)$('noise-suppression').checked=false;
 showNoisePlan();
 // </noise-suppression>
+// <audio-output> Where incoming crew audio plays. Phones (the iOS and Android
+// apps) choose natively: Phone, like a call (the earpiece, or the connected
+// headset), or Speaker; the dashboard sends the state in app.audio_output and
+// this page posts the operator's choice back (gs26-audio-output). Elsewhere
+// the page picks an output device with AudioContext.setSinkId where the
+// browser or web view has it (Chromium: browsers, WebView2), remembered in
+// this browser; without it the control stays hidden (the system default plays).
+const OUTPUT_KEY='gs26-voice-output-device';
+const sinkSupported=typeof (window.AudioContext||window.webkitAudioContext)?.prototype?.setSinkId==='function';
+let dashboardOrigin=null,pendingOutput=null;
+function storedSink(){try{return localStorage.getItem(OUTPUT_KEY)||'';}catch{return '';}}
+function storeSink(id){try{if(id)localStorage.setItem(OUTPUT_KEY,id);else localStorage.removeItem(OUTPUT_KEY);}catch{/* private mode: this session only */}}
+function outputMode(){
+  if(appInfo?.audio_output?.control==='native')return 'native';
+  return sinkSupported?'device':'none';
+}
+// The choice shown: the operator's click wins until the dashboard confirms it.
+function shownChoice(){
+  const reported=appInfo?.audio_output?.choice==='speaker'?'speaker':'phone';
+  if(pendingOutput&&(pendingOutput.choice===reported||Date.now()>pendingOutput.until))pendingOutput=null;
+  return pendingOutput?.choice??reported;
+}
+function showOutput(){
+  const mode=outputMode();
+  $('output-controls').hidden=mode==='none';
+  $('output-native').hidden=mode!=='native';
+  $('output-device-label').hidden=mode!=='device';
+  if(mode==='native'){
+    const choice=shownChoice(),state=appInfo.audio_output;
+    for(const radio of document.querySelectorAll('input[name=output]'))radio.checked=radio.value===choice;
+    $('output-status').textContent=pendingOutput?'':state.note||(state.route?`Playing through ${state.route}.`:'');
+  }else if(mode==='none')$('output-status').textContent='';
+}
+function postOutput(choice){
+  if(parent===window||!dashboardOrigin)return;
+  parent.postMessage({type:'gs26-audio-output',choice,active:!!session?.stream},dashboardOrigin==='null'?'*':dashboardOrigin);
+}
+function chooseOutput(choice){
+  if(outputMode()!=='native')return;
+  pendingOutput={choice,until:Date.now()+3000};
+  postOutput(choice);showOutput();
+}
+// Phones: the dashboard applies the output while voice is joined.
+function outputActive(){if(outputMode()==='native')postOutput(shownChoice());}
+async function listOutputs(){
+  if(outputMode()!=='device')return '';
+  const saved=storedSink();let outputs=[];
+  try{outputs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audiooutput'&&d.deviceId&&d.deviceId!=='default');}catch{/* listed after microphone permission */}
+  const select=$('output-device');select.replaceChildren(new Option('System default',''));
+  outputs.forEach((d,i)=>select.add(new Option(d.label||`Output ${i+1}`,d.deviceId)));
+  const present=!saved||outputs.some(d=>d.deviceId===saved);
+  select.value=present?saved:'';
+  $('output-status').textContent=present?'':'The saved output is not connected; playing through the system default.';
+  return present?saved:'';
+}
+async function applySink(s){
+  if(outputMode()!=='device'||typeof s?.context?.setSinkId!=='function')return;
+  const id=await listOutputs();
+  try{await s.context.setSinkId(id);}
+  catch(e){$('output-status').textContent=`Cannot play through that output (${e.message}); playing through the system default.`;}
+}
+for(const radio of document.querySelectorAll('input[name=output]'))radio.addEventListener('change',()=>{if(radio.checked)chooseOutput(radio.value);});
+$('output-device').addEventListener('change',()=>{storeSink($('output-device').value);if(session?.context)applySink(session);else listOutputs();});
+navigator.mediaDevices?.addEventListener?.('devicechange',()=>{if(session?.context)applySink(session);else listOutputs();});
+showOutput();listOutputs();
+// </audio-output>
 function radioLink(radio){
   $('radio-controls').hidden=!radio?.configured;
   radioAvailable=radio?.available===true;
@@ -159,7 +225,7 @@ function leave(message='Left voice. Microphone released.'){
   window.GS26StayAwake?.setActive('voice',false);
   const old=session;session=null;held=false;joining=false;$('radio-enable').checked=false;
   if(old){clearInterval(old.ping);clearTimeout(old.joinTimeout);old.ws?.close();old.stream?.getTracks().forEach(t=>t.stop());old.node?.disconnect();old.context?.close().catch(()=>{});}
-  $('peers').replaceChildren();$('count').textContent='0';$('level').value=0;transmit();notice(message);
+  $('peers').replaceChildren();$('count').textContent='0';$('level').value=0;transmit();notice(message);outputActive();
 }
 async function devices(){
   try{
@@ -212,6 +278,7 @@ $('join').onclick=async()=>{
     s.node=new AudioWorkletNode(s.context,'crew-audio',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1]});
     s.source=s.context.createMediaStreamSource(stream);s.source.connect(s.node);s.node.connect(s.context.destination);
     applyNoise(s);await resumeAudio(s,'microphone started');
+    applySink(s);outputActive();
     s.node.port.onmessage=({data:m})=>{
       if(session!==s)return;
       if(m.type==='level')$('level').value=m.value;
@@ -338,7 +405,9 @@ if (new URLSearchParams(location.search).get('embedded') === '1' && parent !== w
         if(typeof value==='string' && CSS.supports('color',value))document.documentElement.style.setProperty(name,value);
       }
     }
+    dashboardOrigin = event.origin;
     if (event.data.app && typeof event.data.app === 'object') { appInfo = event.data.app; if (!session?.stream) showNoisePlan(); }
+    showOutput();
     if (!event.data.visible) release();
     if (!receivedSession || token !== event.data.token) {
       receivedSession = true;

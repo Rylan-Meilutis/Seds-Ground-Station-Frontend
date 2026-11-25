@@ -1,13 +1,15 @@
-// Crew voice audio-session guard, iOS only (Rust: src/native_voice_audio.rs).
+// Crew voice audio output on iOS (Rust: src/native_voice_audio.rs).
 //
-// WebKit owns the audio session while the voice page's microphone is open: it
-// switches the category to play-and-record. With no headset that category
-// plays through the receiver, so crew voice is barely audible unless output
-// is moved to the speaker. This shim does not set a category or mode itself
-// (that would fight WebKit); it reports the session after every route change,
-// interruption, media-services reset and return to the foreground, and moves
-// output to the speaker when Rust asks (play-and-record on the receiver only).
-// Each report also lands in the app's debug log for on-device diagnosis.
+// The operator chooses the output on the voice page: Phone (the earpiece, or
+// the connected headset, like a call) or Speaker. WebKit owns the audio
+// session while the microphone is open (it sets play-and-record); this shim
+// does not set a category or mode itself, which would fight WebKit. It
+// reports the session after every route change, interruption, media-services
+// reset, return to the foreground and change of choice, and applies the port
+// override Rust answers with: 1 overrideOutputAudioPort(.speaker), 2 .none
+// (undo our speaker override), 0 nothing. Re-applying after each event keeps
+// the choice when a headset arrives or an interruption ends. Each report also
+// lands in the app's debug log ([voice-audio] ...).
 
 #import <AVFoundation/AVFoundation.h>
 #import <Foundation/Foundation.h>
@@ -79,15 +81,29 @@ static void GS26VoiceAudioReport(NSString *event, NSString *detail) {
         return;
     }
     NSString *json = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
-    if (!g_voice_audio_callback(json.UTF8String)) {
+    int action = g_voice_audio_callback(json.UTF8String);
+    if (action == 0) {
         return;
     }
     NSError *error = nil;
-    if ([session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&error]) {
-        g_voice_audio_speaker_override = YES;
-        NSLog(@"[voice-audio] output moved from the receiver to the speaker");
+    AVAudioSessionPortOverride port = action == 1 ? AVAudioSessionPortOverrideSpeaker : AVAudioSessionPortOverrideNone;
+    if ([session overrideOutputAudioPort:port error:&error]) {
+        g_voice_audio_speaker_override = action == 1;
+        NSLog(@"[voice-audio] output override: %@", action == 1 ? @"speaker" : @"none (earpiece or headset)");
     } else {
-        NSLog(@"[voice-audio] could not move output to the speaker: %@", error);
+        NSLog(@"[voice-audio] could not apply the output override %d: %@", action, error);
+    }
+}
+
+// The operator changed the choice: report now so Rust answers with the override.
+void gs26_voice_audio_refresh(void) {
+    void (^refresh)(void) = ^{
+        GS26VoiceAudioReport(@"choice", nil);
+    };
+    if (NSThread.isMainThread) {
+        refresh();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), refresh);
     }
 }
 

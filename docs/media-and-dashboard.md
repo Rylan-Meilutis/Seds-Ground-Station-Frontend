@@ -76,15 +76,58 @@ interrupted context stops the audio processor: the call looks connected but
 nothing is sent or heard, and the old page never restarted it. The page now
 resumes the context on every interruption and on the next touch, focus or
 return to the page, and says "Voice audio was paused by the system. Tap this
-page to resume." when WebKit wants a gesture. Separately, play-and-record
-plays through the receiver (earpiece) when no headset is connected; the
-app's `assets/VoiceAudioShim.m` moves output to the speaker in exactly that
-case (`src/native_voice_audio.rs`, `speaker_override_wanted`) and never
-changes the category, mode or a chosen headset, Bluetooth or AirPlay route.
-Every route change, interruption, media-services reset and return to the
-foreground is logged as `[voice-audio] ...` (category, mode, ports, sample
-rate, microphone permission), and the page logs `[voice] audio context ...`
-to the Web Inspector console.
+page to resume." when WebKit wants a gesture. Every route change,
+interruption, media-services reset and return to the foreground is logged as
+`[voice-audio] ...` (category, mode, ports, sample rate, microphone
+permission, the operator's output choice and any override applied), and the
+page logs `[voice] audio context ...` to the Web Inspector console.
+
+**Audio output.** The operator chooses where crew voice plays; the app never
+routes on its own. On the iOS and Android apps the voice page shows **Audio
+output: Phone (earpiece / headset) | Speaker**:
+
+- **Phone** (the default) behaves like a call: the earpiece, or the headset
+  that is connected (wired, USB, Bluetooth, hearing aid). It is the private
+  choice and what a phone does for a call, so a new install never starts
+  playing crew voice out loud.
+- **Speaker** forces the loudspeaker, even with a headset connected.
+
+The choice is kept per device (`voice_audio_output.json` beside the app's
+settings) and applies to every station. The page posts it to the dashboard
+(`gs26-audio-output`, from the voice frame's own origin only), and
+`src/native_voice_audio.rs` applies it:
+
+- iOS: WebKit sets play-and-record while the microphone is open;
+  `assets/VoiceAudioShim.m` reports the session after every route change,
+  interruption, media-services reset, return to the foreground and change of
+  choice, and applies the port override Rust answers with
+  (`ios_port_override`): `overrideOutputAudioPort(.speaker)` for Speaker,
+  `.none` to undo it for Phone. The shim still never sets the category or
+  mode. Because the answer is recomputed after each event, a headset arriving
+  or a call ending does not silently change the choice.
+- Android: `platform/android/kotlin/.../VoiceAudioBridge.kt` sets
+  `MODE_IN_COMMUNICATION` while voice is joined, selects the communication
+  device `android_pick` chooses (`setCommunicationDevice` on Android 12 /
+  API 31 and later; `setSpeakerphoneOn` below, where Phone means the earpiece
+  or a wired headset), re-applies it on every device change
+  (`AudioDeviceCallback`), and gives the normal mode back when voice ends.
+
+When the chosen output is not available (Phone on a tablet with no earpiece,
+Speaker while AirPlay holds the audio) the page says what plays instead, for
+example "The speaker is not available; playing through AirPlay." Otherwise it
+shows the route ("Playing through the Bluetooth headset.").
+
+On desktop apps and in browsers the page offers an **Audio output** device
+list ("System default" plus the computer's outputs) only where the web view
+can switch outputs (`AudioContext.setSinkId`: Chromium browsers and WebView2
+on Windows). The device is remembered in that browser; a remembered device
+that is unplugged falls back to the system default with a notice. WebKit
+(Safari, the macOS app, WebKitGTK on Linux) cannot switch, so the control is
+hidden there and the system output plays.
+
+The watch voice relay through the phone plays nothing on the phone (the
+phone's own voice page is held while its watch talks), so there is nothing
+for the setting to route; the watch plays on its own speaker or headset.
 
 ### iOS device checklist
 
@@ -98,15 +141,22 @@ debug build.
 1. Fresh install: open Voice Chat, Join voice. iOS asks for the microphone
    once. The log shows `[voice-audio] install` then a `route
    (CategoryChange)` line with `category PlayAndRecord`.
-2. No headset: the laptop talks; the phone plays it from the speaker at
-   normal volume, not the earpiece. The log shows `speaker-override`.
-3. Hold to talk on the phone: the laptop hears it; the input meter moves.
-4. Ring/silent switch on silent: incoming voice still plays.
-5. Wired or Bluetooth headset: output stays on the headset (no override line).
-   Unplug it: output returns to the speaker.
+2. Audio output shows **Phone (earpiece / headset)** selected on a fresh
+   install. No headset: the laptop talks; the phone plays it from the
+   earpiece. The page says "Playing through the earpiece."
+3. Choose **Speaker**: the audio moves to the loudspeaker at once; the log
+   shows `choice speaker -> speaker`. Close and reopen the app: Speaker is
+   still selected and applied when you join.
+4. Hold to talk on the phone: the laptop hears it; the input meter moves.
+   With the ring/silent switch on silent, incoming voice still plays.
+5. With **Speaker**, connect a Bluetooth or wired headset: audio stays on
+   the speaker. Choose **Phone**: it moves to the headset ("Playing through
+   the Bluetooth headset."). Disconnect the headset: it returns to the
+   earpiece. Reconnect it: Phone follows the headset, as a call would.
 6. Receive a phone call or invoke Siri during voice, then return: audio
    resumes by itself, or after one tap with the "paused by the system"
-   notice. The log shows `interruption (began)` and `(ended)`.
+   notice, on the output you chose (check with Speaker selected). The log
+   shows `interruption (began)` and `(ended)`.
 7. Lock the phone for 10 s and unlock: voice resumes (one tap at most) or
    the page says it disconnected; it never stays silent while showing
    connected.
@@ -116,17 +166,35 @@ debug build.
 9. Noise suppression: the status reads **Noise suppression: on (built-in)**
    (never "this browser"). With a fan near the phone, toggle it off and on
    while talking; the laptop hears the fan come and go. **off** shows when off.
-10. macOS app: steps 3, 8 (System Settings wording) and 9.
+10. macOS app: steps 4, 8 (System Settings wording) and 9; no output control (step 15).
 11. Android app: the status reads **on (system)** on most phones; on a phone
     whose microphone ignores the setting it reads **on (built-in)**.
 12. Linux and Windows apps: step 9; Windows reads **on (system)**.
+13. Android app: Audio output shows Phone / Speaker. Repeat steps 2, 3 and
+    5 (on Android 11 and earlier, Phone uses the earpiece or a wired headset;
+    Bluetooth needs Android 12). Leave voice: other apps' audio is back to
+    normal (the call-style audio mode is released). `adb logcat -s
+    GsVoiceAudio` shows each selection.
+14. A tablet without an earpiece (Android) or AirPlay while Speaker is chosen
+    (iOS): the page explains that the choice is not available and names what
+    plays instead.
+15. Windows app or Chrome on a laptop: Audio output lists "System default"
+    and the computer's outputs; pick a USB headset, rejoin, and audio plays
+    there; unplug it and the page says it is playing through the system
+    default. macOS and Linux apps and Safari show no output control.
+16. With the phone's watch talking through the phone relay, the phone plays
+    nothing whichever output is chosen; the watch plays the channel.
 
 `node tests/station-voice_native.test.cjs` covers the page logic above
 (noise choice and labels per platform, refusal text per platform, the
-resume after an interruption); `node tests/station-voice_audio.cjs` covers
-the built-in suppressor; `cargo test native_voice_audio` covers the route
-decision and the report parsing; `tests/test_native_media_pages.py` checks
-the shim is built for iOS only and never sets the category.
+resume after an interruption); `node tests/station-voice_output.test.cjs`
+covers the audio-output control per platform, the choice sent to the app
+and the remembered output device; `node tests/station-voice_audio.cjs` covers
+the built-in suppressor; `cargo test native_voice_audio` covers the iOS
+override after interruptions and route changes, the Android device choice,
+the saved choice and the report parsing; `tests/test_native_media_pages.py`
+checks the shim is built for iOS only, never sets the category, and that the
+Android bridge is kept and calls the communication-device APIs.
 
 ## Backend coordination
 
