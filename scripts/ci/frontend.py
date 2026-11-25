@@ -96,6 +96,71 @@ CARGO_FETCH_TRANSIENT = re.compile(
     r"(?:SSL_ERROR_SYSCALL|OpenSSL/[0-9.]+: error:0A000126:SSL routines::unexpected eof while reading), errno 0\)$"
 )
 
+# Gradle prints the cause tree of each failure under "* What went wrong:". A
+# build may be retried only when every root cause in every failure is one of
+# these download answers: rate limited (429), server error (5xx) or a timeout.
+# Anything else (a missing artifact, TLS trust, a compile error) is final.
+GRADLE_FAILURE = re.compile(r"^FAILURE: Build (?:failed with an exception|completed with [0-9]+ failures)\.$")
+GRADLE_REQUEST = re.compile(r"^Could not (?:GET|HEAD|get resource|download|head) ")
+GRADLE_TRANSIENT_STATUS = re.compile(
+    r"^Could not (?:GET|HEAD) 'https://[^'\s]+'\. Received status code (?:429|5[0-9]{2}) from server(?:: .*)?$")
+GRADLE_TRANSIENT_TIMEOUT = re.compile(
+    r"^(?:Read timed out|[Cc]onnect timed out|Connection timed out"
+    r"|Connect to \S+ \[[^\]]*\] failed: (?:Read timed out|[Cc]onnect timed out|Connection timed out(?: \(Connection timed out\))?))$")
+# Consequences Gradle prints beside the first cause; never a cause on their own.
+GRADLE_REPEATED_CAUSE = re.compile(r"^(?:There (?:is|are) [0-9]+ more failures? with (?:an )?identical causes?\.|Skipped due to earlier error)$")
+GRADLE_WRAPPER_TRANSIENT = re.compile(
+    r"^Exception in thread \"main\" java\.io\.IOException: "
+    r"(?:Server returned HTTP response code: (?:429|5[0-9]{2}) for URL: https://services\.gradle\.org/\S+"
+    r"|Downloading from https://services\.gradle\.org/\S+ failed: timeout \([0-9]+ms\))$")
+COMPILER_ERROR = re.compile(r"^(?:error(?:\[E[0-9]+\])?: |e: (?:file:|/))|could not compile `")
+# Waits before the second and third attempt of a build that could not download.
+DEPENDENCY_RETRY_DELAYS = (60, 240)
+
+
+def transient_dependency_failures(text):
+    """Root causes when a failed build is only a transient dependency download.
+
+    Empty means "not recognised": the failure is final."""
+    lines = [ANSI.sub("", line).rstrip() for line in text.splitlines()]
+    if any(COMPILER_ERROR.search(line.strip()) for line in lines):
+        return []
+    wrapper = [line.strip() for line in lines if GRADLE_WRAPPER_TRANSIENT.fullmatch(line.strip())]
+    if any(line.strip().startswith("Exception in thread ") and line.strip() not in wrapper for line in lines):
+        return []
+    headers = sum(bool(GRADLE_FAILURE.fullmatch(line.strip())) for line in lines)
+    blocks = [index for index, line in enumerate(lines) if line.strip() == "* What went wrong:"]
+    if bool(headers) != bool(blocks) or len(blocks) < headers:
+        return []
+    found = list(wrapper)
+    for start in blocks:
+        tree = []
+        for line in lines[start + 1:]:
+            if line.strip().startswith("* ") or GRADLE_FAILURE.fullmatch(line.strip()):
+                break
+            cause = re.match(r"^( *)> (.*)$", line)
+            if cause:
+                tree.append((len(cause.group(1)), cause.group(2).strip()))
+        if not tree:
+            return []
+        transient = []
+        path = []
+        for index, (depth, text_line) in enumerate(tree):
+            path = [row for row in path if row[0] < depth]
+            leaf = index + 1 == len(tree) or tree[index + 1][0] <= depth
+            if leaf:
+                requested = any(GRADLE_REQUEST.match(parent) for _, parent in path)
+                if (GRADLE_TRANSIENT_STATUS.fullmatch(text_line)
+                        or (requested and GRADLE_TRANSIENT_TIMEOUT.fullmatch(text_line))):
+                    transient.append(text_line)
+                elif not GRADLE_REPEATED_CAUSE.fullmatch(text_line):
+                    return []
+            path.append((depth, text_line))
+        if not transient:
+            return []
+        found += transient
+    return found
+
 
 class CommandFailure(RuntimeError):
     def __init__(self, label, result, warnings):
@@ -149,7 +214,8 @@ def configure_utf8_console():
             reconfigure(encoding="utf-8", errors="strict")
 
 
-def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=False, android_final_signing=False):
+def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=False, android_final_signing=False,
+            receipt_extra=None):
     """Preserve full output and fail warnings as well as nonzero exits.
 
     Only the exact upstream notices named above are reported separately, and
@@ -187,9 +253,39 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
                     if WARNING.search(plain):
                         warnings.append(plain)
         result = child.wait()
-    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines, "bundletool_unsigned_intermediate_notices": unsigned_intermediate_lines}, indent=2) + "\n")
+    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines, "bundletool_unsigned_intermediate_notices": unsigned_intermediate_lines, **(receipt_extra or {})}, indent=2) + "\n")
     if result or warnings:
         raise CommandFailure(label, result, warnings)
+
+
+def checked_gradle_build(argv, env, label, **options):
+    """`checked`, repeated (bounded) only after a transient dependency download.
+
+    A warning in any attempt, or a failure with any other root cause, is final
+    at once. Each attempt keeps its own log and receipt; a retry's receipt and
+    `<label>-dependency-retries.json` name the failures it follows."""
+    retries = []
+    for attempt in range(1, len(DEPENDENCY_RETRY_DELAYS) + 2):
+        current = label if attempt == 1 else f"{label}-dependency-retry-{attempt - 1}"
+        extra = {"receipt_extra": {"dependency_retry_attempt": attempt - 1, "after_transient_dependency_failures": retries}} if retries else {}
+        try:
+            checked(argv, env, current, **options, **extra)
+            return
+        except CommandFailure as failure:
+            causes = []
+            if failure.result and not failure.warnings:
+                log = ROOT / "ci-results" / (current + ".log")
+                causes = transient_dependency_failures(log.read_text(encoding="utf-8", errors="replace"))
+            if not causes or attempt > len(DEPENDENCY_RETRY_DELAYS):
+                raise
+            delay = DEPENDENCY_RETRY_DELAYS[attempt - 1]
+            retries.append({"attempt": current, "exit": failure.result, "transient_causes": len(causes),
+                            "first_causes": causes[:10], "retry_after_s": delay})
+            (ROOT / "ci-results" / (label + "-dependency-retries.json")).write_text(json.dumps(retries, indent=2) + "\n")
+            job_summary([f"### {label}: dependency download retry {attempt}",
+                         f"- {len(causes)} transient download failure(s), retrying the build in {delay} s",
+                         f"- First: `{causes[0]}`"])
+            time.sleep(delay)
 
 
 def fetch_application(env):
@@ -518,8 +614,13 @@ def run(name, profile):
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh CI checkout")
     if android_signed(name):
         prepare_android_development_signing(env)
-    checked(build_command(name, profile), env, "build-" + name + "-" + profile, dioxus_progress=True,
-            android_upstream_r8=name.startswith("android") and profile == "release")
+    build = checked
+    if android_signed(name):
+        # Gradle downloads: dependency retry, and the cached home (platforms.yml).
+        env["GRADLE_USER_HOME"] = str(ROOT / ".gradle-user-home")
+        build = checked_gradle_build
+    build(build_command(name, profile), env, "build-" + name + "-" + profile, dioxus_progress=True,
+          android_upstream_r8=name.startswith("android") and profile == "release")
     output = ROOT / "artifacts" / name
     files = sorted(p for p in output.rglob("*") if p.is_file())
     if not files:
@@ -931,9 +1032,10 @@ def release_build(name):
     if (ROOT / "artifacts" / name).exists():
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh checkout")
     (ROOT / "ci-results").mkdir(exist_ok=True)
-    checked(release_command(name), env, "release-" + name, dioxus_progress=True,
-            android_upstream_r8=name.startswith("android"),
-            android_final_signing=name.startswith("android") and "--final" in release_command(name))
+    android = name.startswith("android")
+    build = checked_gradle_build if android else checked
+    build(release_command(name), env, "release-" + name, dioxus_progress=True, android_upstream_r8=android,
+          android_final_signing=android and "--final" in release_command(name))
 
 
 def find_apksigner():
@@ -1316,7 +1418,8 @@ def store_build(name):
     if (ROOT / "artifacts" / name).exists():
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh checkout")
     (ROOT / "ci-results").mkdir(exist_ok=True)
-    checked(store_command(name), env, "store-" + name, dioxus_progress=True,
+    build = checked_gradle_build if name.startswith("android") else checked
+    build(store_command(name), env, "store-" + name, dioxus_progress=True,
             android_upstream_r8=name == "android")
     output = ROOT / STORE_OUTPUTS[name]
     if output.is_symlink() or not output.is_file():

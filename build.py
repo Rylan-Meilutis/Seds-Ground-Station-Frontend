@@ -325,9 +325,17 @@ def _failure_diagnostic_line(line: str, environment: dict[str, str]) -> str:
     return line[-4096:]
 
 
+def _looks_like_transient_dependency_download_failure(text: str) -> bool:
+    return re.search(r"Received status code (?:429|5[0-9]{2}) from server", text) is not None
+
+
 def _android_gradle_fallback_allowed(failure: subprocess.CalledProcessError, project: Path) -> bool:
     text = failure.output if isinstance(failure.output, str) else ""
     if getattr(failure, "rust_compile_failed", False) or _looks_like_rust_compile_failure(text):
+        return False
+    # The repository answered "try again later": rebuilding the same project
+    # at once cannot help, and the failure must stay visible as what it is.
+    if _looks_like_transient_dependency_download_failure(text):
         return False
     # A staged directory alone is not compilation evidence. Only a current
     # explicit Gradle failure can enter the repo's known project-patching path.

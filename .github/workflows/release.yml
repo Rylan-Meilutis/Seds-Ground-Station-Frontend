@@ -8,6 +8,8 @@ name: Release
 # docs/releasing.md. Untrusted pull requests never run it. The version job
 # refuses any run that is not from a protected ref, or whose tag is not on
 # main or dev, and every job holding a secret depends on it.
+# No job here restores a dependency cache: a cache written by a less-trusted run
+# could change a signed build. Gradle download outages are retried instead.
 'on':
   push:
     tags:

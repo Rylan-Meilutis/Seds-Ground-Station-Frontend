@@ -206,6 +206,14 @@ Android packaging fallback requires an explicit Gradle packaging/configuration f
 
 Non-Android `dx` commands also capture their own bounded failure output through `run(capture_failure=True)`. This preserves current wasm-bindgen and staged Linux packaging repairs without reading historical global logs. Other ordinary `run()` calls retain their existing execution behavior.
 
+A dependency download answered with 429 or 5xx never enters that fallback; it fails the build as a download failure (see below).
+
+## Gradle dependency downloads
+
+Android and Wear OS builds are repeated, at most twice (after 60 s and 240 s), only when every root cause in every Gradle failure of the attempt is a download answered with 429 or 5xx, or a timed-out download (`transient_dependency_failures` in `frontend.py`). A warning, a compiler error, a missing artifact or any other cause is final at once, as before. Each attempt keeps its own log and receipt (`<label>-dependency-retry-N`); `<label>-dependency-retries.json` and the job summary record what failed and when it was retried.
+
+Build-only CI (`platforms.yml`) also caches Gradle's downloaded modules and wrapper distribution, as an allow-list of two directories under `.gradle-user-home`. Nothing a build generates is cached: no Gradle project or build output, `.ci-tools`, runner temp directory or keystore. Pull requests restore it but never save it. The release and promote workflows use no cache at all, because GitHub cannot guarantee that a cache visible to them was written only by equally trusted runs. `tests/test_ci_gradle_downloads.py` enforces all of this.
+
 ## Android release R8 rule notices
 
 Minified Android release builds print one R8 notice per keep rule without a member pattern. On the hosted runners all ten come from AGP's default rules and AndroidX consumer rules, and Gradle still exits 0 with a usable APK. The driver reports exactly that notice from exactly those generated paths under `external_android_r8_rule_notices` in the step receipt, for Android release builds only. Any other warning, including the same text from a rule file in this repository, remains fatal. Revisit this when AGP moves to the R8 major version that drops the implicit constructor keep.

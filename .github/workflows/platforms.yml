@@ -136,10 +136,34 @@ jobs:
       run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
 
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"'
+    # Downloaded dependencies only; nothing a build generates and no signing
+    # files. Build-only CI: the release workflow never restores this cache.
+    - name: Cached Gradle downloads
+      id: gradle-downloads
+      if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
+      uses: actions/cache/restore@v4
+      with:
+        path: |
+          .gradle-user-home/caches/modules-2
+          .gradle-user-home/wrapper/dists
+          !.gradle-user-home/caches/modules-2/modules-2.lock
+          !.gradle-user-home/caches/modules-2/gc.properties
+        key: gradle-downloads-${{ startsWith(matrix.target, 'wearos') && 'wearos' || 'android' }}-${{ hashFiles('build.py', 'Cargo.toml', 'watch/wear/**/*.gradle.kts', 'watch/wear/gradle/**') }}
+        restore-keys: gradle-downloads-${{ startsWith(matrix.target, 'wearos') && 'wearos' || 'android' }}-
     - name: Pinned frontend tools, warnings fatal
       run: python scripts/ci/frontend.py bootstrap
     - name: Actual native target build, warnings fatal
       run: python scripts/ci/frontend.py build
+    - name: Save Gradle downloads
+      if: github.event_name == 'push' && matrix.profile == 'release' && (matrix.target == 'android' || matrix.target == 'wearos') && steps.gradle-downloads.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: |
+          .gradle-user-home/caches/modules-2
+          .gradle-user-home/wrapper/dists
+          !.gradle-user-home/caches/modules-2/modules-2.lock
+          !.gradle-user-home/caches/modules-2/gc.properties
+        key: ${{ steps.gradle-downloads.outputs.cache-primary-key }}
     - uses: actions/upload-artifact@v4
       if: always()
       with:
