@@ -512,7 +512,8 @@ git push origin v0.3.1b36
   [Testing tracks and groups](#testing-tracks-and-groups)).
 - A manual run is a **dry run by default**:
   - it builds and signs: Android, with the apksigner check against
-    `ANDROID_EXPECTED_CERT_SHA256`, and macOS unless skipped;
+    `ANDROID_EXPECTED_CERT_SHA256`, macOS unless skipped, and the TestFlight
+    IPA and Play AAB, which it also verifies (signer, version, iOS SDK);
   - it keeps the signed assets as the run's `release-<target>` artifacts for
     7 days;
   - it does not create or edit a GitHub Release, and does not upload to

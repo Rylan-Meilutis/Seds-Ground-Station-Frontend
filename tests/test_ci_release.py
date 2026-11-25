@@ -176,7 +176,9 @@ class ReleaseWorkflow(unittest.TestCase):
                 check = next(i for i, s in enumerate(steps) if s.get("id") == "store")
                 self.assertEqual(steps[check]["run"], f"python scripts/ci/frontend.py release-store-check --store {store}")
                 for step in steps[check + 1:-1]:
-                    self.assertEqual(step.get("if"), "steps.store.outputs.enabled == 'true'", step)
+                    upload_step = step.get("run") == "python scripts/ci/frontend.py release-store-upload"
+                    self.assertEqual(step.get("if"), "${{ !inputs.dry_run && steps.store.outputs.enabled == 'true' }}"
+                                     if upload_step else "steps.store.outputs.enabled == 'true'", step)
                 for step in steps[:check]:
                     self.assertEqual(secrets_in(step), set())
                 runs = [s.get("run") for s in steps]
@@ -201,7 +203,12 @@ class ReleaseWorkflow(unittest.TestCase):
         # Tag pushes have no inputs, so !inputs.dry_run is true and they publish.
         self.assertIn("!inputs.dry_run", self.jobs["publish"]["if"])
         for name in STORE_JOBS:
-            self.assertTrue(self.jobs[name]["if"].startswith("${{ !inputs.dry_run && "), name)
+            # A dry run builds, signs and verifies the store package; only the upload needs a real run.
+            self.assertNotIn("dry_run", self.jobs[name]["if"], name)
+            gated = [s for s in self.jobs[name]["steps"] if "dry_run" in json.dumps(s)]
+            self.assertEqual([s["run"] for s in gated], ["python scripts/ci/frontend.py release-store-upload"], name)
+            self.assertTrue(gated[0]["if"].startswith("${{ !inputs.dry_run && "), name)
+        self.assertEqual(self.jobs["testflight"]["env"]["DEVELOPER_DIR"], "/Applications/Xcode_26.3.app/Contents/Developer")
         for name in ["android", "macos", "unsigned"]:
             self.assertNotIn("dry_run", json.dumps(self.jobs[name]), name)
         job = self.jobs["dry-run"]

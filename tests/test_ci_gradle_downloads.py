@@ -156,9 +156,9 @@ class Retry(unittest.TestCase):
         self.assertIn("dependency download retry 1", summary)
 
     def test_retries_are_bounded_and_the_last_failure_is_fatal(self):
-        count, delays, receipts, _, _ = self.build([(RATE_LIMITED, 1)] * 3, fails=True)
-        self.assertEqual((count, delays), (3, [60, 240]))
-        self.assertEqual(len(receipts["release-android-dependency-retries"]), 2)
+        count, delays, receipts, _, _ = self.build([(RATE_LIMITED, 1)] * 5, fails=True)
+        self.assertEqual((count, delays), (5, [60, 240, 600, 900]))
+        self.assertEqual(len(receipts["release-android-dependency-retries"]), 4)
 
     def test_any_other_failure_and_any_warning_stay_fatal_at_once(self):
         for text, code in [("error: real build failure\n", 1), (gradle("Could not find a:b:1."), 1),

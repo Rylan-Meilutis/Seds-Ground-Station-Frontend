@@ -107,6 +107,9 @@ jobs:
     - name: Windows MSVC environment
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
+    - name: Xcode 26 for iOS, as the store build uses
+      if: startsWith(matrix.target, 'ios')
+      run: echo "DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer" >> "$GITHUB_ENV"
     - name: Xcode availability
       if: runner.os == 'macOS'
       run: 'xcodebuild -version

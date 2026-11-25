@@ -86,6 +86,14 @@ class ReleaseGuard(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "from main or dev"):
             self.guard("v0.3.1b40", "workflow_dispatch", "refs/heads/feature", dry_run="true", sha=feature)
 
+    def test_ios_sdk_is_the_oldest_one_the_binary_names(self):
+        show = "Load command 9\n      cmd LC_BUILD_VERSION\n platform IOS\n    minos 15.0\n      sdk {}\n"
+        self.assertEqual(ci.ios_sdk(show.format("18.5")), 18)
+        self.assertEqual(ci.ios_sdk(show.format("26.2")), 26)
+        self.assertEqual(ci.ios_sdk(show.format("26.2") + show.format("18.5")), 18)
+        self.assertIsNone(ci.ios_sdk(""))
+        self.assertLess(18, ci.IOS_STORE_MINIMUM_SDK)
+
     def test_dry_run_flag_is_ignored_on_tag_pushes(self):
         # A pushed tag always builds the tag, never a branch head.
         self.assertEqual(self.guard("v0.3.1b36", dry_run="true", sha="0" * 40)["ref"], "refs/tags/v0.3.1b36")

@@ -123,8 +123,9 @@ GRADLE_WRAPPER_TRANSIENT = re.compile(
     r"(?:Server returned HTTP response code: (?:429|5[0-9]{2}) for URL: https://services\.gradle\.org/\S+"
     r"|Downloading from https://services\.gradle\.org/\S+ failed: timeout \([0-9]+ms\))$")
 COMPILER_ERROR = re.compile(r"^(?:error(?:\[E[0-9]+\])?: |e: (?:file:|/))|could not compile `")
-# Waits before the second and third attempt of a build that could not download.
-DEPENDENCY_RETRY_DELAYS = (60, 240)
+# Waits before each further attempt of a build that could not download. Maven
+# Central has refused a hosted runner for longer than five minutes.
+DEPENDENCY_RETRY_DELAYS = (60, 240, 600, 900)
 
 
 def transient_dependency_failures(text):
@@ -1494,6 +1495,16 @@ def verify_store_android(info):
                  f"- Upload certificate SHA-256: `{colon_hex(expected)}`"])
 
 
+# The oldest iOS SDK App Store Connect takes; it becomes 27 in April 2027.
+IOS_STORE_MINIMUM_SDK = 26
+
+
+def ios_sdk(output):
+    """The SDK major version in `vtool -show-build` output."""
+    versions = [int(v) for v in re.findall(r"^\s*sdk (\d+)(?:\.\d+)*\s*$", output, re.MULTILINE)]
+    return min(versions, default=None)
+
+
 def verify_store_ios(info):
     ipa = ROOT / STORE_OUTPUTS["ios"]
     with tempfile.TemporaryDirectory(prefix="ipa-verify-") as temp:
@@ -1512,6 +1523,11 @@ def verify_store_ios(info):
         print(verify.stdout + verify.stderr)
         if verify.returncode:
             raise RuntimeError("codesign could not verify the IPA's app")
+        executable = app / plistlib.loads((app / "Info.plist").read_bytes())["CFBundleExecutable"]
+        sdk = ios_sdk(subprocess.run(["xcrun", "vtool", "-show-build", str(executable)],
+                                     capture_output=True, text=True).stdout)
+        if sdk is None or sdk < IOS_STORE_MINIMUM_SDK:
+            raise RuntimeError(f"The IPA is built with iOS SDK {sdk}; App Store Connect takes {IOS_STORE_MINIMUM_SDK} or later")
         details = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True)
         authority = re.search(r"^Authority=((?:Apple|iPhone) Distribution: .+)$", details.stdout + details.stderr,
                               re.MULTILINE)
