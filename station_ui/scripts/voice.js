@@ -95,6 +95,8 @@ async function listOutputs(){
   if(outputMode()!=='device')return '';
   const saved=storedSink();let outputs=[];
   try{outputs=(await navigator.mediaDevices.enumerateDevices()).filter(d=>d.kind==='audiooutput'&&d.deviceId&&d.deviceId!=='default');}catch{/* listed after microphone permission */}
+  // The app may have taken over (app.audio_output) while devices were listed.
+  if(outputMode()!=='device')return '';
   const select=$('output-device');select.replaceChildren(new Option('System default',''));
   outputs.forEach((d,i)=>select.add(new Option(d.label||`Output ${i+1}`,d.deviceId)));
   const present=!saved||outputs.some(d=>d.deviceId===saved);

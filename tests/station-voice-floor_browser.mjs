@@ -42,6 +42,11 @@ try {
   const station=value=>page.evaluate(v=>window.__station(v),value);
   const mic=()=>page.locator('#mic-state').textContent();
 
+  // Chromium can switch outputs (AudioContext.setSinkId): a device list that
+  // starts with "System default", no Phone / Speaker (that is the phone apps').
+  assert.equal(await page.locator('#output-device-label').isVisible(),true);
+  assert.equal(await page.locator('#output-native').isVisible(),false);
+  assert.equal(await page.locator('#output-device option').first().textContent(),'System default');
   // Five on the roster, four on air: the count shows the station's cap.
   await station(roster('idle',talkers));
   assert.equal(await page.locator('#count').textContent(),'5 / 32');
@@ -83,5 +88,5 @@ try {
   await page.selectOption('#mode','open');
   await page.waitForFunction(()=>document.querySelector('#mic-state').textContent==='Transmitting');
   assert.equal(errors.length,0,errors.join('\n'));
-  console.log('PASS: talk floor waiting/on-air/override/roster repair, "Transmitting" label, station-reported participant cap');
+  console.log('PASS: talk floor waiting/on-air/override/roster repair, "Transmitting" label, station-reported participant cap, output device list in Chromium');
 } finally {await browser.close();server.close();}

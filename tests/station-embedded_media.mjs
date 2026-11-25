@@ -11,7 +11,7 @@ const server = http.createServer(async (req, res) => {
   requests.push({url:req.url, auth:req.headers.authorization, method:req.method});
   const url = new URL(req.url, 'http://localhost');
   const json = value => { res.setHeader('Content-Type','application/json'); res.end(JSON.stringify(value)); };
-  if (url.pathname === '/') { res.end(`<iframe id="media" src="/media?embedded=1" allow="camera; microphone; autoplay"></iframe><iframe id="voice" src="/radio?embedded=1" allow="microphone; autoplay"></iframe><script>for(const frame of document.querySelectorAll('iframe'))frame.onload=()=>frame.contentWindow.postMessage({type:'gs26-session',token:'test-producer',visible:true},location.origin)</script>`); return; }
+  if (url.pathname === '/') { res.end(`<iframe id="media" src="/media?embedded=1" allow="camera; microphone; autoplay"></iframe><iframe id="voice" src="/radio?embedded=1" allow="microphone; autoplay"></iframe><script>window.__audioOutput=[];addEventListener('message',e=>{if(e.data?.type==='gs26-audio-output')window.__audioOutput.push(e.data);});const app={platform:'ios',audio_output:{control:'native',options:['phone','speaker'],choice:'phone',route:'the earpiece',available:true,note:null}};for(const frame of document.querySelectorAll('iframe'))frame.onload=()=>frame.contentWindow.postMessage({type:'gs26-session',token:'test-producer',visible:true,...(frame.id==='voice'?{app}:{})},location.origin)</script>`); return; }
   const files = {'/media':'pages/media.html','/radio':'pages/voice.html','/assets/voice.js':'scripts/voice.js','/assets/media-login.js':'scripts/media-login.js','/assets/voice-worklet.js':'scripts/voice-worklet.js','/assets/stay-awake.js':'scripts/stay-awake.js'};
   if (files[url.pathname]) { res.setHeader('Content-Type',url.pathname.endsWith('.js')?'text/javascript':'text/html'); res.end(fs.readFileSync(path.join(source,files[url.pathname]))); return; }
   if (url.pathname === '/api/live_streams') return json({can_manage_stream:false,can_publish_camera:permitted});
@@ -59,6 +59,15 @@ try {
   assert.equal(await media.locator('#login').isVisible(),false);
   assert.equal(await voice.locator('#login').isVisible(),false);
   await voice.locator('#join').click();await voice.getByText('Connected to voice chat.',{exact:true}).waitFor().catch(async error=>{console.error('Voice status:',await voice.locator('#status').innerText(),errors);throw error;});
+  // A phone app: Phone / Speaker instead of a device list; Phone is the default.
+  assert.equal(await voice.locator('#output-native').isVisible(),true);
+  assert.equal(await voice.locator('#output-device-label').isVisible(),false);
+  assert.equal(await voice.locator('input[name=output][value=phone]').isChecked(),true);
+  await voice.getByText('Playing through the earpiece.',{exact:true}).waitFor();
+  await page.waitForFunction(()=>window.__audioOutput.some(m=>m.active===true&&m.choice==='phone'));
+  await voice.getByText('Speaker',{exact:true}).click();
+  await page.waitForFunction(()=>window.__audioOutput.at(-1)?.choice==='speaker'&&window.__audioOutput.at(-1)?.active===true);
+  assert.equal(await voice.locator('input[name=output][value=speaker]').isChecked(),true,'the click stays while the app confirms');
   assert.equal(await voice.locator('#radio-enable').isChecked(),false,'radio requires a separate explicit opt-in');
   await voice.locator('#radio-enable').check();
   assert.equal(await voice.locator('#mode').inputValue(),'ptt','radio is push-to-talk only');
