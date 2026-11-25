@@ -16,6 +16,17 @@ dashboard also releases its screen wake-lock owners; a hidden camera tab keeps
 its capture lock until sharing stops. Operating systems
 may suspend capture when the app itself is backgrounded.
 
+The voice channel holds up to 32 people by default, and the station forwards
+at most four talkers at once (both set on the Ground Station; see its
+`docs/backend/crew-voice.md`, "Capacity and talk floor"). The count beside
+**In the channel** shows the station's cap. While you talk the page shows
+**Transmitting**; when four people are already on air it shows **Waiting for a
+free channel · 4 of 4 talking**, sends no audio, and goes on air by itself
+when a slot frees. The roster lists people as *On air*, *Waiting to talk* or
+*Listening*. An administrator's request can take the slot of the person on air
+longest, and someone on air who stays quiet for 1.5 s gives the slot to the
+next person waiting; either way the page says why.
+
 **Mission Live** displays only the broadcast stream. Logged-in users with command permission can open **Checklist** beside the tab selector from any tab. Checkmarks are saved per user and station and do not bypass interlocks.
 
 **Stream Manager** is available to users with stream-management access

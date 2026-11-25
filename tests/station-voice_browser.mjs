@@ -53,11 +53,11 @@ try {
     await a.locator('#noise-suppression').uncheck();
     await a.waitForFunction(()=>document.querySelector('#noise-suppression').disabled===false);
     assert.equal(await a.locator('#noise-suppression').isChecked(),false);
-    await a.getByText('Noise suppression off',{exact:true}).waitFor();
+    await a.getByText('Noise suppression: off',{exact:true}).waitFor();
     await a.locator('#noise-suppression').check();
     await a.waitForFunction(()=>document.querySelector('#noise-suppression').disabled===false);
     assert.equal(await a.locator('#noise-suppression').isChecked(),true);
-    await a.getByText('Noise suppression on',{exact:true}).waitFor();
+    await a.getByText('Noise suppression: on (system)',{exact:true}).waitFor();
   }
   await a.selectOption('#mode','ptt');
   await a.locator('#ptt').focus();await a.keyboard.down('Space');await a.waitForFunction(n=>audioSent>n+3,muted);await a.keyboard.up('Space');
