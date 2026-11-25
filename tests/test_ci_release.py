@@ -417,6 +417,28 @@ class ReleaseDriver(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "signing material"):
                 ci.release_checksums(merged, ["windows", "android"])
 
+    def test_apksigner_scheme_labelled_output(self):
+        # build-tools 37 labels signers by scheme (the release dry run of 2026-11-24).
+        digest = "7e1a7dedfd1fe4ae0dc356c9e43f4434bcd469cc2ee04daa6d54fb267c213f8f"
+        dn = "CN=Example Owner, OU=Example, O=Example, L=Town, ST=New York, C=US"
+        output = ("Verifies\nVerified using v3 scheme (APK Signature Scheme v3): true\n"
+                  "Verified using v3.1 scheme (APK Signature Scheme v3.1): false\nNumber of signers: 1\n"
+                  f"V3.0 Signer: certificate DN: {dn}\n"
+                  f"V3.0 Signer: certificate SHA-256 digest: {digest}\n"
+                  "V3.0 Signer: certificate SHA-1 digest: ca804300b5051749ccc4496923009d34feac3357\n"
+                  "V3.0 Signer: public key SHA-256 digest: e64305af7b2ad8154e635c01b0d4388ffb153d1d0ab2fe7cd6d04ca4c3aba98a\n")
+        self.assertEqual(ci.apk_signers(output), [(dn, digest)])
+        # The same signer listed under two schemes is still one signer.
+        both = output + f"Signer #1 certificate DN: {dn}\nSigner #1 certificate SHA-256 digest: {digest}\n"
+        self.assertEqual(ci.apk_signers(both), [(dn, digest)])
+        # A second, different signer is two signers and does not satisfy a count of 1.
+        other = "0" * 64
+        with self.assertRaises(RuntimeError):
+            ci.apk_signers(output + f"V3.1 Signer #2: certificate DN: CN=Other\nV3.1 Signer #2: certificate SHA-256 digest: {other}\n")
+        # A DN without its digest (or the reverse) is refused.
+        with self.assertRaises(RuntimeError):
+            ci.apk_signers(output.replace(f"V3.0 Signer: certificate SHA-256 digest: {digest}\n", ""))
+
     def test_apksigner_output_parsing_and_production_match(self):
         digest = "41be92372808d89ec0013d89b52e203d8d5aa6fd0aa7f840383929bcd7878f0e"
         output = ("Verifies\nVerified using v1 scheme (JAR signing): false\n"

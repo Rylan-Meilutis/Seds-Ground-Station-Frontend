@@ -927,13 +927,26 @@ def find_apksigner():
 
 
 def apk_signers(output):
-    """(DN, SHA-256) for each signer in `apksigner verify --print-certs` output."""
+    """(DN, SHA-256) for each distinct signer in `apksigner verify --print-certs` output.
+
+    Older build-tools label signers `Signer #N`; newer ones label them by scheme,
+    e.g. `V3.0 Signer:` or `V3.1 Signer #N:`, and may list one signer under
+    several schemes. Each label's DN pairs with its own digest, and signers are
+    de-duplicated; the distinct set must equal `Number of signers`."""
     count = re.search(r"^Number of signers: (\d+)$", output, re.MULTILINE)
-    digests = re.findall(r"^Signer #\d+ certificate SHA-256 digest: ([0-9a-f]{64})$", output, re.MULTILINE)
-    names = re.findall(r"^Signer #\d+ certificate DN: (.+)$", output, re.MULTILINE)
-    if not count or int(count.group(1)) != len(digests) or len(names) != len(digests):
+    label = r"((?:V\d+(?:\.\d+)? )?Signer(?: #\d+)?):"
+    digests = dict(re.findall(rf"^{label} certificate SHA-256 digest: ([0-9a-f]{{64}})$", output, re.MULTILINE))
+    names = dict(re.findall(rf"^{label} certificate DN: (.+)$", output, re.MULTILINE))
+    if not count or not digests or set(digests) != set(names):
         raise RuntimeError("Could not read the APK signer certificates from apksigner output")
-    return list(zip(names, digests))
+    signers = []
+    for key in digests:
+        pair = (names[key], digests[key])
+        if pair not in signers:
+            signers.append(pair)
+    if int(count.group(1)) != len(signers):
+        raise RuntimeError("Could not read the APK signer certificates from apksigner output")
+    return signers
 
 
 def verify_android_release(name):
