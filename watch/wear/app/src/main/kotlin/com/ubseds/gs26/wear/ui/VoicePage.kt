@@ -143,6 +143,7 @@ fun VoicePage(link: PhoneLink, visible: Boolean, joinRequest: Int) {
         PttButton(
             enabled = ui.joined && ui.connected && !ui.held,
             talking = ui.talking,
+            waiting = ui.waiting,
             toggle = voice.toggle,
             onDown = { if (ui.joined) engine.ptt("down") else join() },
             onUp = { if (ui.joined) engine.ptt("up") },
@@ -164,13 +165,14 @@ fun VoicePage(link: PhoneLink, visible: Boolean, joinRequest: Int) {
 }
 
 @Composable
-private fun PttButton(enabled: Boolean, talking: Boolean, toggle: Boolean, onDown: () -> Unit, onUp: () -> Unit) {
+private fun PttButton(enabled: Boolean, talking: Boolean, waiting: Boolean, toggle: Boolean, onDown: () -> Unit, onUp: () -> Unit) {
     val color = when {
         talking -> AlertRed
         enabled -> Amber
         else -> Color(0xFF424242)
     }
     val label = when {
+        talking && waiting -> "Waiting"
         talking -> if (toggle) "Tap to stop" else "Talking"
         !enabled -> "Join first"
         toggle -> "Tap to talk"

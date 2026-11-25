@@ -117,6 +117,7 @@ class VoiceVectorsTest {
                     assertEquals(s.str("codec"), msg.codec)
                 }
                 "handoff" -> assertEquals(s["held"]!!.jsonPrimitive.boolean, (msg as ServerMessage.Handoff).held)
+                "floor" -> assertEquals(s.str("state"), (msg as ServerMessage.Floor).state)
                 "error" -> assertEquals(s.str("message"), (msg as ServerMessage.Error).message)
                 "radio_link" -> assertEquals(s["radio_available"]!!.jsonPrimitive.boolean, (msg as ServerMessage.RadioLink).available)
                 "unknown" -> assertEquals(ServerMessage.Unknown, msg)

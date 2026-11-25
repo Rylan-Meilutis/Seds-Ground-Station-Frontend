@@ -211,6 +211,8 @@ public enum VoiceServerMessage: Equatable {
     case joined(id: UInt32, codec: VoiceCodec)
     case roster([RosterPeer])
     case handoff(held: Bool)
+    /// Talk floor: `on_air`, `waiting` (the station's talker cap is full) or `idle`.
+    case floor(state: String)
     case error(String)
     case radioLink(available: Bool)
     case radioState(enabled: Bool)
@@ -230,6 +232,8 @@ public enum VoiceServerMessage: Equatable {
             return .roster(((o["peers"] as? [Any]) ?? []).compactMap { RosterPeer($0) })
         case "handoff":
             return .handoff(held: o["held"] as? Bool ?? false)
+        case "floor":
+            return .floor(state: o["state"] as? String ?? "idle")
         case "error":
             return .error(o["message"] as? String ?? "Voice error")
         case "radio_link":

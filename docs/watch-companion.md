@@ -529,10 +529,21 @@ watch ──WSS /api/voice/ws (Opus 16 kHz, 20 ms)──────────
   then `{"type":"transmitting","enabled":…}`, `{"type":"active","enabled":…}`
   (watch only, see "Phone and watch together"), `{"type":"radio","enabled":…}`
   and `{"type":"ping"}` every 10 s. The station sends `joined`
-  (`id`, `codec`, `sample_rate`, `frame_samples`, `device`), `roster`
-  (`peers[]` with `id`, `name`, `transmitting`, `device` = `web|watch`),
-  `handoff` (`held`, `by`), `error` (`message`), `radio_link`,
-  `radio_state` and `broadcast_state`. Unknown types are ignored.
+  (`id`, `codec`, `sample_rate`, `frame_samples`, `device`,
+  `max_participants`, `max_talkers`), `roster` (`peers[]` with `id`,
+  `name`, `transmitting` = on air, `waiting`, `device` = `web|watch`),
+  `floor` (`state` = `on_air|waiting|idle`, `reason`, `talkers`,
+  `max_talkers`), `handoff` (`held`, `by`), `error` (`message`),
+  `radio_link`, `radio_state` and `broadcast_state`. Unknown types are
+  ignored.
+* Talk floor: the station forwards at most `max_talkers` (default 4) at
+  once (GroundStation26 `docs/backend/crew-voice.md`, "Talk floor"). A
+  push-to-talk press when the floor is full waits in line; the station
+  sends `floor` `waiting`, drops the watch's audio until a slot frees and
+  then sends `on_air`. The watch keeps talking through the wait and shows
+  **Waiting** on the push-to-talk button instead of **Talking**
+  (`voice.frames.server` vector `floor`). The phone relay passes `floor`
+  through like every other station message.
 
 ### Access
 

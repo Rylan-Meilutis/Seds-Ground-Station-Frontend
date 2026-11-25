@@ -81,6 +81,8 @@ data class VoiceUi(
     val peers: Int = 0,
     val talking: Boolean = false,
     val held: Boolean = false,
+    /** Talking, but the station's talker cap is full: queued, not on air. */
+    val waiting: Boolean = false,
     val error: String? = null,
     val codec: String = Voice.CODEC_OPUS,
     val radioAvailable: Boolean = false,
@@ -173,7 +175,7 @@ class VoiceEngine private constructor(context: Context) {
     private fun apply(out: PttOutput) {
         out.send?.let { sendText(VoiceFrames.control("transmitting", it)) }
         out.haptic?.let { if (settings.haptics) haptic(it) }
-        _ui.update { it.copy(talking = out.talking) }
+        _ui.update { it.copy(talking = out.talking, waiting = it.waiting && out.talking) }
     }
 
     // --- Session ------------------------------------------------------------
@@ -287,6 +289,7 @@ class VoiceEngine private constructor(context: Context) {
                 apply(synchronized(pttLock) { ptt.event(if (m.held) "held" else "unheld") })
                 _ui.update { it.copy(held = m.held) }
             }
+            is ServerMessage.Floor -> _ui.update { it.copy(waiting = m.state == "waiting") }
             is ServerMessage.Error -> return m.message
             is ServerMessage.RadioLink -> {
                 _ui.update { it.copy(radioAvailable = m.available) }

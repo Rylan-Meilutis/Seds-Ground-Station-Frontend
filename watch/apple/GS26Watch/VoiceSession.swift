@@ -37,6 +37,8 @@ final class VoiceSession: NSObject, ObservableObject {
     @Published private(set) var talking = false
     /// Paused because another watch of ours holds the floor.
     @Published private(set) var held = false
+    /// Talking, but the station's talker cap is full: queued, not on air.
+    @Published private(set) var waiting = false
     @Published private(set) var talkers: [String] = []
     @Published private(set) var peerCount = 0
     @Published private(set) var radioAvailable = false
@@ -338,6 +340,8 @@ final class VoiceSession: NSObject, ObservableObject {
         case let .handoff(isHeld):
             held = isHeld
             apply(ptt.handle(isHeld ? .held : .unheld))
+        case let .floor(state):
+            waiting = state == "waiting"
         case let .error(message):
             lastServerError = message
         case let .radioLink(available):

@@ -3334,7 +3334,7 @@
      "retry": true
     },
     {
-     "error": "Voice channel is full (12 participants)",
+     "error": "Voice channel is full (32 participants)",
      "retry": true
     },
     {
@@ -3510,11 +3510,22 @@
     },
     {
      "json": {
+      "type": "floor",
+      "state": "waiting",
+      "reason": "priority",
+      "talkers": 4,
+      "max_talkers": 4
+     },
+     "kind": "floor",
+     "state": "waiting"
+    },
+    {
+     "json": {
       "type": "error",
-      "message": "Voice channel is full (12 participants)"
+      "message": "Voice channel is full (32 participants)"
      },
      "kind": "error",
-     "message": "Voice channel is full (12 participants)"
+     "message": "Voice channel is full (32 participants)"
     },
     {
      "json": {

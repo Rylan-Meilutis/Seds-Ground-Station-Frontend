@@ -100,6 +100,7 @@ final class VoiceTests: XCTestCase {
                 XCTAssertEqual(message, .joined(id: (c["id"] as! NSNumber).uint32Value,
                                                 codec: VoiceCodec(rawValue: c["codec"] as! String)!))
             case "handoff": XCTAssertEqual(message, .handoff(held: c["held"] as! Bool))
+            case "floor": XCTAssertEqual(message, .floor(state: c["state"] as! String))
             case "error": XCTAssertEqual(message, .error(c["message"] as! String))
             case "radio_link": XCTAssertEqual(message, .radioLink(available: c["radio_available"] as! Bool))
             default: XCTAssertEqual(message, .unknown)

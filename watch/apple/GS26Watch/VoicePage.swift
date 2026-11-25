@@ -56,7 +56,7 @@ struct VoicePage: View {
     }
 
     private var pttButton: some View {
-        let label = voice.talking ? "Talking" : (mode == .hold ? "Hold to talk" : "Tap to talk")
+        let label = voice.talking ? (voice.waiting ? "Waiting" : "Talking") : (mode == .hold ? "Hold to talk" : "Tap to talk")
         return Circle()
             .fill(voice.talking ? Color.red : (canTalk ? Color.green : Color.gray))
             .overlay(

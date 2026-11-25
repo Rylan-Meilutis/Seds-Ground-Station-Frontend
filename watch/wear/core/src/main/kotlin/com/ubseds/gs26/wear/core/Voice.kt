@@ -186,6 +186,8 @@ sealed class ServerMessage {
     data class Joined(val id: Long, val codec: String) : ServerMessage()
     data class Roster(val peers: List<RosterPeer>) : ServerMessage()
     data class Handoff(val held: Boolean, val by: String) : ServerMessage()
+    /** Talk floor: `on_air`, `waiting` (the station has its cap of talkers) or `idle`. */
+    data class Floor(val state: String, val reason: String?) : ServerMessage()
     data class Error(val message: String) : ServerMessage()
     data class RadioLink(val configured: Boolean, val available: Boolean) : ServerMessage()
     data class RadioState(val enabled: Boolean) : ServerMessage()
@@ -203,6 +205,7 @@ sealed class ServerMessage {
                 "joined" -> Joined(o["id"]?.jsonPrimitive?.longOrNull ?: 0, str("codec") ?: Voice.CODEC_PCM16)
                 "roster" -> Roster(parsePeers(o["peers"]))
                 "handoff" -> Handoff(bool("held"), str("by").orEmpty())
+                "floor" -> Floor(str("state") ?: "idle", str("reason"))
                 "error" -> Error(str("message").orEmpty())
                 "radio_link" -> {
                     val r = o["radio"] as? JsonObject ?: JsonObject(emptyMap())
