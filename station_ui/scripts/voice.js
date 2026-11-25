@@ -1,9 +1,52 @@
 import {signIn} from '/assets/media-login.js';
 const $=id=>document.getElementById(id);
 let token='', session=null, muted=false, held=false, joining=false, radioAvailable=false;
-const noiseSupported=navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression===true;
+// <noise-suppression> The platform's own suppression where it reports it
+// running (Chromium: browsers, the Android app's WebView, WebView2), otherwise
+// the built-in suppressor in voice-worklet.js (WebKit, which has no
+// noiseSuppression constraint: Safari, the iOS and macOS apps, the Linux app).
+// The status says which one runs, never more than that.
+const systemNoiseSupported=navigator.mediaDevices?.getSupportedConstraints?.().noiseSuppression===true;
+const builtInNoiseSupported=typeof AudioWorkletNode==='function';
+const noiseSupported=systemNoiseSupported||builtInNoiseSupported;
+// {platform:'ios'|'android'|'macos'|'linux'|'windows'|'web', record_permission?}
+// from the dashboard that embeds this page; null in a plain browser tab.
+let appInfo=null;
+const inNativeApp=()=>!!appInfo?.platform&&appInfo.platform!=='web';
+function noiseConstraint(enabled){return systemNoiseSupported?{noiseSuppression:enabled}:{};}
+function noiseMode(enabled,track){
+  const systemOn=systemNoiseSupported&&track?.getSettings?.().noiseSuppression===true;
+  if(!enabled)return systemOn?'system-forced':'off';
+  if(systemOn)return 'system';
+  return builtInNoiseSupported?'built-in':'unavailable';
+}
+function noiseLabel(mode){
+  switch(mode){
+    case 'off':return 'Noise suppression: off';
+    case 'system':return 'Noise suppression: on (system)';
+    case 'built-in':return 'Noise suppression: on (built-in)';
+    case 'system-forced':return 'Noise suppression: on (system; this device keeps it on)';
+    default:return `Noise suppression is unavailable ${inNativeApp()?'in this app':'in this browser'}.`;
+  }
+}
+// Before joining: what will run once the microphone opens.
+function showNoisePlan(){
+  const enabled=$('noise-suppression').checked;
+  $('noise-status').textContent=!noiseSupported?noiseLabel('unavailable'):enabled?`${noiseLabel(systemNoiseSupported?'system':'built-in')} when you join`:noiseLabel('off');
+}
+// In a call: read what the microphone reports and switch the built-in
+// suppressor on only when the system one is not running.
+function applyNoise(s){
+  const mode=noiseMode($('noise-suppression').checked,s?.stream?.getAudioTracks()[0]);
+  if(s)s.noiseMode=mode;
+  s?.node?.port.postMessage({type:'noise',enabled:mode==='built-in'});
+  $('noise-status').textContent=noiseLabel(mode);
+  return mode;
+}
 $('noise-suppression').disabled=!noiseSupported;
-if(!noiseSupported){$('noise-suppression').checked=false;$('noise-status').textContent='Noise suppression is unavailable in this browser.';}
+if(!noiseSupported)$('noise-suppression').checked=false;
+showNoisePlan();
+// </noise-suppression>
 function radioLink(radio){
   $('radio-controls').hidden=!radio?.configured;
   radioAvailable=radio?.available===true;
@@ -21,6 +64,53 @@ function voiceUnavailableReason(){
   if(!Context||!('audioWorklet' in Context.prototype))return 'This web view lacks AudioWorklet, which voice audio needs. Update the system web view, or use a browser.';
   return '';
 }
+// <audio-resume> WebKit on iOS interrupts an AudioContext whenever the app's
+// audio session changes: when the microphone opens (the session switches to
+// play-and-record), for a call or Siri, on some route changes, and when the
+// app goes to the background. An interrupted context stops the audio
+// processor, so nothing is sent or heard although the call looks connected.
+// Resume it when that happens and on the next touch or return to the page
+// (WebKit may only allow it from a user gesture), and say so when it stays off.
+async function resumeAudio(s,reason){
+  const context=s?.context;
+  if(!context||context.state==='running'||context.state==='closed')return true;
+  try{await bounded(context.resume(),3000,'resume timed out');}catch(e){console.warn(`[voice] audio resume failed (${reason}): ${e?.message}`);}
+  const running=context.state==='running';
+  console.info(`[voice] audio ${running?'resumed':`still ${context.state}`} (${reason})`);
+  if(session===s){
+    if(!running){s.audioPaused=true;notice('Voice audio was paused by the system. Tap this page to resume.');}
+    else if(s.audioPaused){s.audioPaused=false;notice('Voice audio resumed.');}
+  }
+  return running;
+}
+function watchAudio(s){
+  s.context.onstatechange=()=>{
+    console.info(`[voice] audio context ${s.context.state} at ${s.context.sampleRate} Hz`);
+    if(session===s&&s.context.state!=='running'&&s.context.state!=='closed'&&!document.hidden)resumeAudio(s,'statechange');
+  };
+}
+for(const [target,kind] of [[document,'pointerdown'],[document,'keydown'],[document,'visibilitychange'],[window,'focus'],[window,'pageshow']])
+  target.addEventListener(kind,()=>{if(session?.context&&!document.hidden)resumeAudio(session,kind);},{capture:true,passive:true});
+// </audio-resume>
+// <join-errors> Microphone refusals name the setting to change on this platform.
+function permissionHint(){
+  switch(inNativeApp()?appInfo.platform:'web'){
+    case 'ios':return 'Allow the microphone for this app in Settings → Privacy & Security → Microphone, then join again.';
+    case 'macos':return 'Allow the microphone for this app in System Settings → Privacy & Security → Microphone, then join again.';
+    case 'android':return 'Allow the microphone in Settings → Apps → this app → Permissions, then join again.';
+    case 'windows':return 'Allow desktop apps to use the microphone in Settings → Privacy & security → Microphone, then join again.';
+    case 'linux':return 'Check that a microphone is connected and that the desktop allows this app to record, then join again.';
+    default:return 'Allow the microphone for this site in the browser, then join again.';
+  }
+}
+function joinErrorText(error){
+  if(error?.name==='NotAllowedError'||error?.name==='SecurityError')
+    return `${appInfo?.record_permission==='denied'?'Microphone access is off for this app.':'Microphone access was refused.'} ${permissionHint()}`;
+  if(error?.name==='NotFoundError'||error?.name==='OverconstrainedError')return 'No usable microphone was found. Connect one or choose another, then join again.';
+  if(error?.name==='NotReadableError')return 'The microphone is in use by another app or the system. Close it, then join again.';
+  return error?.message||String(error);
+}
+// </join-errors>
 async function bounded(promise,ms,message){
  let timer;try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>reject(new Error(message)),ms);})]);}finally{clearTimeout(timer);}
 }
@@ -98,7 +188,7 @@ $('join').onclick=async()=>{
   try{
     const Context=window.AudioContext||window.webkitAudioContext;
     if(!Context)throw new Error('This browser does not support voice audio');
-    s.context=new Context();
+    s.context=new Context();watchAudio(s);
     await bounded(s.context.resume(),8000,'Audio could not start. Allow audio playback, then join again.');
     if(!s.context.audioWorklet)throw new Error('Voice audio requires a trusted HTTPS connection and AudioWorklet support');
     await bounded(s.context.audioWorklet.addModule('/assets/voice-worklet.js'),8000,'The voice audio processor did not load. Reload and try again.');
@@ -114,17 +204,14 @@ $('join').onclick=async()=>{
     radioLink(capabilities.radio);
     if(session!==s)return;
     notice('Waiting for microphone permission…');
-    const microphone=navigator.mediaDevices.getUserMedia({audio:{deviceId:$('device').value?{exact:$('device').value}:undefined,channelCount:1,echoCancellation:true,noiseSuppression:noiseSupported?$('noise-suppression').checked:undefined,autoGainControl:false}});
+    const microphone=navigator.mediaDevices.getUserMedia({audio:{deviceId:$('device').value?{exact:$('device').value}:undefined,channelCount:1,echoCancellation:true,...noiseConstraint($('noise-suppression').checked),autoGainControl:false}});
     microphone.then(stream=>{if(session!==s)stream.getTracks().forEach(track=>track.stop());},()=>{});
-    const stream=await bounded(microphone,30000,'Microphone access is still pending. Check this browser’s microphone permission and join again.');
+    const stream=await bounded(microphone,30000,`Microphone access is still pending. ${permissionHint()}`);
     if(session!==s){stream.getTracks().forEach(t=>t.stop());return;}
     s.stream=stream;s.stream.getAudioTracks().forEach(t=>{t.enabled=false;t.onended=()=>{if(session===s)leave('Microphone disconnected. Rejoin to choose another device.');};});
-    if(noiseSupported){
-      const actual=stream.getAudioTracks()[0]?.getSettings?.().noiseSuppression;
-      if(typeof actual==='boolean'){$('noise-suppression').checked=actual;$('noise-status').textContent=actual?'Noise suppression on':'Noise suppression off';}
-    }
     s.node=new AudioWorkletNode(s.context,'crew-audio',{numberOfInputs:1,numberOfOutputs:1,outputChannelCount:[1]});
     s.source=s.context.createMediaStreamSource(stream);s.source.connect(s.node);s.node.connect(s.context.destination);
+    applyNoise(s);await resumeAudio(s,'microphone started');
     s.node.port.onmessage=({data:m})=>{
       if(session!==s)return;
       if(m.type==='level')$('level').value=m.value;
@@ -179,12 +266,15 @@ $('join').onclick=async()=>{
     s.ping=setInterval(()=>{if(s.ws.readyState===WebSocket.OPEN)s.ws.send(JSON.stringify({type:'ping'}));},10000);
     s.joinTimeout=setTimeout(()=>{if(session===s&&!s.ready)leave('Voice connection timed out. Check the station connection and join again.');},10000);
     notice('Connecting to voice…');await devices();
-  }catch(e){if(session===s)leave(`Cannot join voice: ${e.message}`);}
+  }catch(e){if(session===s)leave(`Cannot join voice: ${joinErrorText(e)}`);}
 };
 $('noise-suppression').onchange=async()=>{
   const enabled=$('noise-suppression').checked;
   const current=session;
-  if(!current?.stream)return;
+  if(!current?.stream)return showNoisePlan();
+  // The built-in suppressor switches at once; the system one is a microphone
+  // setting that some devices apply only when the microphone opens again.
+  if(!systemNoiseSupported){applyNoise(current);return;}
   current.reconfiguring=true;held=false;transmit();
   let replacement;
   try {
@@ -198,8 +288,6 @@ $('noise-suppression').onchange=async()=>{
       replacement=await navigator.mediaDevices.getUserMedia({audio:{deviceId:$('device').value?{exact:$('device').value}:undefined,channelCount:1,echoCancellation:true,noiseSuppression:{exact:enabled},autoGainControl:false}});
       replacement.getAudioTracks().forEach(track=>{track.enabled=false;});
       if(session!==current)return;
-      actual=replacement.getAudioTracks()[0]?.getSettings?.().noiseSuppression;
-      if(typeof actual==='boolean'&&actual!==enabled)throw Error('The microphone did not apply the requested setting');
       const source=current.context.createMediaStreamSource(replacement);
       source.connect(current.node);
       const old=current.stream;
@@ -207,18 +295,13 @@ $('noise-suppression').onchange=async()=>{
       current.stream.getAudioTracks().forEach(track=>{track.onended=()=>{if(session===current)leave('Microphone disconnected. Rejoin to choose another device.');};});
       old.getTracks().forEach(track=>{track.onended=null;track.stop();});
     }
-    $('noise-suppression').checked=enabled;
-    $('noise-status').textContent=actual===enabled?(enabled?'Noise suppression on':'Noise suppression off'):'Requested setting applied; device does not report processing state.';
   } catch(error) {
-    if(session===current){
-      const actual=current.stream.getAudioTracks()[0]?.getSettings?.().noiseSuppression;
-      $('noise-suppression').checked=typeof actual==='boolean'?actual:!enabled;
-      $('noise-status').textContent=`Cannot change noise suppression: ${error.message}`;
-    }
+    if(session===current)console.warn('[voice] system noise suppression change failed',error?.message);
   } finally {
     replacement?.getTracks().forEach(track=>track.stop());
     current.reconfiguring=false;
-    if(session===current)transmit();
+    // Whatever the device did, the status shows what now runs.
+    if(session===current){applyNoise(current);transmit();}
     updateControls();
   }
 };
@@ -255,6 +338,7 @@ if (new URLSearchParams(location.search).get('embedded') === '1' && parent !== w
         if(typeof value==='string' && CSS.supports('color',value))document.documentElement.style.setProperty(name,value);
       }
     }
+    if (event.data.app && typeof event.data.app === 'object') { appInfo = event.data.app; if (!session?.stream) showNoisePlan(); }
     if (!event.data.visible) release();
     if (!receivedSession || token !== event.data.token) {
       receivedSession = true;
