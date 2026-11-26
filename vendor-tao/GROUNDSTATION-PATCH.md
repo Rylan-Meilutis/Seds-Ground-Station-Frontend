@@ -82,3 +82,13 @@ files and ordinary links return NO, harmlessly. See docs/replay-bundle.md,
 Device validation: open a bundle stored in iCloud Drive and one in "On My
 iPhone" from Files, with the app closed and running; both must reach the
 offline replay view.
+
+## Android monitor size before API 30
+
+`MonitorHandle::size` called `WindowManager.getCurrentWindowMetrics`, which
+exists from API 30; on Android 7-10 the Java call threw and the `unwrap`s
+panicked during `dioxus_desktop::launch`, so the app never rendered (found by
+the API 24 launch smoke test, scripts/android_launch_smoke.py). The patch tries
+the API 30 call, clears the Java exception, falls back to
+`Display.getRealSize` (API 17+), and returns 0x0 rather than panicking if JNI
+fails. Re-check on every Tao update; remove once upstream handles old APIs.

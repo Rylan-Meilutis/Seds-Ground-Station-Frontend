@@ -792,6 +792,39 @@ impl Display for OsError {
 
 pub(crate) use crate::icon::NoIcon as PlatformIcon;
 
+/// API 30+: WindowManager.getCurrentWindowMetrics().getBounds().
+fn window_metrics_size(env: &mut jni::JNIEnv, window_manager: &jni::objects::JObject) -> Option<(i32, i32)> {
+  let metrics = env
+    .call_method(window_manager, "getCurrentWindowMetrics", "()Landroid/view/WindowMetrics;", &[])
+    .ok()?
+    .l()
+    .ok()?;
+  let rect = env
+    .call_method(&metrics, "getBounds", "()Landroid/graphics/Rect;", &[])
+    .ok()?
+    .l()
+    .ok()?;
+  let width = env.call_method(&rect, "width", "()I", &[]).ok()?.i().ok()?;
+  let height = env.call_method(&rect, "height", "()I", &[]).ok()?.i().ok()?;
+  Some((width, height))
+}
+
+/// API 17+: WindowManager.getDefaultDisplay().getRealSize(Point).
+fn display_real_size(env: &mut jni::JNIEnv, window_manager: &jni::objects::JObject) -> Option<(i32, i32)> {
+  let display = env
+    .call_method(window_manager, "getDefaultDisplay", "()Landroid/view/Display;", &[])
+    .ok()?
+    .l()
+    .ok()?;
+  let point = env.new_object("android/graphics/Point", "()V", &[]).ok()?;
+  env
+    .call_method(&display, "getRealSize", "(Landroid/graphics/Point;)V", &[(&point).into()])
+    .ok()?;
+  let width = env.get_field(&point, "x", "I").ok()?.i().ok()?;
+  let height = env.get_field(&point, "y", "I").ok()?.i().ok()?;
+  Some((width, height))
+}
+
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct MonitorHandle;
 
@@ -801,41 +834,30 @@ impl MonitorHandle {
   }
 
   pub fn size(&self) -> PhysicalSize<u32> {
-    // TODO decide how to get JNIENV
-    if let Some(w) = ndk_glue::window_manager().as_ref() {
-      let ctx = ndk_context::android_context();
-      let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }.unwrap();
-      let mut env = vm.attach_current_thread().unwrap();
-      let window_manager = w.as_obj();
-      let metrics = env
-        .call_method(
-          window_manager,
-          "getCurrentWindowMetrics",
-          "()Landroid/view/WindowMetrics;",
-          &[],
-        )
-        .unwrap()
-        .l()
-        .unwrap();
-      let rect = env
-        .call_method(&metrics, "getBounds", "()Landroid/graphics/Rect;", &[])
-        .unwrap()
-        .l()
-        .unwrap();
-      let width = env
-        .call_method(&rect, "width", "()I", &[])
-        .unwrap()
-        .i()
-        .unwrap();
-      let height = env
-        .call_method(&rect, "height", "()I", &[])
-        .unwrap()
-        .i()
-        .unwrap();
-      PhysicalSize::new(width as u32, height as u32)
-    } else {
-      PhysicalSize::new(0, 0)
+    // GroundStation patch: WindowManager.getCurrentWindowMetrics is API 30+;
+    // on Android 7-10 (the app's minSdk is 24) it throws, and the unwraps
+    // here aborted startup. Fall back to Display.getRealSize (API 17+), and
+    // report 0x0 instead of panicking if JNI fails at all.
+    let guard = ndk_glue::window_manager();
+    let Some(window_manager) = guard.as_ref().map(|w| w.as_obj()) else {
+      return PhysicalSize::new(0, 0);
+    };
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+      return PhysicalSize::new(0, 0);
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+      return PhysicalSize::new(0, 0);
+    };
+    let size = window_metrics_size(&mut env, window_manager).or_else(|| {
+      let _ = env.exception_clear();
+      display_real_size(&mut env, window_manager)
+    });
+    if size.is_none() {
+      let _ = env.exception_clear();
     }
+    let (width, height) = size.unwrap_or((0, 0));
+    PhysicalSize::new(width.max(0) as u32, height.max(0) as u32)
   }
 
   pub fn position(&self) -> PhysicalPosition<i32> {

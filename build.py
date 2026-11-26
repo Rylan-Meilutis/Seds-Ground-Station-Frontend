@@ -2759,6 +2759,24 @@ ANDROID_MAIN_ACTIVITY_OPENED_FILES = """class MainActivity : WryActivity() {
         setIntent(intent)
         com.ubseds.gs26.OpenedFileBridge.accept(this, intent)
     }
+
+    // Android still relaunches the activity for changes an app cannot take
+    // over (configChanges in AndroidManifest.xml covers the rest): a theme
+    // overlay or wallpaper colour update replaces its resources. The Rust
+    // runtime ends with the activity and would close the app, so start the
+    // app again in a fresh process instead.
+    override fun onDestroy() {
+        if (isChangingConfigurations) {
+            android.util.Log.i("GS26", "[lifecycle] activity relaunched by the system; restarting the app")
+            packageManager.getLaunchIntentForPackage(packageName)?.let { launch ->
+                launch.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK or
+                    android.content.Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                startActivity(launch)
+            }
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
+        super.onDestroy()
+    }
 }
 """
 
