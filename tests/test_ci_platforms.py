@@ -83,7 +83,11 @@ class PlatformCI(unittest.TestCase):
         self.assertEqual((job["needs"], job["if"], job["runs-on"]), ("build", "${{ !cancelled() }}", "ubuntu-24.04"))
         rows = [(r["target"], r["profile"], r["api"]) for r in job["strategy"]["matrix"]["include"]]
         self.assertEqual(rows, [("android_sim", "debug", 36), ("android_sim", "release", 36),
-                                ("android_sim", "release", 24), ("wearos_sim", "release", 34)])
+                                ("android_sim", "release", 24), ("wearos_sim", "debug", 34)])
+        # The release Wear APK is unsigned here and will not install; API 24's
+        # google_apis image hung in boot.
+        images = {(r["target"], r["api"]): r["image"] for r in job["strategy"]["matrix"]["include"]}
+        self.assertEqual(images[("android_sim", 24)], "default")
         for row in job["strategy"]["matrix"]["include"]:
             # Only targets the build job makes, as x86_64 for the emulator.
             self.assertIn(row["target"], [p["target"] for p in ci.PLATFORMS])
@@ -94,6 +98,7 @@ class PlatformCI(unittest.TestCase):
         self.assertEqual(download["with"]["name"], "frontend-${{ matrix.target }}-${{ matrix.profile }}")
         emulator = next(s for s in job["steps"] if s.get("uses", "").startswith("reactivecircus/android-emulator-runner@"))
         self.assertRegex(emulator["uses"], r"@[0-9a-f]{40}$")
+        self.assertLessEqual(emulator["timeout-minutes"], job["timeout-minutes"] - 10, "a hung emulator fails the step")
         self.assertEqual(emulator["with"]["arch"], "x86_64")
         self.assertIn("scripts/android_launch_smoke.py", emulator["with"]["script"])
         kvm = next(s for s in job["steps"] if s.get("name") == "Enable KVM")

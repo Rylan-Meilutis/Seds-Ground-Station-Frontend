@@ -215,13 +215,16 @@ jobs:
         - target: android_sim
           profile: release
           api: 24
-          image: google_apis
+          # The API 24 google_apis image hung in boot (adb stopped answering).
+          image: default
           component: com.UBSEDS.GS26/dev.dioxus.main.MainActivity
           # The API 24 image's built-in WebView is years older than what real
           # Android 7 devices get through Play, so only the Rust side counts.
           render: --require-render-log --no-screen-check
+        # Debug: the release Wear APK is unsigned here (no keystore in this
+        # workflow), and Android will not install an unsigned APK.
         - target: wearos_sim
-          profile: release
+          profile: debug
           api: 34
           image: android-wear
           component: com.UBSEDS.GS26/com.ubseds.gs26.wear.MainActivity
@@ -243,6 +246,7 @@ jobs:
         sudo udevadm control --reload-rules
         sudo udevadm trigger --name-match=kvm
     - name: Launch on the API ${{ matrix.api }} emulator
+      timeout-minutes: 25
       uses: reactivecircus/android-emulator-runner@a421e43855164a8197daf9d8d40fe71c6996bb0d  # v2.38.0
       with:
         api-level: ${{ matrix.api }}
