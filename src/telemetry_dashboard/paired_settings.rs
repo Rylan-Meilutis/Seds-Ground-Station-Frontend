@@ -101,6 +101,13 @@ fn number(value: &Value, decimals: usize, suffix: &str) -> String {
         .map(|n| format!("{n:.decimals$}{suffix}"))
         .unwrap_or_else(|| "Default".into())
 }
+/// Shown only when the saved document carries both bounds; older documents
+/// have no row rather than an assumed default.
+fn launch_mass_window(value: &Value) -> Option<String> {
+    let bound = |key: &str| value.get(key).and_then(Value::as_f64).filter(|n| n.is_finite());
+    let (min, max) = (bound("launch_mass_min_kg")?, bound("launch_mass_max_kg")?);
+    Some(format!("{min:.1} to {max:.1} kg"))
+}
 fn station_label(id: &str) -> String {
     match id.to_ascii_lowercase().as_str() {
         "gs" | "primary" | "groundstation" => "GroundStation".into(),
@@ -163,7 +170,7 @@ fn summary(key: &str, value: &Value) -> Vec<(String, String)> {
             ];
         }
         "mission/gse_limits" => {
-            return vec![
+            let mut rows = vec![
                 ("Cold Flow nitrogen target".into(),if value["cold_flow_target_psi"].is_null(){"Unset · Auto Cold Flow disabled".into()}else{number(&value["cold_flow_target_psi"],1," psi")}),
                 (
                     "Nitrogen target".into(),
@@ -182,6 +189,10 @@ fn summary(key: &str, value: &Value) -> Vec<(String, String)> {
                     number(&value["maximum_zero_offset_psi"], 1, " psi"),
                 ),
             ];
+            if let Some(window) = launch_mass_window(value) {
+                rows.push(("Launch mass window".into(), window));
+            }
+            return rows;
         }
         "mission/auto_zero_preference" => {
             let mut rows = vec![(
@@ -505,6 +516,18 @@ mod tests {
             ]
         );
         assert!(short(&"😀".repeat(100)).chars().count() <= 81);
+        assert!(!limits.iter().any(|(name, _)| name == "Launch mass window"));
+        let windowed = summary(
+            "mission/gse_limits",
+            &json!({"nitrogen_target_psi":120.,"pressure_step_psi":20.,"pressure_ceiling_psi":null,"maximum_zero_offset_psi":20.,"launch_mass_min_kg":4.0,"launch_mass_max_kg":9.0}),
+        );
+        assert_eq!(windowed.len(), 6);
+        assert!(windowed.contains(&("Launch mass window".into(), "4.0 to 9.0 kg".into())));
+        assert_eq!(
+            launch_mass_window(&json!({"launch_mass_min_kg":3.5,"launch_mass_max_kg":9.5})).as_deref(),
+            Some("3.5 to 9.5 kg")
+        );
+        assert_eq!(launch_mass_window(&json!({"launch_mass_min_kg":4.0})), None);
         assert_eq!(limits.len(), 5);
         assert!(limits.contains(&(
             "Cold Flow nitrogen target".into(),

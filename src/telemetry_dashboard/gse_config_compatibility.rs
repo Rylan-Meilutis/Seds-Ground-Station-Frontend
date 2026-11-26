@@ -9,6 +9,7 @@ pub(super) struct Grant {
     owner: Rc<ExportOwner>,
     cold_flow: bool,
     turbo_deadband: bool,
+    launch_window: bool,
 }
 fn supports_cold_flow(value: &Value) -> bool {
     value
@@ -18,7 +19,12 @@ fn supports_cold_flow(value: &Value) -> bool {
 fn supports_turbo_deadband(value: &Value) -> bool {
     value.as_object().is_some_and(|object| object.contains_key("turbocharge_pressure_deadband_psi"))
 }
-fn payload(config: &Settings, supported: bool, turbo_deadband: bool) -> Result<Value, String> {
+fn supports_launch_window(value: &Value) -> bool {
+    value.as_object().is_some_and(|object| {
+        object.contains_key("launch_mass_min_kg") && object.contains_key("launch_mass_max_kg")
+    })
+}
+fn payload(config: &Settings, supported: bool, turbo_deadband: bool, launch_window: bool) -> Result<Value, String> {
     if !config.turbocharge_pressure_deadband_psi.is_finite()
         || !(8.0..=16.0).contains(&config.turbocharge_pressure_deadband_psi) {
         return Err("Turbocharge pressure deadband must be 8–16 psi.".into());
@@ -37,6 +43,14 @@ fn payload(config: &Settings, supported: bool, turbo_deadband: bool) -> Result<V
             "Cold Flow target must be a finite positive pressure, or blank to disable it.".into(),
         );
     }
+    match (config.launch_mass_min_kg, config.launch_mass_max_kg) {
+        (None, None) => {}
+        _ if !launch_window => {
+            return Err("This ground station does not support the Launch mass window; the value was not saved.".into());
+        }
+        (Some(min), Some(max)) if min.is_finite() && max.is_finite() && min > 0.0 && min < max => {}
+        _ => return Err("Launch mass window must be finite with 0 < minimum < maximum.".into()),
+    }
     // Preserve the original Settings serializer's f32 JSON representation;
     // converting f32 directly to Value would widen unrelated field decimals.
     let serialized = serde_json::to_string(config).map_err(|error| error.to_string())?;
@@ -49,6 +63,11 @@ fn payload(config: &Settings, supported: bool, turbo_deadband: bool) -> Result<V
     }
     if !turbo_deadband {
         value.as_object_mut().ok_or("Invalid GSE configuration")?.remove("turbocharge_pressure_deadband_psi");
+    }
+    if !launch_window {
+        let object = value.as_object_mut().ok_or("Invalid GSE configuration")?;
+        object.remove("launch_mass_min_kg");
+        object.remove("launch_mass_max_kg");
     }
     Ok(value)
 }
@@ -68,9 +87,15 @@ impl Grant {
         owner.check_ordinary()?;
         let cold_flow = supports_cold_flow(&value);
         let turbo_deadband = supports_turbo_deadband(&value);
-        let config = serde_json::from_value(value)
+        let launch_window = supports_launch_window(&value);
+        let mut config: Settings = serde_json::from_value(value)
             .map_err(|error| format!("Invalid GSE configuration: {error}"))?;
-        Ok((config, Self { owner, cold_flow, turbo_deadband }))
+        if !launch_window {
+            // A half-present window is not a supported schema; never resend it.
+            config.launch_mass_min_kg = None;
+            config.launch_mass_max_kg = None;
+        }
+        Ok((config, Self { owner, cold_flow, turbo_deadband, launch_window }))
     }
     pub(super) fn current(&self) -> bool {
         self.owner.is_current()
@@ -81,6 +106,9 @@ impl Grant {
     pub(super) fn turbo_deadband_supported(&self) -> bool {
         self.current() && self.turbo_deadband
     }
+    pub(super) fn launch_window_supported(&self) -> bool {
+        self.current() && self.launch_window
+    }
     pub(super) fn status<T: for<'de> serde::Deserialize<'de>>(&self) -> impl std::future::Future<Output=Result<T,String>> + use<T> {
         let request = super::super::incoming_epoch::ReadContext::capture().map(|context|
             super::super::recording_download::saved_json_in_context::<T>("/api/gse/status", self.owner.clone(), context));
@@ -89,7 +117,7 @@ impl Grant {
     pub(super) fn save(&self, config: &Settings) -> impl std::future::Future<Output = Result<(Settings, Self), String>> + 'static + use<> {
         let original = self.clone();
         let config = config.clone();
-        let body = payload(&config, original.cold_flow, original.turbo_deadband);
+        let body = payload(&config, original.cold_flow, original.turbo_deadband, original.launch_window);
         async move {
             original.owner.check_ordinary()?;
             let value = post_owned(body?, original.owner.clone()).await?;
@@ -102,6 +130,11 @@ impl Grant {
             if original.turbo_deadband && (!grant.turbo_deadband
                 || next.turbocharge_pressure_deadband_psi != config.turbocharge_pressure_deadband_psi) {
                 return Err("The ground station did not confirm the requested Turbocharge pressure deadband; it is not reported as saved.".into());
+            }
+            if original.launch_window && (!grant.launch_window
+                || next.launch_mass_min_kg != config.launch_mass_min_kg
+                || next.launch_mass_max_kg != config.launch_mass_max_kg) {
+                return Err("The ground station did not confirm the requested Launch mass window; it is not reported as saved.".into());
             }
             Ok((next, grant))
         }

@@ -1361,6 +1361,19 @@ confirmation checkbox must be checked, and all backend action-policy gates must 
 
 - `GET /api/gse/config`, `GET /api/gse/status`: ViewData.
 - `POST` / `PUT /api/gse/config`: SendCommands, saves full configuration.
+
+#### GSE configuration fields
+
+The UI edits these `/api/gse/config` fields only when the GET response carries
+them; a missing field is hidden and never sent, so older stations keep their own
+values. Everything else in the document, including unknown fields, is sent back
+unchanged.
+
+| Field | Meaning | Station default | Client check (station decides) |
+| --- | --- | --- | --- |
+| `launch_mass_min_kg`, `launch_mass_max_kg` | Inclusive nitrous mass window that permits plumbing retraction, Launch and the first Turbocharge. Absolute, not relative to the fill target; the fill target stays the automatic cutoff and hold level. HITL skips it along with the rest of the operational Launch gate. Also carried by the paired `mission/gse_limits` document. | 4.0 / 9.0 kg | both finite, 0 < min < max |
+
+The UI shows the values the station sends and has no built-in default for them.
 - `POST /api/gse/self-test-confirmation`: `{"confirmed":true}` or false, echoes the
   object. Requires SendCommands and ValveSelfTest authorization; 403 otherwise.
   Returns 409 during active sequences or for unlock after nitrogen testing starts.

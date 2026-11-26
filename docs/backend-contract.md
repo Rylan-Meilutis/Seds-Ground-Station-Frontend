@@ -413,8 +413,8 @@ GroundStation26 detail: `docs/backend/station-positions.md`,
 | POST | `/api/auto_zero` | `{enabled}` or `{before_launch}` → same | same | send_commands | M |
 | POST | `/api/auto_zero/launch/cancel` | empty → 2xx | launch zero notice | `Launch` allowed | M |
 | GET | `/api/gse/status` | → GSE status (sequences, pressures, qualification) | GSE panel, sequence progress, settings | view_data | H |
-| GET | `/api/gse/config` | → GSE settings | Settings → Sequences (`gse_config_compatibility.rs`) | send_commands | M |
-| POST | `/api/gse/config` | settings → saved settings; unknown keys are not sent (feature-detected) | same | send_commands | M |
+| GET | `/api/gse/config` | → GSE settings, incl. optional `launch_mass_min_kg` / `launch_mass_max_kg` ([detail](backend-api.md#gse-configuration-fields)) | Settings → Sequences (`gse_config_compatibility.rs`) | send_commands | M |
+| POST | `/api/gse/config` | settings → saved settings; unknown keys are not sent (feature-detected); the Launch mass window is sent only when the GET carried both fields | same | send_commands | M |
 | POST | `/api/gse/abort/clear` | `{}` → any | GSE panel, Actions | send_commands | M |
 | POST | `/api/gse/self-test-confirmation` | `{confirmed}` → any | isolation checkbox (`actions_tab.rs`) | send_commands | M |
 | POST | `/api/gse/cold-flow/start` | `{}` → any | cold flow, sequence host | send_commands | M |
@@ -742,7 +742,7 @@ semi_minor_m, major_bearing_deg, confidence, polygon}`, `landing_points`),
 | GET | `/api/station-modes` | → mode capabilities V2 ([station-modes.md](station-modes.md), [example](api-examples/station-modes.custom.json)) | Settings → Mission | view_data | C |
 | POST | `/api/station-modes/prepare` | option → challenge | same | admin per backend | M |
 | POST | `/api/station-modes/confirm` | challenge answer → accepted | same | admin per backend | M |
-| GET | `/api/mission-settings` | → paired settings `Status` | Settings → Network (paired settings) | view_data | M |
+| GET | `/api/mission-settings` | → paired settings `Status`; the `mission/gse_limits` summary adds "Launch mass window" (`launch_mass_min_kg` to `launch_mass_max_kg`) only when the document has both | Settings → Network (paired settings) | view_data | M |
 | GET | `/api/mission-settings/conflicts` | → `{key: Document}` | same | view_data | M |
 | POST | `/api/mission-settings/resolve` | resolve request → `Resolved` | same | send_commands | M |
 | GET | `/api/account/client-settings/watch` | → server watch-settings document (generic route `/api/account/client-settings/{namespace}`) | watch companion | session | local settings kept |

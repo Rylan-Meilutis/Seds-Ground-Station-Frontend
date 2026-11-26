@@ -20,7 +20,7 @@ fn exact_published_strict_parser_rejects_source19_default_but_accepts_legacy_pay
         error.contains("unknown field") && error.contains("cold_flow_target_psi"),
         "{error}"
     );
-    let corrected = payload(&config, false, false).unwrap();
+    let corrected = payload(&config, false, false, false).unwrap();
     assert!(corrected.get("cold_flow_target_psi").is_none());
     let parsed: legacy::Config = serde_json::from_value(corrected).unwrap();
     assert_eq!(parsed, legacy::Config::default());
@@ -35,31 +35,31 @@ fn explicit_schema_presence_supports_values_and_null_clear_without_hidden_defaul
     ));
     let mut config: Settings = serde_json::from_value(value.clone()).unwrap();
     assert_eq!(
-        payload(&config, true, false).unwrap()["cold_flow_target_psi"],
+        payload(&config, true, false, false).unwrap()["cold_flow_target_psi"],
         Value::Null
     );
     config.cold_flow_target_psi = Some(95.);
-    let parsed: current::Config = serde_json::from_value(payload(&config, true, false).unwrap()).unwrap();
+    let parsed: current::Config = serde_json::from_value(payload(&config, true, false, false).unwrap()).unwrap();
     assert_eq!(parsed.cold_flow_target_psi, Some(95.));
     config.cold_flow_target_psi = None;
-    let cleared: current::Config = serde_json::from_value(payload(&config, true, false).unwrap()).unwrap();
+    let cleared: current::Config = serde_json::from_value(payload(&config, true, false, false).unwrap()).unwrap();
     assert_eq!(cleared, original);
     let mut original_without_unsupported_deadband = serde_json::from_str::<Value>(&serde_json::to_string(&config).unwrap()).unwrap();
     original_without_unsupported_deadband.as_object_mut().unwrap().remove("turbocharge_pressure_deadband_psi");
-    assert_eq!(payload(&config, true, false).unwrap(), original_without_unsupported_deadband);
+    assert_eq!(payload(&config, true, false, false).unwrap(), original_without_unsupported_deadband);
 }
 #[test]
 fn unsupported_some_and_nonfinite_never_silently_save_as_omitted_or_null() {
     let mut config = legacy_settings();
     config.cold_flow_target_psi = Some(95.);
     assert!(
-        payload(&config, false, false)
+        payload(&config, false, false, false)
             .unwrap_err()
             .contains("does not support")
     );
     for value in [f32::NAN, f32::INFINITY, 0., -1.] {
         config.cold_flow_target_psi = Some(value);
-        assert!(payload(&config, true, false).is_err());
+        assert!(payload(&config, true, false, false).is_err());
     }
 }
 
@@ -349,7 +349,7 @@ mod native {
         let mut load = Box::pin(dom.in_scope(ScopeId::ROOT, Grant::load));
         let (mut config, grant) = in_dom(&dom, load.as_mut()).await.unwrap();
         config.cold_flow_target_psi = Some(130.);
-        let expected = payload(&config, true, false).unwrap();
+        let expected = payload(&config, true, false, false).unwrap();
         let mut save = Box::pin(grant.save(&config));
         let (saved, _) = in_dom(&dom, save.as_mut()).await.unwrap();
         assert_eq!(saved.cold_flow_target_psi, Some(130.));
@@ -409,15 +409,75 @@ fn turbo_deadband_defaults_preserves_custom_values_and_gates_legacy_payloads() {
     assert!(!supports_turbo_deadband(&serde_json::to_value(legacy::Config::default()).unwrap()));
     for value in [8.0, 9.5, 12.0, 16.0] {
         config.turbocharge_pressure_deadband_psi = value;
-        let wire = payload(&config, false, true).unwrap();
+        let wire = payload(&config, false, true, false).unwrap();
         assert!(supports_turbo_deadband(&wire));
         assert_eq!(wire["turbocharge_pressure_deadband_psi"], serde_json::json!(value));
         let restored: Settings = serde_json::from_value(wire).unwrap();
         assert_eq!(restored.turbocharge_pressure_deadband_psi, value);
-        if value != 12.0 { assert!(payload(&config, false, false).is_err()); }
+        if value != 12.0 { assert!(payload(&config, false, false, false).is_err()); }
     }
     for value in [f32::NAN, f32::INFINITY, 7.99, 16.01] {
         config.turbocharge_pressure_deadband_psi = value;
-        assert!(payload(&config, false, true).is_err());
+        assert!(payload(&config, false, true, false).is_err());
+    }
+}
+
+fn launch_window_station() -> Value {
+    // Parsed from text, as the station's response is, so f32 decimals stay exact.
+    serde_json::from_str(r#"{"cold_flow_target_psi":null,"nitrogen_target_psi":120.0,"pressure_step_psi":50.0,
+        "nitrogen_steps":[],"fill_overfill_kg":0.05,"fill_tolerance_kg":0.07,"fill_settle_ms":3000,
+        "launch_mass_min_kg":4.0,"launch_mass_max_kg":9.0,"turbocharge_max_added_mass_kg":null,
+        "turbocharge_pressure_deadband_psi":12.0,"pressure_ceiling_psi":null,"maximum_zero_offset_psi":null,
+        "dry_self_test_confirmed":false,"grouped_panel":true,"future_station_field":{"kept":[1,2]}}"#).unwrap()
+}
+#[test]
+fn launch_window_is_detected_only_when_the_station_sends_both_fields() {
+    let current = launch_window_station();
+    assert!(supports_launch_window(&current));
+    assert!(!supports_launch_window(&serde_json::to_value(current::Config::default()).unwrap()));
+    assert!(!supports_launch_window(&serde_json::to_value(legacy::Config::default()).unwrap()));
+    let mut half = current.clone();
+    half.as_object_mut().unwrap().remove("launch_mass_max_kg");
+    assert!(!supports_launch_window(&half));
+}
+#[test]
+fn launch_window_roundtrips_with_unknown_fields_and_is_never_sent_to_older_stations() {
+    let station = launch_window_station();
+    let mut config: Settings = serde_json::from_value(station.clone()).unwrap();
+    assert_eq!((config.launch_mass_min_kg, config.launch_mass_max_kg), (Some(4.0), Some(9.0)));
+    assert_eq!(payload(&config, true, true, true).unwrap(), station, "unchanged save is byte-for-byte the station config");
+    config.launch_mass_min_kg = Some(3.5);
+    config.launch_mass_max_kg = Some(9.5);
+    let wire = payload(&config, true, true, true).unwrap();
+    assert_eq!(wire["launch_mass_min_kg"], serde_json::json!(3.5));
+    assert_eq!(wire["launch_mass_max_kg"], serde_json::json!(9.5));
+    assert_eq!(wire["future_station_field"], serde_json::json!({"kept": [1, 2]}));
+
+    // Older station: the fields stay absent and the strict legacy parser accepts the save.
+    let legacy = legacy_settings();
+    assert_eq!((legacy.launch_mass_min_kg, legacy.launch_mass_max_kg), (None, None));
+    let wire = payload(&legacy, false, false, false).unwrap();
+    assert!(wire.get("launch_mass_min_kg").is_none() && wire.get("launch_mass_max_kg").is_none());
+    serde_json::from_value::<legacy::Config>(wire).unwrap();
+    let mut forced = legacy_settings();
+    forced.launch_mass_min_kg = Some(4.0);
+    forced.launch_mass_max_kg = Some(9.0);
+    assert!(payload(&forced, false, false, false).unwrap_err().contains("does not support"));
+}
+#[test]
+fn launch_window_payload_rejects_what_the_station_would_reject() {
+    let mut config: Settings = serde_json::from_value(launch_window_station()).unwrap();
+    for (min, max) in [
+        (Some(0.0), Some(9.0)),
+        (Some(-1.0), Some(9.0)),
+        (Some(9.0), Some(9.0)),
+        (Some(9.5), Some(9.0)),
+        (Some(f32::NAN), Some(9.0)),
+        (Some(4.0), Some(f32::INFINITY)),
+        (Some(4.0), None),
+    ] {
+        config.launch_mass_min_kg = min;
+        config.launch_mass_max_kg = max;
+        assert!(payload(&config, true, true, true).is_err(), "{min:?} {max:?}");
     }
 }

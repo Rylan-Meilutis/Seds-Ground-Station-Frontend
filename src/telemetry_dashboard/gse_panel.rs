@@ -30,6 +30,12 @@ struct Settings {
     fill_tolerance_kg: f32,
     #[serde(default = "default_fill_settle")]
     fill_settle_ms: u64,
+    // Present only when the station supports the Launch mass window; an absent
+    // field is never invented, so saves to older stations do not send it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch_mass_min_kg: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    launch_mass_max_kg: Option<f32>,
     #[serde(default)]
     turbocharge_max_added_mass_kg: Option<f32>,
     #[serde(default = "default_turbocharge_deadband")]
@@ -46,7 +52,8 @@ impl Default for Settings {
         Self {
             cold_flow_target_psi: None, nitrogen_target_psi: 0.0, pressure_step_psi: 0.0,
             nitrogen_steps: Vec::new(), fill_overfill_kg: 0.0, fill_tolerance_kg: 0.0,
-            fill_settle_ms: 0, turbocharge_max_added_mass_kg: None,
+            fill_settle_ms: 0, launch_mass_min_kg: None, launch_mass_max_kg: None,
+            turbocharge_max_added_mass_kg: None,
             turbocharge_pressure_deadband_psi: default_turbocharge_deadband(),
             pressure_ceiling_psi: None, maximum_zero_offset_psi: None,
             dry_self_test_confirmed: false, grouped_panel: false,
@@ -72,6 +79,8 @@ struct FillDraft {
     overfill: String,
     tolerance: String,
     settle: String,
+    launch_min: String,
+    launch_max: String,
 }
 impl From<&Settings> for FillDraft {
     fn from(config: &Settings) -> Self {
@@ -79,6 +88,8 @@ impl From<&Settings> for FillDraft {
             overfill: config.fill_overfill_kg.to_string(),
             tolerance: config.fill_tolerance_kg.to_string(),
             settle: (config.fill_settle_ms as f64 / 1000.0).to_string(),
+            launch_min: config.launch_mass_min_kg.map(|v| v.to_string()).unwrap_or_default(),
+            launch_max: config.launch_mass_max_kg.map(|v| v.to_string()).unwrap_or_default(),
         }
     }
 }
@@ -88,6 +99,8 @@ impl Default for FillDraft {
             overfill: "0.05".into(),
             tolerance: "0.07".into(),
             settle: "3".into(),
+            launch_min: String::new(),
+            launch_max: String::new(),
         }
     }
 }
@@ -105,6 +118,25 @@ fn validated_fill(draft: &FillDraft) -> Result<(f32, f32, u64), String> {
         return Err("Fill settling wait must be 1–600 seconds.".into());
     }
     Ok((overfill, tolerance, (settle * 1000.0).round() as u64))
+}
+/// Mirrors the station's check (finite, 0 < minimum < maximum); the station
+/// remains the authority. Returns None when the station lacks the window.
+fn validated_launch_window(draft: &FillDraft, supported: bool) -> Result<Option<(f32, f32)>, String> {
+    if !supported {
+        return Ok(None);
+    }
+    let min = draft.launch_min.trim().parse::<f32>().unwrap_or(f32::NAN);
+    let max = draft.launch_max.trim().parse::<f32>().unwrap_or(f32::NAN);
+    if !min.is_finite() || !max.is_finite() {
+        return Err("Launch mass window minimum and maximum must both be numbers in kg.".into());
+    }
+    if min <= 0.0 {
+        return Err("Launch mass window minimum must be greater than 0 kg.".into());
+    }
+    if min >= max {
+        return Err("Launch mass window minimum must be less than the maximum.".into());
+    }
+    Ok(Some((min, max)))
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct NitrogenStep {
@@ -1123,7 +1155,8 @@ mod nitrogen_settings_tests {
             validated_fill(&FillDraft {
                 overfill: "0.1".into(),
                 tolerance: "0.03".into(),
-                settle: "4.25".into()
+                settle: "4.25".into(),
+                ..FillDraft::default()
             })
             .unwrap(),
             (0.1, 0.03, 4250)
@@ -1140,10 +1173,36 @@ mod nitrogen_settings_tests {
                 validated_fill(&FillDraft {
                     overfill: overfill.into(),
                     tolerance: tolerance.into(),
-                    settle: settle.into()
+                    settle: settle.into(),
+                    ..FillDraft::default()
                 })
                 .is_err()
             );
+        }
+    }
+    #[test]
+    fn launch_window_draft_mirrors_station_validation_and_hides_on_older_stations() {
+        let legacy: Settings = serde_json::from_value(serde_json::json!({"nitrogen_target_psi":100.0,"pressure_ceiling_psi":null,"maximum_zero_offset_psi":20.0,"dry_self_test_confirmed":false,"grouped_panel":false})).unwrap();
+        let draft = FillDraft::from(&legacy);
+        assert_eq!((draft.launch_min.as_str(), draft.launch_max.as_str()), ("", ""));
+        assert_eq!(validated_launch_window(&draft, false), Ok(None));
+        let current: Settings = serde_json::from_value(serde_json::json!({"nitrogen_target_psi":100.0,"pressure_ceiling_psi":null,"maximum_zero_offset_psi":20.0,"dry_self_test_confirmed":false,"grouped_panel":false,"launch_mass_min_kg":4.0,"launch_mass_max_kg":9.0})).unwrap();
+        let draft = FillDraft::from(&current);
+        assert_eq!(validated_launch_window(&draft, true), Ok(Some((4.0, 9.0))));
+        let window = |min: &str, max: &str| FillDraft { launch_min: min.into(), launch_max: max.into(), ..FillDraft::default() };
+        assert_eq!(validated_launch_window(&window(" 3.5 ", "9.5"), true), Ok(Some((3.5, 9.5))));
+        for (min, max, expected) in [
+            ("", "9", "must both be numbers"),
+            ("4", "abc", "must both be numbers"),
+            ("NaN", "9", "must both be numbers"),
+            ("4", "inf", "must both be numbers"),
+            ("0", "9", "greater than 0"),
+            ("-1", "9", "greater than 0"),
+            ("9", "9", "less than the maximum"),
+            ("9.5", "9", "less than the maximum"),
+        ] {
+            let error = validated_launch_window(&window(min, max), true).unwrap_err();
+            assert!(error.contains(expected), "{min}/{max}: {error}");
         }
     }
     #[test]
@@ -1287,7 +1346,8 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
     let rows = nitrogen_rows.read().clone();
     let step_error = validated_nitrogen_steps(&rows).err();
     let fill = fill_draft.read().clone();
-    let fill_error = validated_fill(&fill).err();
+    let launch_window_supported = config_grant.read().as_ref().is_some_and(|grant| grant.launch_window_supported());
+    let fill_error = validated_fill(&fill).err().or_else(|| validated_launch_window(&fill, launch_window_supported).err());
     rsx! {
         section { class: "gs26-station-gse-settings", style: "display:grid;gap:12px;min-width:0;",
             h3 { "GSE limits and plumbing" }
@@ -1368,6 +1428,17 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                                     input {r#type:"number",min:"1",max:"600",step:"0.1",value:fill.settle.clone(),disabled:!can_edit,style:"width:100%;min-width:0;min-height:44px;box-sizing:border-box;",oninput:move |event|fill_draft.write().settle=event.value()}
                                 }
                             }
+                            if launch_window_supported {
+                                div {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,150px),1fr));gap:10px;margin-top:10px;",
+                                    label {style:"display:grid;gap:5px;min-width:0;", "Launch mass minimum (kg)"
+                                        input {r#type:"number",min:"0",step:"0.1",value:fill.launch_min.clone(),disabled:!can_edit,style:"width:100%;min-width:0;min-height:44px;box-sizing:border-box;",oninput:move |event|fill_draft.write().launch_min=event.value()}
+                                    }
+                                    label {style:"display:grid;gap:5px;min-width:0;", "Launch mass maximum (kg)"
+                                        input {r#type:"number",min:"0",step:"0.1",value:fill.launch_max.clone(),disabled:!can_edit,style:"width:100%;min-width:0;min-height:44px;box-sizing:border-box;",oninput:move |event|fill_draft.write().launch_max=event.value()}
+                                    }
+                                }
+                                small {"Launch, plumbing retraction and the first Turbocharge need a nitrous mass inside this window, limits included. The fill target is still the automatic cutoff and hold level."}
+                            }
                             ControlHelp {title:"fill precision",compact:true,paragraphs:vec!["The overfill allowance is limited to 0.1 kg. Mass tolerance accounts for load-cell noise and is limited to ±0.07 kg. The settling wait lets the mass stabilize between vent adjustments.".into(),"These limits control the automated sequence; they are not a guarantee of sensor accuracy. Existing pressure and connection interlocks remain active.".into()]}
                             if let Some(error)=fill_error.as_ref() {p {role:"alert",style:"margin:0;font-size:13px;color:{theme.text_primary};", "{error}"}}
                         }
@@ -1376,6 +1447,11 @@ pub(super) fn GseConfiguration(abort_only_mode: bool, theme: ThemeConfig) -> Ele
                             if let Err(error)=install_nitrogen_drafts(&mut cfg,&nitrogen_rows.read()) {message.set(error);return;}
                             let (overfill,tolerance,settle)=match validated_fill(&fill_draft.read()) {Ok(next)=>next,Err(error)=>{message.set(error);return;}};
                             cfg.fill_overfill_kg=overfill;cfg.fill_tolerance_kg=tolerance;cfg.fill_settle_ms=settle;
+                            match validated_launch_window(&fill_draft.read(),launch_window_supported) {
+                                Ok(Some((min,max)))=>{cfg.launch_mass_min_kg=Some(min);cfg.launch_mass_max_kg=Some(max);}
+                                Ok(None)=>{}
+                                Err(error)=>{message.set(error);return;}
+                            }
                             let Some(grant)=config_grant.peek().clone().filter(|grant|grant.current()) else {message.set("Ground station configuration changed; reload it before saving.".into());return;};
                             let request=grant.save(&cfg);
                             busy.set(true);
