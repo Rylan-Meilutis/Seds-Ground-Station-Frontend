@@ -218,9 +218,11 @@ jobs:
           # The API 24 google_apis image hung in boot (adb stopped answering).
           image: default
           component: com.UBSEDS.GS26/dev.dioxus.main.MainActivity
-          # The API 24 image's built-in WebView is years older than what real
-          # Android 7 devices get through Play, so only the Rust side counts.
-          render: --require-render-log --no-screen-check
+          # The API 24 image's built-in WebView (52, from 2016) is years older
+          # than what real Android 7 devices get through Play and cannot run
+          # the page, so only the Rust side counts: it must start, not panic,
+          # and keep running.
+          render: --require-launch-log --no-screen-check
         # Debug: the release Wear APK is unsigned here (no keystore in this
         # workflow), and Android will not install an unsigned APK.
         - target: wearos_sim

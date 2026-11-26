@@ -17,7 +17,7 @@ usual reasons:
 
 Usage:
   android_launch_smoke.py --apk DIR|FILE --component PKG/ACTIVITY --out DIR
-                          [--wait SECONDS] [--require-render-log] [--no-screen-check]
+                          [--wait SECONDS] [--require-render-log | --require-launch-log] [--no-screen-check]
 
 Writes logcat.txt, activities.txt, am-start.txt, screenshot.png and
 report.json to --out; exits 1 with a list of problems if any check fails.
@@ -37,7 +37,12 @@ import time
 from pathlib import Path
 
 RENDER_LOG_LINE = "[startup] app rendered"  # src/app.rs APP_RENDERED_LOG_LINE
+LAUNCH_LOG_LINE = "[startup] launching desktop app"  # src/main.rs, just before the web view starts
 APP_LOG_TAG = "GS26"  # src/debug_log.rs ANDROID_LOG_TAG
+# MainActivity (build.py) logs this, then restarts the app in a fresh process,
+# when Android relaunches the activity for a change it cannot hand over.
+RESTART_LOG_LINE = "[lifecycle] activity relaunched by the system; restarting the app"
+MAX_RESTARTS = 2  # more is a restart loop
 
 # `logcat -v threadtime`: date time pid tid level tag: message
 LOGCAT_LINE = re.compile(r"^\S+\s+\S+\s+(\d+)\s+(\d+)\s+([VDIWEFA])\s+(.*?)\s*: (.*)$")
@@ -76,6 +81,11 @@ def crash_findings(text, package, pids=()):
         if problem not in findings:
             findings.append(problem)
 
+    # A process that announced the deliberate restart may die; the restarted
+    # one must still run and render (checked by the caller).
+    restarted = {pid for pid, tag, _level, message in rows if tag == APP_LOG_TAG and RESTART_LOG_LINE in message}
+    if len(restarted) > MAX_RESTARTS:
+        add(f"the app restarted {len(restarted)} times (more than {MAX_RESTARTS}: a restart loop)")
     in_fatal = False
     for pid, tag, _level, message in rows:
         ours = pid in pids
@@ -106,7 +116,8 @@ def crash_findings(text, package, pids=()):
         elif ours and tag != "libc" and (found := NATIVE_SIGNAL.search(message)):
             add(f"Native crash ({found.group(1)}, {tag}): {message.strip()}")
         if tag == "ActivityManager":
-            if re.search(r"Process " + re.escape(package) + r"(?::[\w.]+)? \(pid \d+\) has died", message):
+            died = re.search(r"Process " + re.escape(package) + r"(?::[\w.]+)? \(pid (\d+)\) has died", message)
+            if died and int(died.group(1)) not in restarted:
                 add(f"Process died: {message.strip()}")
             if message.startswith(f"ANR in {package}"):
                 add(f"ANR: {message.strip()}")
@@ -115,11 +126,11 @@ def crash_findings(text, package, pids=()):
     return findings
 
 
-def render_logged(text, package, pids=()):
-    """True when one of the package's processes logged the app-rendered line."""
+def render_logged(text, package, pids=(), line=RENDER_LOG_LINE):
+    """True when one of the package's processes logged the app-rendered line (or `line`)."""
     rows = parse_logcat(text)
     pids = app_pids(rows, package, pids)
-    return any(tag == APP_LOG_TAG and RENDER_LOG_LINE in message and (pid in pids or not pids)
+    return any(tag == APP_LOG_TAG and line in message and (pid in pids or not pids)
                for pid, tag, _level, message in rows)
 
 
@@ -174,9 +185,11 @@ def screenshot_problem(png_bytes):
 
 
 def evaluate(*, logcat, package, component, pids_alive, am_start, dumpsys, png, require_render_log,
-             check_screen=True):
+             check_screen=True, require_launch_log=False):
     """All problems found for one launch, as readable sentences."""
     problems = []
+    if not parse_logcat(logcat):
+        problems.append("logcat returned no log lines, so crashes could not be checked")
     if not am_start_ok(am_start):
         problems.append("am start -W did not report Status: ok:\n" + am_start.strip())
     if not pids_alive:
@@ -186,6 +199,8 @@ def evaluate(*, logcat, package, component, pids_alive, am_start, dumpsys, png, 
         problems.append(f"{component} is not the resumed activity")
     if require_render_log and not render_logged(logcat, package, pids_alive):
         problems.append(f"the app never logged {RENDER_LOG_LINE!r} ({APP_LOG_TAG} tag)")
+    if require_launch_log and not render_logged(logcat, package, pids_alive, LAUNCH_LOG_LINE):
+        problems.append(f"the app never logged {LAUNCH_LOG_LINE!r} ({APP_LOG_TAG} tag)")
     if not check_screen:
         pass
     elif png is None:
@@ -254,6 +269,9 @@ def main(argv=None):
     parser.add_argument("--component", required=True, help="package/activity of the launcher activity")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--wait", type=int, default=45, help="seconds to watch the app after launch")
+    parser.add_argument("--require-launch-log", action="store_true",
+                        help=f"require the native {LAUNCH_LOG_LINE!r} line (an emulator whose built-in WebView "
+                             "is too old to render: the Rust side must still start without a panic)")
     parser.add_argument("--require-render-log", action="store_true",
                         help=f"require the app's {RENDER_LOG_LINE!r} logcat line")
     parser.add_argument("--no-screen-check", action="store_true",
@@ -270,6 +288,9 @@ def main(argv=None):
     abi = shell("getprop", "ro.product.cpu.abi").strip()
     print(f"Emulator: API {sdk}, {abi}", flush=True)
     shell("input", "keyevent", "82", check=False)  # dismiss the lock screen
+    # Wear OS covers every app with its charging screen while the emulator
+    # reports a charger; unplug it (harmless on phones).
+    shell("dumpsys", "battery", "unplug", check=False)
     adb("install", "-r", "-g", str(apk), timeout=600)
     adb("logcat", "-b", "all", "-c", check=False)
 
@@ -286,6 +307,25 @@ def main(argv=None):
             print(f"{package} is no longer running", flush=True)
             break
 
+    # A font-size change: the manifest's configChanges hands it to the running
+    # activity, so the app must keep the same process.
+    if pids:
+        before = set(pids)
+        scale = shell("settings", "get", "system", "font_scale", check=False).strip()
+        shell("settings", "put", "system", "font_scale", "1.15", check=False)
+        time.sleep(8)
+        shell("settings", "put", "system", "font_scale", scale if re.fullmatch(r"[0-9.]+", scale) else "1.0",
+              check=False)
+        time.sleep(4)
+        pids = running_pids(package)
+        if pids != before:
+            config_problem = f"a font-size change restarted or closed the app (pids {sorted(before)} -> {sorted(pids)})"
+            print(config_problem, flush=True)
+        else:
+            config_problem = None
+    else:
+        config_problem = None
+
     png = None
     try:
         png = adb("exec-out", "screencap", "-p", binary=True, timeout=60)
@@ -293,13 +333,19 @@ def main(argv=None):
     except (RuntimeError, subprocess.TimeoutExpired) as error:
         print(f"screenshot failed: {error}", flush=True)
     dumpsys = shell("dumpsys", "activity", "activities", check=False, timeout=60)
+    shell("dumpsys", "battery", "reset", check=False)
     (args.out / "activities.txt").write_text(dumpsys)
-    logcat = adb("logcat", "-d", "-b", "main,system,crash", "-v", "threadtime", check=False, timeout=120)
+    # One -b per buffer: Android 7 reads "main,system,crash" as a single device name.
+    logcat = adb("logcat", "-d", "-b", "main", "-b", "system", "-b", "crash", "-v", "threadtime",
+                 check=False, timeout=120)
     (args.out / "logcat.txt").write_text(logcat)
 
     problems = evaluate(logcat=logcat, package=package, component=args.component, pids_alive=pids,
                         am_start=am_start, dumpsys=dumpsys, png=png, require_render_log=args.require_render_log,
+                        require_launch_log=args.require_launch_log,
                         check_screen=not args.no_screen_check)
+    if config_problem:
+        problems.append(config_problem)
     report = {"apk": apk.name, "component": args.component, "api": sdk, "abi": abi,
               "wait_seconds": args.wait, "pids": sorted(pids), "problems": problems}
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
@@ -308,7 +354,8 @@ def main(argv=None):
         for problem in problems:
             print(f"- {problem}", file=sys.stderr)
         return 1
-    print(f"Launch OK on API {sdk} ({abi}): {args.component} running (pid {sorted(pids)}), resumed, rendered")
+    shown = "rendered" if args.require_render_log else "native side started" if args.require_launch_log else "up"
+    print(f"Launch OK on API {sdk} ({abi}): {args.component} running (pid {sorted(pids)}), resumed, {shown}")
     return 0
 
 

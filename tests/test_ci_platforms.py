@@ -92,7 +92,7 @@ class PlatformCI(unittest.TestCase):
             # Only targets the build job makes, as x86_64 for the emulator.
             self.assertIn(row["target"], [p["target"] for p in ci.PLATFORMS])
             expected = ("" if row["target"] == "wearos_sim" else
-                        "--require-render-log --no-screen-check" if row["api"] == 24 else "--require-render-log")
+                        "--require-launch-log --no-screen-check" if row["api"] == 24 else "--require-render-log")
             self.assertEqual(row["render"], expected)
         download = next(s for s in job["steps"] if s.get("uses") == "actions/download-artifact@v4")
         self.assertEqual(download["with"]["name"], "frontend-${{ matrix.target }}-${{ matrix.profile }}")

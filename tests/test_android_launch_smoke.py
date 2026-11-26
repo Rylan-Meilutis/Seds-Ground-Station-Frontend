@@ -142,6 +142,27 @@ class LogcatAnalysis(unittest.TestCase):
                           line(5000, "GS26", "[panic] second process", "E")])
         self.assertEqual(len(smoke.crash_findings(text, PKG)), 1)
 
+    def test_a_deliberate_restart_is_not_a_death_but_a_loop_is(self):
+        restart = line(APP, "GS26", smoke.RESTART_LOG_LINE)
+        died = line(510, "ActivityManager", f"Process {PKG} (pid {APP}) has died: fg  TOP", "I")
+        second = line(510, "ActivityManager", f"Start proc 5000:{PKG}/u0a210 for top-activity")
+        self.assertEqual(smoke.crash_findings("\n".join([START, restart, died, second]), PKG), [])
+        # The same death without the marker, or a marker from another app, still fails.
+        self.assertTrue(smoke.crash_findings("\n".join([START, died, second]), PKG))
+        other = line(999, "GS26", smoke.RESTART_LOG_LINE)
+        self.assertTrue(smoke.crash_findings("\n".join([START, other, died]), PKG))
+        loop = [START]
+        for pid in (APP, 5001, 5002):
+            loop += [line(510, "ActivityManager", f"Start proc {pid}:{PKG}/u0a210 for top-activity"),
+                     line(pid, "GS26", smoke.RESTART_LOG_LINE)]
+        self.assertTrue(any("restart loop" in f for f in smoke.crash_findings("\n".join(loop), PKG)))
+
+    def test_restart_marker_matches_the_activity(self):
+        self.assertIn(smoke.RESTART_LOG_LINE, (ROOT / "build.py").read_text())
+        manifest = (ROOT / "platform/android/AndroidManifest.xml").read_text()
+        for change in ("uiMode", "fontScale", "density", "locale", "smallestScreenSize", "orientation"):
+            self.assertRegex(manifest, r'android:configChanges="[^"]*\b' + change + r'\b')
+
     def test_render_line_missing(self):
         self.assertFalse(smoke.render_logged(START, PKG))
         self.assertFalse(smoke.render_logged("\n".join([START, line(999, "GS26", "[startup] app rendered")]), PKG))
@@ -238,6 +259,8 @@ class Evaluate(unittest.TestCase):
             "crash": dict(logcat="\n".join([START, RENDERED, *FAILURES["missing libmain.so"]])),
             "not resumed": dict(dumpsys=PAUSED_BEHIND_DIALOG),
             "no render line": dict(logcat=START),
+            # Android 7 once returned nothing for "-b main,system,crash".
+            "empty logcat": dict(logcat="Unable to open log device 'main,system,crash'\n", require_render_log=False),
             "no screenshot": dict(png=None),
             "blank screen": dict(png=png(False)),
         }
@@ -246,6 +269,12 @@ class Evaluate(unittest.TestCase):
                 self.assertTrue(self.run_eval(**change), name)
         self.assertEqual(self.run_eval(png=png(False), check_screen=False), [])
         self.assertEqual(self.run_eval(png=None, check_screen=False), [])
+        # API 24's ancient WebView: only the native launch line is required.
+        launched = line(APP, "GS26", smoke.LAUNCH_LOG_LINE)
+        self.assertEqual(self.run_eval(logcat="\n".join([START, launched]), require_render_log=False,
+                                       require_launch_log=True), [])
+        self.assertTrue(self.run_eval(logcat=START, require_render_log=False, require_launch_log=True))
+        self.assertIn(smoke.LAUNCH_LOG_LINE, (ROOT / "src/main.rs").read_text())
         # Wear has no Rust and so no render line.
         self.assertEqual(self.run_eval(logcat=START, require_render_log=False), [])
 
@@ -293,6 +322,53 @@ class EmulatorDriver(unittest.TestCase):
                 self.assertTrue((out / name).is_file(), name)
             self.assertIn(("install", "-r", "-g", str(apk)), calls)
             self.assertIn(("shell", "am", "start", "-W", "-n", COMPONENT), calls)
+            self.assertIn(("logcat", "-d", "-b", "main", "-b", "system", "-b", "crash", "-v", "threadtime"), calls)
+            # Unplugged before the launch (Wear's charging screen), restored after.
+            self.assertLess(calls.index(("shell", "dumpsys", "battery", "unplug")),
+                            calls.index(("shell", "am", "start", "-W", "-n", COMPONENT)))
+            self.assertIn(("shell", "dumpsys", "battery", "reset"), calls)
+
+    def test_a_font_size_change_must_keep_the_process(self):
+        healthy = "\n".join([START, RENDERED])
+        for restarts, expected in ((False, 0), (True, 1)):
+            state = {"scaled": False}
+
+            def fake(args, capture_output, timeout):
+                key = tuple(args[1:])
+                if key[:4] == ("shell", "settings", "put", "system"):
+                    state["scaled"] = True
+                if key[:3] == ("shell", "am", "start"):
+                    out = AM_OK
+                elif key[:2] == ("exec-out", "screencap"):
+                    return subprocess.CompletedProcess(args, 0, png(True), b"")
+                elif key[:2] == ("logcat", "-d"):
+                    out = healthy
+                elif key == ("shell", "pidof", PKG):
+                    out = "5000\n" if restarts and state["scaled"] else f"{APP}\n"
+                elif key == ("shell", "getprop", "sys.boot_completed"):
+                    out = "1\n"
+                elif key == ("shell", "settings", "get", "system", "font_scale"):
+                    out = "1.0\n"
+                elif key == ("shell", "dumpsys", "activity", "activities"):
+                    out = RESUMED_36
+                else:
+                    out = ""
+                return subprocess.CompletedProcess(args, 0, out.encode(), b"")
+
+            with tempfile.TemporaryDirectory() as temp, self.subTest(restarts=restarts):
+                apk = Path(temp) / "in" / "dist" / "SEDS GS.apk"
+                apk.parent.mkdir(parents=True)
+                apk.write_bytes(b"apk")
+                with patch.object(smoke, "adb_path", return_value="adb"), \
+                        patch.object(smoke.subprocess, "run", side_effect=fake), \
+                        patch.object(smoke.time, "sleep"), \
+                        patch.object(smoke.time, "monotonic", side_effect=itertools.count(0, 100)), \
+                        patch("sys.stdout", io.StringIO()), patch("sys.stderr", io.StringIO()) as err:
+                    code = smoke.main(["--apk", str(apk.parent.parent), "--component", COMPONENT,
+                                       "--out", str(Path(temp) / "out"), "--wait", "30", "--require-render-log"])
+                self.assertEqual(code, expected, err.getvalue())
+                if restarts:
+                    self.assertIn("font-size change", err.getvalue())
 
     def test_find_apk_needs_exactly_one(self):
         with tempfile.TemporaryDirectory() as temp:
