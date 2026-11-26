@@ -2569,23 +2569,46 @@ def _inject_settings_gradle_maven_repo(settings_raw: str, maven_path: str) -> tu
     return settings_raw + suffix, True
 
 
-def _configure_android_native_symbols(raw: str) -> str:
-    """Pin AGP's NDK and ship native debug symbols in the release AAB.
+# Debug builds keep their native symbols, as the Dioxus template intends.
+ANDROID_DEBUG_KEEP_SYMBOLS = ("*/arm64-v8a/*.so", "*/armeabi-v7a/*.so", "*/x86/*.so", "*/x86_64/*.so")
+ANDROID_DEBUG_SYMBOLS_MARKER = "// gs26: debug builds keep native symbols"
 
-    Without an installed NDK matching AGP's default version, AGP skips
-    stripping (build 38 shipped an 84 MB libmain.so with .symtab/.debug_*)
-    and Play warns that the AAB has no native debug symbols. With ndkVersion
-    pinned, release libraries are stripped and SYMBOL_TABLE puts their symbol
-    tables in BUNDLE-METADATA/com.android.tools.build.debugsymbols/."""
+
+def _configure_android_native_symbols(raw: str) -> str:
+    """Strip release native libraries and ship their symbols in the AAB.
+
+    The Dioxus 0.7.10 template writes `packaging { jniLibs.keepDebugSymbols }`
+    inside getByName("debug"), but `packaging` there resolves to
+    android.packaging, so it applies to every build type: AGP's
+    stripReleaseDebugSymbols copied libmain.so as is, and
+    extractReleaseNativeSymbolTables then skipped it as "already stripped"
+    (both only at --info). Build 38 shipped an 84 MB libmain.so with
+    .symtab/.debug_* and no symbols for Play. The keep list moves to the debug
+    variant (androidComponents), ndkVersion pins the NDK AGP strips with, and
+    SYMBOL_TABLE puts the symbol tables in
+    BUNDLE-METADATA/com.android.tools.build.debugsymbols/."""
     raw = re.sub(r'\n\s*ndkVersion\s*=\s*"[^"]*"', "", raw)
     raw = re.sub(r'\n\s*ndk\s*\{\s*debugSymbolLevel\s*=\s*"[^"]*"\s*\}', "", raw)
+    raw = re.sub(r'\n\s*packaging\s*\{\s*(?:jniLibs\.keepDebugSymbols\.add\("[^"]*"\)\s*)+\}', "", raw)
+    raw = re.sub(r"\n*" + re.escape(ANDROID_DEBUG_SYMBOLS_MARKER)
+                 + r"\nandroidComponents \{\n(?:    .*\n)*\}\n", "\n", raw)
     android = re.search(r"^android\s*\{\n", raw, flags=re.MULTILINE)
     release = re.search(r'^(\s*)getByName\("release"\)\s*\{\n', raw, flags=re.MULTILINE)
     if android is None or release is None:
         raise RuntimeError("Generated Android app Gradle file has no android { } or release build type to configure")
+    if "keepDebugSymbols" in raw:
+        raise RuntimeError("Generated Android app Gradle file sets keepDebugSymbols in an unrecognised form; "
+                           "it would stop release native libraries from being stripped")
     indent = release.group(1) + "    "
     raw = (raw[:release.end()] + f'{indent}ndk {{ debugSymbolLevel = "SYMBOL_TABLE" }}\n' + raw[release.end():])
-    return raw[:android.end()] + f'    ndkVersion = "{ANDROID_NDK_VERSION}"\n' + raw[android.end():]
+    raw = raw[:android.end()] + f'    ndkVersion = "{ANDROID_NDK_VERSION}"\n' + raw[android.end():]
+    patterns = ", ".join(f'"{pattern}"' for pattern in ANDROID_DEBUG_KEEP_SYMBOLS)
+    return (raw.rstrip("\n") + "\n\n" + ANDROID_DEBUG_SYMBOLS_MARKER + "\n"
+            "androidComponents {\n"
+            '    onVariants(selector().withBuildType("debug")) { variant ->\n'
+            f"        variant.packaging.jniLibs.keepDebugSymbols.addAll(listOf({patterns}))\n"
+            "    }\n"
+            "}\n")
 
 
 def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None:
@@ -3553,6 +3576,63 @@ def _macos_dmg_allocation(source: Path) -> dict[str, int]:
             "entries": entries, "image_mib": image_mib}
 
 
+def _macos_major_version() -> int:
+    try:
+        return int(platform.mac_ver()[0].split(".")[0])
+    except ValueError:
+        return 0
+
+
+# macOS 27 deprecates `hdiutil create` and `hdiutil imageinfo` (a WARNING on
+# every call, fatal in CI) in favour of `diskutil image`. Older hosts, such as
+# the macos-15-intel runner, keep hdiutil.
+DISKUTIL_IMAGE_MIN_MACOS = 27
+
+
+def _create_macos_dmg(frontend_dir: Path, source: Path, target: Path, image_mib: int) -> None:
+    if _macos_major_version() >= DISKUTIL_IMAGE_MIN_MACOS:
+        # `create from` sizes the image itself and cannot overwrite (the
+        # target was removed above). Its default format is ULFO, so UDZO is
+        # explicit. It takes no HFS+ option; the volume is APFS (macOS 13+
+        # minimum, so readable everywhere the app runs).
+        run(["diskutil", "image", "create", "from", "--format", "UDZO", "--volumeName", APP_NAME,
+             str(source), str(target)], cwd=frontend_dir)
+        return
+    run(
+        [
+            "hdiutil",
+            "create",
+            "-volname",
+            APP_NAME,
+            "-srcfolder",
+            str(source),
+            "-ov",
+            "-format",
+            "UDZO",
+            "-fs",
+            "HFS+",
+            "-size",
+            f"{image_mib}m",
+            str(target),
+        ],
+        cwd=frontend_dir,
+    )
+
+
+def _inspect_macos_dmg(frontend_dir: Path, target: Path) -> None:
+    if _macos_major_version() >= DISKUTIL_IMAGE_MIN_MACOS:
+        info = plistlib.loads(run_capture(["diskutil", "image", "info", "--plist", str(target)],
+                                          cwd=frontend_dir).encode("utf-8"))
+        print("macOS DMG info: " + json.dumps({k: info.get(k) for k in ("Image Format", "Format Description")
+                                               if k in info}, sort_keys=True))
+        if info.get("Image Format") != "UDZO":
+            raise RuntimeError(f"DMG format is {info.get('Image Format')!r}, expected UDZO: {target}")
+    else:
+        run(["hdiutil", "imageinfo", str(target)], cwd=frontend_dir)
+    # `hdiutil verify` prints no deprecation warning on macOS 27 (CI run 45768623479).
+    run(["hdiutil", "verify", str(target)], cwd=frontend_dir)
+
+
 def rebuild_macos_dmg(frontend_dir: Path) -> Optional[Path]:
     dist = dist_dir(frontend_dir)
     app = rename_macos_app_bundle(frontend_dir) or app_bundle_path(frontend_dir)
@@ -3581,29 +3661,10 @@ def rebuild_macos_dmg(frontend_dir: Path) -> Optional[Path]:
         staged_app = temp_path / APP_BUNDLE_NAME
         shutil.copytree(app, staged_app, symlinks=True)
         os.symlink("/Applications", temp_path / "Applications")
-        run(
-            [
-                "hdiutil",
-                "create",
-                "-volname",
-                APP_NAME,
-                "-srcfolder",
-                str(temp_path),
-                "-ov",
-                "-format",
-                "UDZO",
-                "-fs",
-                "HFS+",
-                "-size",
-                f"{allocation['image_mib']}m",
-                str(target),
-            ],
-            cwd=frontend_dir,
-        )
+        _create_macos_dmg(frontend_dir, temp_path, target, allocation["image_mib"])
     if not target.is_file():
-        raise FileNotFoundError(f"hdiutil did not produce the requested DMG: {target}")
-    run(["hdiutil", "imageinfo", str(target)], cwd=frontend_dir)
-    run(["hdiutil", "verify", str(target)], cwd=frontend_dir)
+        raise FileNotFoundError(f"Disk image tool did not produce the requested DMG: {target}")
+    _inspect_macos_dmg(frontend_dir, target)
     return target
 
 

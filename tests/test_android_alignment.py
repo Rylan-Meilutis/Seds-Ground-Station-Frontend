@@ -202,7 +202,10 @@ class AndroidAlignmentTests(unittest.TestCase):
         # Shape of the Dioxus 0.7.10 template (assets/android/gen/app/build.gradle.kts.hbs).
         template = ('plugins {\n    id("com.android.application")\n}\n\nandroid {\n    namespace="x"\n'
                     '    compileSdk = 36\n    buildTypes {\n        getByName("debug") {\n'
-                    '            isDebuggable = true\n        }\n        getByName("release") {\n'
+                    '            isDebuggable = true\n            packaging {\n'
+                    '                jniLibs.keepDebugSymbols.add("*/arm64-v8a/*.so")\n'
+                    '                jniLibs.keepDebugSymbols.add("*/x86_64/*.so")\n            }\n'
+                    '        }\n        getByName("release") {\n'
                     '            isMinifyEnabled = true\n        }\n    }\n}\n')
         out = build._configure_android_native_symbols(template)
         self.assertEqual(build._configure_android_native_symbols(out), out, "idempotent")
@@ -211,8 +214,21 @@ class AndroidAlignmentTests(unittest.TestCase):
         self.assertTrue(release.startswith('getByName("release") {\n            ndk { debugSymbolLevel = "SYMBOL_TABLE" }\n'))
         self.assertNotIn("debugSymbolLevel", out[:out.index('getByName("release")')], "release only")
         self.assertEqual(out.count("ndkVersion"), 1)
+        # The template's keepDebugSymbols sits on android.packaging, so it applied to
+        # release too and AGP skipped stripping (CI run 45768623479). It now applies
+        # to the debug variant only.
+        self.assertNotIn("packaging {", out)
+        tail = out[out.index(build.ANDROID_DEBUG_SYMBOLS_MARKER):]
+        self.assertIn('onVariants(selector().withBuildType("debug")) { variant ->', tail)
+        self.assertIn('variant.packaging.jniLibs.keepDebugSymbols.addAll(listOf("*/arm64-v8a/*.so"', tail)
+        self.assertEqual(out.count("keepDebugSymbols"), 1)
+        more = build._configure_android_native_symbols(out + '\nrepositories {\n    mavenCentral()\n}\n')
+        self.assertEqual((more.count("androidComponents"), more.count("repositories {")), (1, 1))
         with self.assertRaises(RuntimeError):
             build._configure_android_native_symbols("android {\n}\n")
+        with self.assertRaises(RuntimeError):
+            build._configure_android_native_symbols(template.replace('jniLibs.keepDebugSymbols.add("*/x86_64/*.so")',
+                                                                     'jniLibs.keepDebugSymbols += "*/x86_64/*.so"'))
 
     def test_back_button_keeps_key_events_under_target_36(self):
         # Android 16 with targetSdk 36 enables predictive back and stops

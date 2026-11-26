@@ -43,7 +43,10 @@ Store minimums the release checks:
   `release-store-verify` refuses an IPA built with an older SDK, or whose
   executable or `MinimumOSVersion` is below 15.0. GitHub's `xcode-27` image
   is Apple silicon only, so the Intel DMG still builds with Xcode 26 on
-  macos-15-intel; Developer ID notarisation sets no SDK minimum.
+  macos-15-intel; Developer ID notarisation sets no SDK minimum. On the
+  macOS 27 image the Apple silicon DMG is made with `diskutil image` (APFS
+  volume), since `hdiutil create` is deprecated there; the Intel DMG stays
+  HFS+ from `hdiutil`.
 - **Google Play:** target API 36, and 16 KB page support for every 64-bit
   native library (NDK r28c plus `-z max-page-size=16384`). The release APK
   and the Play AAB both go through `scripts/check_android_alignment.py

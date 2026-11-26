@@ -66,6 +66,49 @@ class MacosDmgPackaging(unittest.TestCase):
             self.assertFalse(staged[0].exists())
             self.assertEqual(binary.read_bytes(), b"debug executable including original symbols")
 
+    def test_macos_27_uses_diskutil_image_without_deprecated_hdiutil_calls(self):
+        # macOS 27 prints a deprecation WARNING (fatal in CI) for hdiutil create and
+        # imageinfo; CI run 45768623479 on the xcode-27 image.
+        import plistlib
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app, binary = self.app(root)
+            calls = []
+            def tool(argv, **kwargs):
+                calls.append(argv)
+                if argv[:4] == ["diskutil", "image", "create", "from"]:
+                    src = Path(argv[-2])
+                    self.assertEqual((src / build.APP_BUNDLE_NAME / binary.relative_to(app)).read_bytes(), binary.read_bytes())
+                    self.assertEqual(os.readlink(src / "Applications"), "/Applications")
+                    self.assertEqual(argv[argv.index("--format") + 1], "UDZO")
+                    self.assertEqual(argv[argv.index("--volumeName") + 1], build.APP_NAME)
+                    self.assertFalse(Path(argv[-1]).exists(), "diskutil cannot overwrite")
+                    Path(argv[-1]).write_bytes(b"fixture compressed image")
+            def capture(argv, **kwargs):
+                calls.append(argv)
+                return plistlib.dumps({"Image Format": "UDZO"}).decode()
+            (root / "dist" / f"{build.APP_NAME}.dmg").write_bytes(b"stale")
+            with patch.object(build, "_macos_major_version", return_value=27), \
+                    patch.object(build, "run", side_effect=tool), patch.object(build, "run_capture", side_effect=capture), \
+                    contextlib.redirect_stdout(io.StringIO()):
+                result = build.rebuild_macos_dmg(root)
+            self.assertEqual(result.read_bytes(), b"fixture compressed image")
+            self.assertEqual([c[:4] if c[0] == "diskutil" else c[:2] for c in calls],
+                             [["df", "-Pk"], ["du", "-sk"], ["diskutil", "image", "create", "from"],
+                              ["diskutil", "image", "info", "--plist"], ["hdiutil", "verify"]])
+            for name in ["create", "imageinfo"]:
+                self.assertNotIn(["hdiutil", name], [c[:2] for c in calls])
+            # A wrong format from diskutil is refused.
+            with patch.object(build, "_macos_major_version", return_value=27), \
+                    patch.object(build, "run_capture", return_value=plistlib.dumps({"Image Format": "ULFO"}).decode()), \
+                    patch.object(build, "run"), contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaisesRegex(RuntimeError, "expected UDZO"):
+                    build._inspect_macos_dmg(root, result)
+        with patch.object(build.platform, "mac_ver", return_value=("15.7.9", ("", "", ""), "x86_64")):
+            self.assertEqual(build._macos_major_version(), 15)
+        with patch.object(build.platform, "mac_ver", return_value=("", ("", "", ""), "")):
+            self.assertEqual(build._macos_major_version(), 0)
+
     def test_failed_create_propagates_and_removes_only_owned_staging(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
