@@ -180,6 +180,27 @@ assert sys.stdout.encoding.lower()=='utf-8' and sys.stderr.encoding.lower()=='ut
                 failure = error
             return failure, json.loads((Path(directory) / "ci-results/build.json").read_text())
 
+    # From hosted run 45823770913 (watchOS on Xcode 27.2).
+    XCODE_APPINTENTS = ("2026-11-26 15:20:12.894 appintentsmetadataprocessor[68979:210764] warning: Metadata extraction "
+                        "skipped, no AppIntents.framework dependency found")
+    XCODE_ASSERTION = ("2026-11-26 15:19:03.801 xcodebuild[65791:202155] [MT] DVTAssertions: Warning in "
+                       "DVTiOSFrameworks/IDEiOSSupportCore/DVTiPhoneSimulator.m:661")
+
+    def test_xcode_tool_notices_are_reported_not_fatal(self):
+        details = "Details:  SimDevice native architecture is nil. Device: SimDevice : Apple Watch SE 3 (44mm)"
+        lines = [self.XCODE_ASSERTION, details, "Method:   -nativeArchitecture", ci.XCODE_ASSERTION_FOOTER,
+                 self.XCODE_APPINTENTS, "** BUILD SUCCEEDED **"]
+        failure, receipt = self.store_run(lines, enabled=False)
+        self.assertIsNone(failure)
+        self.assertEqual(receipt["external_xcode_tool_notices"],
+                         [self.XCODE_ASSERTION, ci.XCODE_ASSERTION_FOOTER, self.XCODE_APPINTENTS])
+        # The footer alone, a different assertion, a Swift warning or other text stays fatal.
+        for bad in ([ci.XCODE_ASSERTION_FOOTER],
+                    [self.XCODE_ASSERTION.replace("DVTiPhoneSimulator.m", "DVTDevice.m")],
+                    [self.XCODE_APPINTENTS.replace("skipped", "failed")],
+                    [self.XCODE_APPINTENTS, "RootView.swift:62:62: warning: 'weak' ownership of capture 'location'"]):
+            self.assertIsNotNone(self.store_run(bad, enabled=False)[0], bad)
+
     def test_jarsigner_self_signed_notice_is_reported_only_in_the_play_build(self):
         for tail in ([], ["Renaming android artifact"]):
             failure, receipt = self.store_run(["jar signed.", ""] + self.JARSIGNER_BLOCK + tail)

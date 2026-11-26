@@ -95,6 +95,23 @@ JARSIGNER_HEADER = "Warning:"
 JARSIGNER_SELF_SIGNED = "The signer's certificate is self-signed."
 JARSIGNER_POSIX = ("POSIX file permission and/or symlink attributes detected. These attributes are ignored when signing "
                    "and are not protected by the signature.")
+# Xcode 27's own build-tool notices, independent of this project's code: the
+# App Intents extractor says it skipped a target that does not link
+# AppIntents, and xcodebuild asserts about simulator devices installed on the
+# runner image (each assertion block ends with the "file a bug" line). Exact
+# texts only; reported separately, every other warning stays fatal.
+XCODE_APPINTENTS_SKIPPED = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} appintentsmetadataprocessor\[\d+:\d+\] "
+    r"warning: Metadata extraction skipped, no AppIntents\.framework dependency found$"
+)
+XCODE_SIMULATOR_ASSERTION = re.compile(
+    r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} xcodebuild\[\d+:\d+\] \[MT\] DVTAssertions: "
+    r"Warning in DVTiOSFrameworks/IDEiOSSupportCore/DVTiPhoneSimulator\.m:\d+$"
+)
+XCODE_ASSERTION_FOOTER = (
+    "Please file a bug at https://feedbackassistant.apple.com with this warning message "
+    "and any useful information you can provide."
+)
 WARNING = re.compile(r"(?i)(?:(?:^|\s)(?:warning(?:\[[^]]+\])?:|warn(?:ing)?\s+(?!0\b)\S|w:\s)|::warning(?: [^:]*)?::)")
 
 # Only the two observed Cargo/libcurl error-55 SSL transport diagnostics may
@@ -239,6 +256,7 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
     upstream_r8_lines = []
     unsigned_intermediate_lines = []
     self_signed_lines = []
+    xcode_tool_lines = []
     block = None  # lines of an open jarsigner notice
 
     def close_block():
@@ -278,12 +296,16 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
                     upstream_r8_lines.append(plain)
                 elif android_final_signing and BUNDLETOOL_UNSIGNED_INTERMEDIATE.fullmatch(plain):
                     unsigned_intermediate_lines.append(plain)
+                elif (XCODE_APPINTENTS_SKIPPED.fullmatch(plain) or XCODE_SIMULATOR_ASSERTION.fullmatch(plain)
+                      or (plain == XCODE_ASSERTION_FOOTER and any(XCODE_SIMULATOR_ASSERTION.fullmatch(seen)
+                                                                   for seen in xcode_tool_lines))):
+                    xcode_tool_lines.append(plain)
                 else:
                     if WARNING.search(plain):
                         warnings.append(plain)
         close_block()
         result = child.wait()
-    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines, "bundletool_unsigned_intermediate_notices": unsigned_intermediate_lines, "jarsigner_self_signed_notices": self_signed_lines, **(receipt_extra or {})}, indent=2) + "\n")
+    (logs / (label + ".json")).write_text(json.dumps({"argv": argv, "resolved_argv": resolved, "exit": result, "warning_lines": len(warnings), "external_metadata_progress_warnings": progress_lines, "external_android_r8_rule_notices": upstream_r8_lines, "bundletool_unsigned_intermediate_notices": unsigned_intermediate_lines, "jarsigner_self_signed_notices": self_signed_lines, "external_xcode_tool_notices": xcode_tool_lines, **(receipt_extra or {})}, indent=2) + "\n")
     if result or warnings:
         raise CommandFailure(label, result, warnings)
 
