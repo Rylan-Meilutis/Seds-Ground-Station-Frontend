@@ -171,9 +171,12 @@ class AndroidPackagingContracts(unittest.TestCase):
                      patch.object(ci, "ci_env", return_value={"PATH": "/fixture"}), \
                      patch.object(ci, "verify_bundletool"), \
                      patch.object(ci.shutil, "which", return_value="/fixture/tool"), \
-                     patch.object(ci, "checked", side_effect=fake_checked):
+                     patch.object(ci, "checked", side_effect=fake_checked), \
+                     patch.object(ci, "android_page_alignment") as alignment:
                     ci.run("android", profile)
                 self.assertEqual(order, ["android-development-key", "build-android-" + profile])
+                # Google Play: every 64-bit .so 16 KB aligned (test_android_alignment.py).
+                alignment.assert_called_once_with([root / "artifacts/android/fixture.apk"], require_native=True)
                 label = root / "artifacts/android/CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt"
                 self.assertIn("Not a production release", label.read_text())
                 manifest = json.loads((root / "ci-results/artifacts.json").read_text())

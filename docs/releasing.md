@@ -20,11 +20,11 @@ tag's commit is on `main` or `dev` (section 0).
 | `unsigned` windows | windows-2022 | `UBSEDS.GroundStation.Installer.exe` (NSIS, no Authenticode signature) |
 | `android` android | ubuntu-24.04 | `SEDS.GS.apk` (arm64-v8a, production-signed) |
 | `android` android-armv7 | ubuntu-24.04 | `SEDS.GS_armv7.apk` (armeabi-v7a, production-signed) |
-| `macos` macos | macos-15 | `UBSEDS.GS.dmg` (Apple silicon, Developer ID, notarized and stapled) |
+| `macos` macos | xcode-27 (Xcode 27.2) | `UBSEDS.GS.dmg` (Apple silicon, Developer ID, notarized and stapled) |
 | `macos` macos-intel | macos-15-intel | `UBSEDS.GS_x86_64.dmg` (Intel, Developer ID, notarized and stapled) |
 | `publish` | ubuntu-24.04 | all of the above, plus `SHA256SUMS` (not in a dry run) |
 | `dry-run` | ubuntu-24.04 | manual dry runs only: checks the signed set, publishes nothing |
-| `testflight` | macos-15 | `UBSEDS GS.ipa` (App Store signed) uploaded to App Store Connect / TestFlight, then added to `TESTFLIGHT_GROUPS` if set; not a GitHub asset |
+| `testflight` | xcode-27 (Xcode 27.2) | `UBSEDS GS.ipa` (App Store signed) uploaded to App Store Connect / TestFlight, then added to `TESTFLIGHT_GROUPS` if set; not a GitHub asset |
 | `play` | ubuntu-24.04 | `SEDS GS.aab` (arm64-v8a, upload-key signed) uploaded to the `PLAY_TRACK` testing track (default **internal**); not a GitHub asset |
 
 The names are the ones GitHub showed for v0.3.1b35 (GitHub turns spaces into
@@ -35,6 +35,18 @@ dots). There are a few differences:
 - New assets: deb, rpm, Linux arm64, the armv7 APK and the Intel DMG.
 
 watchOS and Wear OS are not part of the release. iOS goes only to TestFlight.
+
+Store minimums the release checks:
+
+- **App Store Connect:** the iOS 27 SDK (ITMS-90725; Xcode 27, a hard error
+  from April 2027) and a deployment target of iOS 15.0 or later (ITMS-90068).
+  `release-store-verify` refuses an IPA built with an older SDK, or whose
+  executable or `MinimumOSVersion` is below 15.0. GitHub's `xcode-27` image
+  is Apple silicon only, so the Intel DMG still builds with Xcode 26 on
+  macos-15-intel; Developer ID notarisation sets no SDK minimum.
+- **Google Play:** target API 36, and 16 KB page support for every 64-bit
+  native library (NDK r28c plus `-z max-page-size=16384`). The release APK
+  and the Play AAB both go through `scripts/check_android_alignment.py`.
 
 Every job runs the same `scripts/ci/frontend.py bootstrap` and `build.py`
 code paths as the build-only CI (`platforms.yml`), with warnings fatal:
@@ -513,7 +525,8 @@ git push origin v0.3.1b36
 - A manual run is a **dry run by default**:
   - it builds and signs: Android, with the apksigner check against
     `ANDROID_EXPECTED_CERT_SHA256`, macOS unless skipped, and the TestFlight
-    IPA and Play AAB, which it also verifies (signer, version, iOS SDK);
+    IPA and Play AAB, which it also verifies (signer, version, iOS SDK and
+    deployment target, 16 KB page alignment);
   - it keeps the signed assets as the run's `release-<target>` artifacts for
     7 days;
   - it does not create or edit a GitHub Release, and does not upload to

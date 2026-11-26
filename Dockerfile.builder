@@ -19,6 +19,6 @@ ENV ANDROID_HOME=/opt/android ANDROID_SDK_ROOT=/opt/android
 ENV PATH=/opt/android/cmdline-tools/latest/bin:/opt/android/platform-tools:$PATH
 RUN test "$(uname -m)" = x86_64 && apt-get update && apt-get install -y --no-install-recommends openjdk-17-jdk-headless && rm -rf /var/lib/apt/lists/*
 RUN mkdir -p /opt/android/cmdline-tools && curl -fsSL "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_TOOLS}_latest.zip" -o /tmp/android.zip && unzip -q /tmp/android.zip -d /opt/android/cmdline-tools && mv /opt/android/cmdline-tools/cmdline-tools /opt/android/cmdline-tools/latest && rm /tmp/android.zip
-RUN yes | sdkmanager --licenses >/dev/null && sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+RUN yes | sdkmanager --licenses >/dev/null && sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
 RUN rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android && chmod -R a+rwX /opt/android /usr/local/rustup
-ENV ANDROID_NDK_HOME=/opt/android/ndk/27.2.12479018
+ENV ANDROID_NDK_HOME=/opt/android/ndk/28.2.13676358

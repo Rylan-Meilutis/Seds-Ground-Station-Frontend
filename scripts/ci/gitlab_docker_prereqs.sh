@@ -20,7 +20,7 @@ GS_NODE_VERSION=22.23.5
 GS_NODE_SHA256=cdeb8670a0c81f51b4dc4ac61919f9b1ad917b304bf8221eb939570663d240f8
 GS_ANDROID_TOOLS=13114758
 GS_ANDROID_TOOLS_SHA256=7ec965280a073311c339e571cd5de778b9975026cfcbe79f2b1cdcb1e15317ee
-GS_NDK=27.2.12479018
+GS_NDK=28.2.13676358
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -73,6 +73,6 @@ case "$CI_FRONTEND_TARGET" in
     (yes || true) | sdkmanager --licenses >/dev/null
     sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" \
       "build-tools;36.0.0" "ndk;${GS_NDK}"
-    export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${GS_NDK}"
+    export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/${GS_NDK}" ANDROID_NDK_ROOT="$ANDROID_HOME/ndk/${GS_NDK}"
     ;;
 esac

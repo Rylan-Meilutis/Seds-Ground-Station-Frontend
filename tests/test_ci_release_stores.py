@@ -93,6 +93,14 @@ class ReleaseGuard(unittest.TestCase):
         self.assertEqual(ci.ios_sdk(show.format("26.2") + show.format("18.5")), 18)
         self.assertIsNone(ci.ios_sdk(""))
         self.assertLess(18, ci.IOS_STORE_MINIMUM_SDK)
+        # ITMS-90725 / ITMS-90068: iOS 27 SDK and a deployment target of 15.0+.
+        self.assertEqual(ci.IOS_STORE_MINIMUM_SDK, 27)
+        self.assertLess(26, ci.IOS_STORE_MINIMUM_SDK)
+        self.assertEqual(ci.ios_minos(show.format("27.2")), (15, 0))
+        self.assertEqual(ci.ios_minos(show.replace("15.0", "14.0").format("27.2") + show.format("27.2")), (14, 0))
+        self.assertEqual(ci.ios_minos(show.replace("15.0", "16").format("27.2")), (16, 0))
+        self.assertLess(ci.ios_minos(show.replace("15.0", "14.0").format("27.2")), ci.IOS_STORE_MINIMUM_OS)
+        self.assertIsNone(ci.ios_minos(""))
 
     def test_dry_run_flag_is_ignored_on_tag_pushes(self):
         # A pushed tag always builds the tag, never a branch head.

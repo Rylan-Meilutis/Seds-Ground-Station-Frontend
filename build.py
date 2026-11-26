@@ -37,6 +37,9 @@ LINUX_PACKAGE_NAME = "ubseds-groundstation"
 LEGACY_APP_NAME = "GroundstationFrontend"
 DIST_DIRNAME = "dist"
 APP_BUNDLE_NAME = f"{APP_NAME}.app"
+# Matches Dioxus.toml [bundle.macos] minimum_system_version and Info.plist.
+MACOS_DEPLOYMENT_TARGET = "13.0"
+ANDROID_PAGE_SIZE_LINK_ARG = "link-arg=-Wl,-z,max-page-size=16384"
 MACOS_ALT_APP_BUNDLE_NAME = f"{MACOS_ALT_APP_NAME}.app"
 LEGACY_APP_BUNDLE_NAME = f"{LEGACY_APP_NAME}.app"
 
@@ -2644,6 +2647,13 @@ def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None
     )
 
 
+# Highest compileSdk the Android Gradle plugin in the Dioxus 0.7.10 template
+# (AGP 8.7.0) was tested with. Above it AGP prints a "We recommend using a
+# newer Android Gradle plugin" WARNING, which CI treats as fatal; the build
+# itself is fine (release builds at compileSdk 36 verified on CI).
+DIOXUS_TEMPLATE_AGP_MAX_COMPILE_SDK = 35
+
+
 def _configure_android_gradle_properties(project_dir: Path) -> None:
     gradle_props = project_dir / "gradle.properties"
     if not gradle_props.exists():
@@ -2653,9 +2663,14 @@ def _configure_android_gradle_properties(project_dir: Path) -> None:
         line
         for line in raw.splitlines()
         if line.strip() != "android.defaults.buildfeatures.buildconfig=true"
+        and not line.strip().startswith("android.suppressUnsupportedCompileSdk=")
     ]
+    _min_sdk, _target_sdk, compile_sdk = _android_sdk_levels()
+    if compile_sdk > DIOXUS_TEMPLATE_AGP_MAX_COMPILE_SDK:
+        # Google Play requires target API 36 (compiled against 36).
+        filtered_lines.append(f"android.suppressUnsupportedCompileSdk={compile_sdk}")
     next_raw = "\n".join(filtered_lines)
-    if raw.endswith("\n"):
+    if raw.endswith("\n") or next_raw:
         next_raw += "\n"
     gradle_props.write_text(next_raw, encoding="utf-8")
 
@@ -4554,10 +4569,11 @@ def _ensure_ios_deployment_env(
         rust_target: Optional[str],
 ) -> dict[str, str]:
     env = dict(env or os.environ.copy())
-    min_ios = "13.0"
-    env.setdefault("IPHONEOS_DEPLOYMENT_TARGET", min_ios)
+    tools = _ios_bundle_tools()
+    # App Store Connect refuses a deployment target below iOS 15 (ITMS-90068).
+    env.setdefault("IPHONEOS_DEPLOYMENT_TARGET", tools.IOS_DEPLOYMENT_TARGET)
 
-    _cpu, _platform, _sdk, target_triple = _ios_bundle_tools().target_spec(rust_target or "aarch64-apple-ios")
+    _cpu, _platform, _sdk, target_triple = tools.target_spec(rust_target or "aarch64-apple-ios")
 
     _append_rustflags(
         env,
@@ -5711,10 +5727,13 @@ def _detect_android_sdk_root() -> Optional[Path]:
 
 
 def _detect_android_ndk_root(sdk_root: Optional[Path]) -> Optional[Path]:
+    # ANDROID_NDK_HOME first: CI pins it to the NDK it installs, while hosted
+    # runner images preset ANDROID_NDK_ROOT to their own default NDK (r27 on
+    # GitHub, which links 4 KB pages).
     env_candidates = [
-        os.environ.get("ANDROID_NDK_ROOT", "").strip(),
         os.environ.get("ANDROID_NDK_HOME", "").strip(),
         os.environ.get("NDK_HOME", "").strip(),
+        os.environ.get("ANDROID_NDK_ROOT", "").strip(),
     ]
     for candidate in env_candidates:
         if not candidate:
@@ -5769,6 +5788,12 @@ def _android_tool_paths(sdk_root: Path, ndk_root: Optional[Path]) -> list[Path]:
 
 def _ensure_android_env(frontend_dir: Path, env: Optional[dict[str, str]]) -> dict[str, str]:
     merged = dict(env or os.environ.copy())
+    # Google Play requires 16 KB page support for apps targeting Android 15+:
+    # every LOAD segment of a 64-bit .so aligned to 16 KB. NDK r28+ links that
+    # way by default; the flag keeps it independent of the NDK in use.
+    # scripts/check_android_alignment.py verifies the packaged result.
+    if ANDROID_PAGE_SIZE_LINK_ARG not in merged.get("RUSTFLAGS", ""):
+        _append_rustflags(merged, ["-C", ANDROID_PAGE_SIZE_LINK_ARG])
     gradle_user_home = frontend_dir / ".gradle-user-home"
     gradle_user_home.mkdir(parents=True, exist_ok=True)
     merged["GRADLE_USER_HOME"] = str(gradle_user_home)
@@ -6150,6 +6175,9 @@ def build_frontend(
                 env = os.environ.copy()
             env["DIOXUS_PRODUCT_NAME"] = APP_NAME
             env["DIOXUS_APP_TITLE"] = APP_NAME
+            # Dioxus.toml minimum_system_version; Xcode 27 builds for macOS 12+
+            # only, below Rust's own defaults (10.12 Intel, 11.0 Apple silicon).
+            env.setdefault("MACOSX_DEPLOYMENT_TARGET", MACOS_DEPLOYMENT_TARGET)
         elif platform_name == "linux":
             if env is None:
                 env = os.environ.copy()

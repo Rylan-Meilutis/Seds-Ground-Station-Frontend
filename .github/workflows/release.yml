@@ -171,9 +171,11 @@ jobs:
         packages: platform-tools
     - name: Android SDK and NDK
       shell: bash
-      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
 
-        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"'
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+        echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
     - name: Pinned frontend tools, warnings fatal
       run: python scripts/ci/frontend.py bootstrap
     - name: Production signing keystore from secrets
@@ -212,7 +214,7 @@ jobs:
       matrix:
         include:
         - target: macos
-          runner: macos-15
+          runner: xcode-27
         - target: macos-intel
           runner: macos-15-intel
     env:
@@ -227,6 +229,11 @@ jobs:
     - uses: actions/setup-node@v4
       with:
         node-version: '22'
+    # Apple silicon builds with Xcode 27 (macOS 27 SDK). The xcode-27 image
+    # has no Intel variant, so the Intel DMG keeps its image's Xcode 26.
+    - name: Xcode 27 on Apple silicon
+      if: matrix.runner == 'xcode-27'
+      run: echo "DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer" >> "$GITHUB_ENV"
     - name: Xcode availability
       run: xcodebuild -version
     - name: Pinned frontend tools, warnings fatal
@@ -370,12 +377,13 @@ jobs:
     needs: version
     if: ${{ needs.version.outputs.guarded == 'true' }}
     environment: release
-    runs-on: macos-15
+    runs-on: xcode-27
     timeout-minutes: 180
     env:
       CI_FRONTEND_TARGET: ios
-      # App Store Connect takes no iOS SDK older than 26 (27 from April 2027).
-      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      # App Store Connect requires the iOS 27 SDK (ITMS-90725; refused from
+      # April 2027) and a deployment target of iOS 15 or later (ITMS-90068).
+      DEVELOPER_DIR: /Applications/Xcode_27.2.app/Contents/Developer
       TESTFLIGHT_GROUPS: ${{ inputs.testflight_groups || vars.TESTFLIGHT_GROUPS }}
     steps:
     - uses: actions/checkout@v4
@@ -467,9 +475,11 @@ jobs:
     - name: Android SDK and NDK
       if: steps.store.outputs.enabled == 'true'
       shell: bash
-      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
 
-        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"'
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+        echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
     - name: Pinned frontend tools, warnings fatal
       if: steps.store.outputs.enabled == 'true'
       run: python scripts/ci/frontend.py bootstrap

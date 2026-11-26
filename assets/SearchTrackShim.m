@@ -68,12 +68,7 @@ static NSObject *g_search_lock;
 }
 
 - (BOOL)authorized {
-  CLAuthorizationStatus status;
-  if (@available(iOS 14.0, *)) {
-    status = [self manager].authorizationStatus;
-  } else {
-    status = [CLLocationManager authorizationStatus];
-  }
+  CLAuthorizationStatus status = [self manager].authorizationStatus;
   return [CLLocationManager locationServicesEnabled] &&
          (status == kCLAuthorizationStatusAuthorizedAlways ||
           status == kCLAuthorizationStatusAuthorizedWhenInUse);
@@ -85,10 +80,8 @@ static NSObject *g_search_lock;
     return;
   }
   m.allowsBackgroundLocationUpdates = YES;
-  if (@available(iOS 11.0, *)) {
-    // The blue indicator: visible whenever this records in the background.
-    m.showsBackgroundLocationIndicator = YES;
-  }
+  // The blue indicator: visible whenever this records in the background.
+  m.showsBackgroundLocationIndicator = YES;
   [m startUpdatingLocation];
   self.running = YES;
 }

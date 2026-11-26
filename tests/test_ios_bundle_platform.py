@@ -15,9 +15,9 @@ ROOT=Path(__file__).parents[1]
 spec=importlib.util.spec_from_file_location('ios_platform_build',ROOT/'build.py')
 build=importlib.util.module_from_spec(spec);sys.modules[spec.name]=build;spec.loader.exec_module(build)
 
-def macho(platform=2,cpu=0x0100000c):
+def macho(platform=2,cpu=0x0100000c,minos=15<<16):
     # Header + one LC_BUILD_VERSION; parser fixture, not a runnable executable.
-    return struct.pack('<8I',0xfeedfacf,cpu,0,2,1,24,0,0)+struct.pack('<6I',0x32,24,platform,14<<16,17<<16,0)
+    return struct.pack('<8I',0xfeedfacf,cpu,0,2,1,24,0,0)+struct.pack('<6I',0x32,24,platform,minos,17<<16,0)
 
 class IOSBundlePlatformTests(unittest.TestCase):
     def setUp(self):
@@ -33,6 +33,14 @@ class IOSBundlePlatformTests(unittest.TestCase):
         return build._stage_app_bundle_from_dx(self.root,platform_name='ios',preferred_bundle_name=build.APP_BUNDLE_NAME,**kwargs)
     def test_device_staging_accepts_real_device(self):
         original=self.bundle();staged=self.stage();self.assertEqual((staged/'groundstation_frontend').read_bytes(),(original/'groundstation_frontend').read_bytes())
+    def test_device_staging_rejects_deployment_target_below_ios15(self):
+        # ITMS-90068: App Store Connect refuses a deployment target below 15.0.
+        app=self.bundle();(app/'groundstation_frontend').write_bytes(macho(minos=14<<16))
+        with self.assertRaisesRegex(RuntimeError,'iOS 14.0; App Store Connect requires 15.0'):self.stage()
+        self.assertFalse((self.root/'dist'/build.APP_BUNDLE_NAME).exists())
+        (app/'groundstation_frontend').write_bytes(macho(minos=15<<16|2<<8))
+        self.assertEqual(build._ios_bundle_tools().inspect_macho(app/'groundstation_frontend')[0]['minos'],15<<16|2<<8)
+        self.assertEqual(build._ensure_ios_deployment_env(self.root,{},'aarch64-apple-ios')['IPHONEOS_DEPLOYMENT_TARGET'],'15.0')
     def test_device_staging_rejects_cached_arm64_simulator(self):
         self.bundle(platform=7)
         with self.assertRaises(RuntimeError):self.stage()
@@ -130,7 +138,7 @@ class IOSMetadataReaderTests(unittest.TestCase):
             data=data.ljust(32,b'\0')+macho()
             with self.subTest(offset=offset,cpu=cpu),self.assertRaises(RuntimeError):self.tools.inspect_macho(self.image(data))
     def test_python_target_flags_cover_real_intel_simulator(self):
-        for target,sdk,flag in [('aarch64-apple-ios','iphoneos','arm64-apple-ios13.0'),('aarch64-apple-ios-sim','iphonesimulator','arm64-apple-ios13.0-simulator'),('x86_64-apple-ios','iphonesimulator','x86_64-apple-ios13.0-simulator')]:
+        for target,sdk,flag in [('aarch64-apple-ios','iphoneos','arm64-apple-ios15.0'),('aarch64-apple-ios-sim','iphonesimulator','arm64-apple-ios15.0-simulator'),('x86_64-apple-ios','iphonesimulator','x86_64-apple-ios15.0-simulator')]:
             with self.subTest(target=target):
                 env=build._ensure_ios_deployment_env(self.root,{'RUSTFLAGS':'-C opt-level=2'},target)
                 self.assertIn('link-arg='+flag,env['RUSTFLAGS']);self.assertIn('opt-level=2',env['RUSTFLAGS']);self.assertEqual(self.tools.target_spec(target)[2],sdk)
@@ -187,6 +195,33 @@ class IOSPlistMetadataTests(unittest.TestCase):
         app=self.app(2);script=self.script((ROOT/'scripts/patch_plist.sh').read_text());env=os.environ.copy();env.pop('GS26_IOS_BUNDLE_PLATFORM',None);env['APP_DIR']=str(app)
         subprocess.run(['bash',str(script),'0.3.1','36'],cwd=self.root,env=env,check=True,stdout=subprocess.PIPE,stderr=subprocess.PIPE)
         info=plistlib.loads((app/'Info.plist').read_bytes());self.assertEqual(info['CFBundleSupportedPlatforms'],['iPhoneOS']);self.assertEqual(info['DTPlatformName'],'iphoneos')
+    def test_minimum_os_version_is_raised_to_the_linked_deployment_target(self):
+        # ITMS-90068: a stale or template MinimumOSVersion below 15.0 is replaced.
+        app=self.app(2);info=plistlib.loads((app/'Info.plist').read_bytes());info['MinimumOSVersion']='13.0'
+        (app/'Info.plist').write_bytes(plistlib.dumps(info));self.script((ROOT/'scripts/patch_plist.sh').read_text())
+        build.patch_plist(self.root,app,ios_target='aarch64-apple-ios')
+        tools=build._ios_bundle_tools()
+        self.assertEqual(plistlib.loads((app/'Info.plist').read_bytes())['MinimumOSVersion'],tools.IOS_DEPLOYMENT_TARGET)
+        self.assertEqual(tools.IOS_DEPLOYMENT_TARGET,'15.0')
+        shim=(ROOT/'scripts/apple_objc_target.rs').read_text()
+        self.assertEqual(shim.count('-apple-ios'+tools.IOS_DEPLOYMENT_TARGET),6)
+        self.assertNotRegex(shim,r'-apple-ios(?!15\.0)[0-9]')
+    def test_apple_deployment_targets_agree_everywhere(self):
+        import tomllib
+        cargo=tomllib.loads((ROOT/'.cargo/config.toml').read_text())['env']
+        dioxus=tomllib.loads((ROOT/'Dioxus.toml').read_text())['bundle']['macos']
+        info=plistlib.loads((ROOT/'platform/macos/Info.plist').read_bytes())
+        shim=(ROOT/'scripts/apple_objc_target.rs').read_text()
+        self.assertEqual(cargo['IPHONEOS_DEPLOYMENT_TARGET'],build._ios_bundle_tools().IOS_DEPLOYMENT_TARGET)
+        macos=build.MACOS_DEPLOYMENT_TARGET
+        self.assertEqual((cargo['MACOSX_DEPLOYMENT_TARGET'],dioxus['minimum_system_version'],info['LSMinimumSystemVersion']),(macos,)*3)
+        self.assertEqual(shim.count('-apple-macosx'+macos),4)
+        self.assertNotRegex(shim,r'-apple-macosx(?!13\.0)[0-9]')
+        # Xcode 27 accepts macOS 12+ and watchOS 9+ deployment targets.
+        self.assertGreaterEqual(float(macos),12.0)
+        spec=(ROOT/'watch/apple/project.yml').read_text()
+        for version in __import__('re').findall(r'(?:watchOS|deploymentTarget):\s*"([0-9.]+)"',spec):
+            self.assertGreaterEqual(float(version),9.0)
     def test_scene_manifest_uses_registered_window_delegate_and_is_idempotent(self):
         app=self.app(2);self.script((ROOT/'scripts/patch_plist.sh').read_text())
         for _ in range(2):

@@ -2,7 +2,13 @@
 
 Both providers run the SAME actual `build.py --target <target> --debug|--release --no-sign` through `scripts/ci/frontend.py`. Coverage is every12 target in `scripts/build_targets.py`,24jobs/provider. This means supported architecture/build variants, not every historical OS/Xcode version. iOSdevice builds an unsigned app; simulators are built, never launched. Android builds APK variants signed with a fresh job-local development certificate. Each Android artifact includes `CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt`; the private key is never uploaded. These APKs are not production releases or an identity for updating installed releases. Local user signing settings remain unchanged. This is not distribution signing, notarization, device acceptance or store upload. Missing platform capability is a failed/pending gate, never successful Linux emulation.
 
-GitHub uses real hosted labels Ubuntu24.04 x64/ARM64, Windows2022/MSVC, macOS15 ARM64 and macOS15-intel. Native host+architecture is checked before bootstrap and build.
+GitHub uses real hosted labels Ubuntu24.04 x64/ARM64, Windows2022/MSVC, `xcode-27` (macOS 27 ARM64, Xcode 27.2) and macOS15-intel. Native host+architecture is checked before bootstrap and build.
+
+Apple silicon targets (macos, ios, watchos, ios_sim, watchos_sim) build with `DEVELOPER_DIR=/Applications/Xcode_27.2.app`: App Store Connect requires the iOS 27 SDK (ITMS-90725), and the release workflow's TestFlight and Apple silicon DMG jobs use the same image. GitHub's `xcode-27` image is Apple silicon only and Xcode 27 does not run on Intel Macs, so macos-intel, ios_sim_intel and watchos_sim_intel stay on `macos-15-intel` with Xcode 26 (ios_sim_intel pins Xcode 26.3).
+
+Android release builds must support 16 KB memory pages (Google Play, apps targeting Android 15+). The NDK is r28c (28.2.13676358), which links 16 KB-aligned ELF segments by default, and `build.py` also passes `-z max-page-size=16384`. `scripts/check_android_alignment.py` fails the build if any 64-bit `.so` in an APK/AAB has a LOAD segment below 16 KB alignment, or an uncompressed one starts off a 16 KB zip boundary. The hosted image presets `ANDROID_NDK_ROOT` to its own r27 default, so the workflows set `ANDROID_NDK_HOME` and `ANDROID_NDK_ROOT` to the pinned NDK and `build.py` prefers `ANDROID_NDK_HOME`.
+
+The phone app compiles against API 36 (Play's target requirement) with the Android Gradle plugin from the Dioxus 0.7.10 template, AGP 8.7.0, which was tested only up to 35 and otherwise prints a fatal "We recommend using a newer Android Gradle plugin" warning. `build.py` writes `android.suppressUnsupportedCompileSdk=36` into the generated `gradle.properties`; the build itself was verified at API 36 on CI. Remove it once the template's AGP supports 36.
 
 ### GitLab runners (gitlab.rylanswebsite.com, project 80)
 
@@ -38,7 +44,7 @@ of `platforms.json`.
 | gs-ui-linux-x64 | Linux x86_64 Ubuntu 24.04 (desktop `linux` target only) |
 | gs-ui-linux-arm64 | Linux aarch64 |
 | gs-ui-windows-x64 | Windows x86_64 with MSVC environment/WindowsSDK/WebView2 tooling |
-| gs-ui-macos-arm64 | AppleSilicon macOS15+full Xcode/device+simulatorSDKs |
+| gs-ui-macos-arm64 | AppleSilicon macOS 26.6+ with full Xcode 27/device+simulatorSDKs |
 | gs-ui-macos-x64 | Intel macOS15+full Xcode/device+simulatorSDKs |
 
 Register them as shell runners on the machine that provides the host, with a
@@ -65,7 +71,7 @@ uploads exist only in GitHub's `release.yml`.
 
 These GitLab registrations have NOT been inspected or executed by this patch. Configure isolated ephemeral shell runners with Python3.11 (`python` on PATH), Rustup/Cargo, Node22/npm and git. No hardware/devices, Apple signing identities, provisioning profiles, upload/signing/notary credentials or production secrets should be installed. Untrusted merge requests must not execute on a privileged persistent crew workstation. Jobs deliberately contain no signing/deployment secrets or token printing. Both normaljob andfailure logs/artifacts are retained7days; inspect before sharing if upstream tools unexpectedly print sensitive host state.
 
-Linux prerequisites: build-essential/pkg-config, GTK3/WebKit2GTK4.1, appindicator/librsvg/libxdo/libssl/libclang dev packages, cmake/ninja/patchelf, file/zip/unzip, FUSE2. Ubuntu24.04 package name is libfuse2t64. GitHub installs them explicitly; provision the equivalent on GitLab. Android jobs require JDK17, platformsandroid35, buildtools35.0.0, platform-tools and NDK27.2.12479018 with accepted SDK licences; export ANDROID_HOME and ANDROID_NDK_HOME. GitHub sets these through setup-java/setup-android+sdkmanager. macOS requires completed Xcode first-launch/licence; no signing required. Windows runner must initialize the MSVC developer environment; GitHub does so through msvc-dev-cmd.
+Linux prerequisites: build-essential/pkg-config, GTK3/WebKit2GTK4.1, appindicator/librsvg/libxdo/libssl/libclang dev packages, cmake/ninja/patchelf, file/zip/unzip, FUSE2. Ubuntu24.04 package name is libfuse2t64. GitHub installs them explicitly; provision the equivalent on GitLab. Android jobs require JDK17, platformsandroid35, buildtools35.0.0, platforms;android-36, build-tools;36.0.0, platform-tools and NDK 28.2.13676358 (r28c) with accepted SDK licences; export ANDROID_HOME and ANDROID_NDK_HOME (and ANDROID_NDK_ROOT if the host presets it to another NDK). GitHub sets these through setup-java/setup-android+sdkmanager. macOS requires completed Xcode first-launch/licence; no signing required. Windows runner must initialize the MSVC developer environment; GitHub does so through msvc-dev-cmd.
 
 Each fresh job installs Rust1.99.0+Clippy, resolves the application Cargo.lock only when absent, and derives exact DioxusCLI and wasm-bindgenCLI versions from its resolved dioxus/wasm-bindgen packages. The resolved versions and lock SHA256 are retained in ci-results/resolved-tools.json. DioxusCLI installation uses cargo +1.99.0 install with =version while resolving its own dependencies afresh, matching the application bootstrap policy for published CLI locks containing yanked dependencies. wasm-bindgenCLI uses the official exact-version native release archive for each of the five runner hosts, with hardcoded SHA256 pins, a 64MiB download/256MiB unpacked bound, and strict archive-member validation. Only the expected executable is staged; links and traversal are rejected. Its actual --version output is warning-checked and must match the resolved ABI before publication into .ci-tools. The URL, archive/binary hashes and reported version are retained in ci-results/wasm-bindgen-release.json. A newer resolved ABI without reviewed archive pins fails explicitly; update the pins before rebuilding. This avoids compiling the CLI's unrelated legacy multipart dependencies; no diagnostic is suppressed. Jobs also install esbuild0.25.12; Binaryen133 native archives have hardcoded upstream SHA256 pins. No feature/queue/precision changes or platform-flag overrides. Archive/tool download availability, runner packages and third-party action versions still require real CI qualification; this is not a reproducible-image claim. Never put a stale `.ci-tools` or `artifacts/<target>` into a new job. No Cargo/target caches are configured by this first patch. Each job uses2 build jobs, incremental off; GitHub max4matrix jobs at once,120min timeout. GitLab concurrency is configured on the runners; eachjob2h.
 
@@ -105,7 +111,7 @@ packages; GitHub installs these and GitLab tagged runners must provision them.
 The driver fails early on missing Linux packagers. The explicitly prepared
 native linuxdeploy wins over a stale home cache; ARM fallback selects ARM bytes. Android setup installs
 `platform-tools`, not the removed legacy SDK `tools` package, before the existing
-explicit SDK35/NDK installation. Neither provider changes application features,
+explicit SDK 35/36 and NDK installation. Neither provider changes application features,
 precision, queues, signing or deployment authority.
 
 References: pinned upstream Dioxus timer implementation:

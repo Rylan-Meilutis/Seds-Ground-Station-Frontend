@@ -1,2 +1,11 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["-C", "debuginfo=0", "-C", "strip=debuginfo"]
+
+# Apple deployment targets for rustc, the cc crate and build.rs, so plain cargo
+# builds link the native shims (scripts/apple_objc_target.rs) at the same
+# minimum as build.py. iOS 15 is App Store Connect's minimum (ITMS-90068);
+# macOS 13 is Dioxus.toml minimum_system_version (Xcode 27 builds 12+ only).
+# A value already in the environment wins.
+[env]
+IPHONEOS_DEPLOYMENT_TARGET = "15.0"
+MACOSX_DEPLOYMENT_TARGET = "13.0"

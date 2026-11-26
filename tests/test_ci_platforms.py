@@ -47,6 +47,37 @@ class PlatformCI(unittest.TestCase):
         self.assertEqual(matrix["include"], [{"target": p["target"], "runner": p["github"]} for p in ci.PLATFORMS])
         self.assertEqual(self.github["jobs"]["build"]["runs-on"], "${{ matrix.runner }}")
 
+    def test_apple_silicon_targets_build_with_xcode_27(self):
+        # ITMS-90725: App Store Connect requires the iOS 27 SDK. The xcode-27
+        # image is Apple silicon only; Intel targets stay on Xcode 26.
+        rows = {p["target"]: p for p in ci.PLATFORMS}
+        for p in ci.PLATFORMS:
+            if p["host"] == "Darwin":
+                expected = "xcode-27" if p["arch"] == "aarch64" else "macos-15-intel"
+                self.assertEqual(p["github"], expected, p["target"])
+        self.assertEqual(sorted(t for t, p in rows.items() if p["github"] == "xcode-27"),
+                         ["ios", "ios_sim", "macos", "watchos", "watchos_sim"])
+        steps = self.github["jobs"]["build"]["steps"]
+        xcode = next(s for s in steps if s.get("name") == "Xcode 27 (iOS 27 SDK) on Apple silicon")
+        self.assertEqual(xcode["if"], "matrix.runner == 'xcode-27'")
+        self.assertIn("DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer", xcode["run"])
+        intel = next(s for s in steps if s.get("name") == "Xcode 26 for the Intel iOS simulator")
+        self.assertIn("matrix.runner != 'xcode-27'", intel["if"])
+
+    def test_android_ndk_links_16kb_pages_by_default(self):
+        # NDK r28+ aligns LOAD segments to 16 KB by default (Play requirement).
+        ndk = "28.2.13676358"
+        steps = self.github["jobs"]["build"]["steps"]
+        sdk = next(s for s in steps if s.get("name") == "Android SDK and NDK")
+        self.assertIn(f'"ndk;{ndk}"', sdk["run"])
+        self.assertIn(f"ANDROID_NDK_HOME=$ANDROID_HOME/ndk/{ndk}", sdk["run"])
+        # The hosted image presets ANDROID_NDK_ROOT to its own r27 default.
+        self.assertIn(f"ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/{ndk}", sdk["run"])
+        for path in ["scripts/ci/gitlab_docker_prereqs.sh", "Dockerfile.builder", ".github/workflows/release.yml"]:
+            text = (ROOT / path).read_text()
+            self.assertIn(ndk, text, path)
+            self.assertNotRegex(text, r"ndk;2[0-7]\.|ndk/2[0-7]\.|GS_NDK=2[0-7]\.", path)
+
     def gitlab_rows(self):
         return (self.gitlab["frontend-build-docker"]["parallel"]["matrix"]
                 + self.gitlab["frontend-build"]["parallel"]["matrix"])
@@ -115,7 +146,7 @@ class PlatformCI(unittest.TestCase):
         for name, arch in [("watchos", "aarch64"), ("watchos_sim", "aarch64"), ("watchos_sim_intel", "x86_64")]:
             self.assertEqual((rows[name]["host"], rows[name]["arch"]), ("Darwin", arch))
             self.assertTrue(rows[name]["gitlab"].startswith("gs-ui-macos-"))
-            self.assertTrue(rows[name]["github"].startswith("macos-"))
+            self.assertTrue(rows[name]["github"].startswith(("macos-", "xcode-")))
         for name in ["wearos", "wearos_sim"]:
             self.assertEqual(rows[name]["host"], "Linux")
             self.assertTrue(ci.is_wear(name) and ci.android_signed(name))

@@ -61,27 +61,27 @@ jobs:
         - target: windows
           runner: windows-2022
         - target: macos
-          runner: macos-15
+          runner: xcode-27
         - target: macos-intel
           runner: macos-15-intel
         - target: ios
-          runner: macos-15
+          runner: xcode-27
         - target: android
           runner: ubuntu-24.04
         - target: android-armv7
           runner: ubuntu-24.04
         - target: watchos
-          runner: macos-15
+          runner: xcode-27
         - target: wearos
           runner: ubuntu-24.04
         - target: ios_sim
-          runner: macos-15
+          runner: xcode-27
         - target: ios_sim_intel
           runner: macos-15-intel
         - target: android_sim
           runner: ubuntu-24.04
         - target: watchos_sim
-          runner: macos-15
+          runner: xcode-27
         - target: watchos_sim_intel
           runner: macos-15-intel
         - target: wearos_sim
@@ -107,8 +107,14 @@ jobs:
     - name: Windows MSVC environment
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
-    - name: Xcode 26 for iOS, as the store build uses
-      if: startsWith(matrix.target, 'ios')
+    # App Store Connect requires the iOS 27 SDK (ITMS-90725), as the store
+    # build uses. The xcode-27 image is Apple silicon only; the Intel
+    # simulator and macOS targets stay on Xcode 26 until an Intel image has 27.
+    - name: Xcode 27 (iOS 27 SDK) on Apple silicon
+      if: matrix.runner == 'xcode-27'
+      run: echo "DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer" >> "$GITHUB_ENV"
+    - name: Xcode 26 for the Intel iOS simulator
+      if: startsWith(matrix.target, 'ios') && matrix.runner != 'xcode-27'
       run: echo "DEVELOPER_DIR=/Applications/Xcode_26.3.app/Contents/Developer" >> "$GITHUB_ENV"
     - name: Xcode availability
       if: runner.os == 'macOS'
@@ -136,9 +142,11 @@ jobs:
     - name: Android SDK and NDK
       if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
       shell: bash
-      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;27.2.12479018"
+      run: 'sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0" "platforms;android-36" "build-tools;36.0.0" "ndk;28.2.13676358"
 
-        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"'
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
+
+        echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
     # Downloaded dependencies only; nothing a build generates and no signing
     # files. Build-only CI: the release workflow never restores this cache.
     - name: Cached Gradle downloads

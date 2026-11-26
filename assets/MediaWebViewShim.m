@@ -46,24 +46,13 @@ static NSData *GS26PinnedCertificateForHost(NSString *host) {
 
 static NSData *GS26LeafCertificate(SecTrustRef trust) {
     SecCertificateRef leaf = NULL;
-    if (@available(iOS 15.0, macOS 12.0, *)) {
-        CFArrayRef chain = SecTrustCopyCertificateChain(trust);
-        if (chain != NULL) {
-            if (CFArrayGetCount(chain) > 0) {
-                leaf = (SecCertificateRef)CFRetain(CFArrayGetValueAtIndex(chain, 0));
-            }
-            CFRelease(chain);
+    // iOS 15 / macOS 12 API; both are below the deployment targets.
+    CFArrayRef chain = SecTrustCopyCertificateChain(trust);
+    if (chain != NULL) {
+        if (CFArrayGetCount(chain) > 0) {
+            leaf = (SecCertificateRef)CFRetain(CFArrayGetValueAtIndex(chain, 0));
         }
-    } else {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-        if (SecTrustGetCertificateCount(trust) > 0) {
-            SecCertificateRef first = SecTrustGetCertificateAtIndex(trust, 0);
-            if (first != NULL) {
-                leaf = (SecCertificateRef)CFRetain(first);
-            }
-        }
-#pragma clang diagnostic pop
+        CFRelease(chain);
     }
     if (leaf == NULL) {
         return nil;

@@ -631,6 +631,23 @@ def prepare_android_development_signing(env):
         "distribution_or_update_identity": False}, indent=2) + "\n")
 
 
+def android_page_alignment(packages, *, require_native):
+    """Google Play: 16 KB page support for every 64-bit native library
+    (scripts/check_android_alignment.py). Fails the step on any problem."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("check_android_alignment",
+                                                  Path(__file__).resolve().parents[1] / "check_android_alignment.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    packages = [Path(p) for p in packages]
+    if not packages:
+        raise RuntimeError("No Android package to check for 16 KB page alignment")
+    argv = (["--require-native"] if require_native else []) + [str(p) for p in packages]
+    if module.main(argv):
+        raise RuntimeError("Android package is not 16 KB page aligned (Google Play requires it for Android 15+): "
+                           + ", ".join(p.name for p in packages))
+
+
 def run(name, profile):
     validate_host(name)
     env = ci_env()
@@ -656,6 +673,8 @@ def run(name, profile):
     if not files:
         raise RuntimeError("Build produced no staged artifacts; not a successful platform build")
     if android_signed(name):
+        # Wear OS is Kotlin only; the phone app must carry its Rust library.
+        android_page_alignment([p for p in files if p.suffix in {".apk", ".aab"}], require_native=not is_wear(name))
         (output / "CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt").write_text(
             "APK signed with a fresh CI-only development certificate.\n"
             "Not a production release or an identity for updating installed releases.\n"
@@ -1113,6 +1132,7 @@ def verify_android_release(name):
         raise RuntimeError(f"apksigner verify failed (exit {result.returncode})")
     if not re.search(r"^Verified using v2 scheme \(APK Signature Scheme v2\): true$", result.stdout, re.MULTILINE):
         raise RuntimeError("Release APK is not signed with APK Signature Scheme v2")
+    android_page_alignment([apk], require_native=True)
     signers = apk_signers(result.stdout)
     expected = normalized_digest(os.environ.get("SEDS_GS_RELEASE_ANDROID_CERT_SHA256"))
     if len(signers) != 1 or not expected or signers[0][1] != expected:
@@ -1485,6 +1505,7 @@ def verify_store_android(info):
     pinned = normalized_digest(os.environ.get("ANDROID_EXPECTED_CERT_SHA256"))
     if pinned and pinned != expected:
         raise RuntimeError("The upload certificate does not match ANDROID_EXPECTED_CERT_SHA256")
+    android_page_alignment([aab], require_native=True)
     package = bundletool_value(aab, "/manifest/@package")
     version_code = bundletool_value(aab, "/manifest/@android:versionCode")
     if package != IOS_BUNDLE_ID:
@@ -1495,13 +1516,23 @@ def verify_store_android(info):
                  f"- Upload certificate SHA-256: `{colon_hex(expected)}`"])
 
 
-# The oldest iOS SDK App Store Connect takes; it becomes 27 in April 2027.
-IOS_STORE_MINIMUM_SDK = 26
+# The oldest iOS SDK App Store Connect takes: 27 (ITMS-90725; a hard error from
+# April 2027, a warning before). The TestFlight job builds with Xcode 27.
+IOS_STORE_MINIMUM_SDK = 27
+# The lowest deployment target App Store Connect takes (ITMS-90068).
+IOS_STORE_MINIMUM_OS = (15, 0)
 
 
 def ios_sdk(output):
     """The SDK major version in `vtool -show-build` output."""
     versions = [int(v) for v in re.findall(r"^\s*sdk (\d+)(?:\.\d+)*\s*$", output, re.MULTILINE)]
+    return min(versions, default=None)
+
+
+def ios_minos(output):
+    """The lowest deployment target (major, minor) in `vtool -show-build` output."""
+    versions = [(int(major), int(minor or 0))
+                for major, minor in re.findall(r"^\s*minos (\d+)(?:\.(\d+))?(?:\.\d+)?\s*$", output, re.MULTILINE)]
     return min(versions, default=None)
 
 
@@ -1524,10 +1555,17 @@ def verify_store_ios(info):
         if verify.returncode:
             raise RuntimeError("codesign could not verify the IPA's app")
         executable = app / plistlib.loads((app / "Info.plist").read_bytes())["CFBundleExecutable"]
-        sdk = ios_sdk(subprocess.run(["xcrun", "vtool", "-show-build", str(executable)],
-                                     capture_output=True, text=True).stdout)
+        build = subprocess.run(["xcrun", "vtool", "-show-build", str(executable)], capture_output=True, text=True).stdout
+        sdk = ios_sdk(build)
         if sdk is None or sdk < IOS_STORE_MINIMUM_SDK:
             raise RuntimeError(f"The IPA is built with iOS SDK {sdk}; App Store Connect takes {IOS_STORE_MINIMUM_SDK} or later")
+        minimum = ".".join(map(str, IOS_STORE_MINIMUM_OS))
+        minos = ios_minos(build)
+        if minos is None or minos < IOS_STORE_MINIMUM_OS:
+            raise RuntimeError(f"The IPA's executable targets iOS {minos}; App Store Connect takes {minimum} or later")
+        declared = str(plist.get("MinimumOSVersion", ""))
+        if not re.fullmatch(r"\d+(?:\.\d+){0,2}", declared) or tuple(map(int, declared.split(".")))[:2] < IOS_STORE_MINIMUM_OS:
+            raise RuntimeError(f"The IPA declares MinimumOSVersion {declared!r}; App Store Connect takes {minimum} or later")
         details = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True)
         authority = re.search(r"^Authority=((?:Apple|iPhone) Distribution: .+)$", details.stdout + details.stderr,
                               re.MULTILINE)

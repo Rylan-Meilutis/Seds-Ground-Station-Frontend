@@ -7,10 +7,14 @@ from pathlib import Path
 import plistlib
 import struct
 
+# Lowest iOS the app supports. App Store Connect refuses anything below 15.0
+# (ITMS-90068), and Xcode 26/27 accept 15.0 as their oldest iOS target. Keep in
+# step with scripts/apple_objc_target.rs and scripts/patch_plist.sh.
+IOS_DEPLOYMENT_TARGET = '15.0'
 TARGETS = {
-    'aarch64-apple-ios': (0x0100000c, 2, 'iphoneos', 'arm64-apple-ios13.0'),
-    'aarch64-apple-ios-sim': (0x0100000c, 7, 'iphonesimulator', 'arm64-apple-ios13.0-simulator'),
-    'x86_64-apple-ios': (0x01000007, 7, 'iphonesimulator', 'x86_64-apple-ios13.0-simulator'),
+    'aarch64-apple-ios': (0x0100000c, 2, 'iphoneos', f'arm64-apple-ios{IOS_DEPLOYMENT_TARGET}'),
+    'aarch64-apple-ios-sim': (0x0100000c, 7, 'iphonesimulator', f'arm64-apple-ios{IOS_DEPLOYMENT_TARGET}-simulator'),
+    'x86_64-apple-ios': (0x01000007, 7, 'iphonesimulator', f'x86_64-apple-ios{IOS_DEPLOYMENT_TARGET}-simulator'),
 }
 THIN = {b'\xcf\xfa\xed\xfe': ('<', 32), b'\xfe\xed\xfa\xcf': ('>', 32),
         b'\xce\xfa\xed\xfe': ('<', 28), b'\xfe\xed\xfa\xce': ('>', 28)}
@@ -54,14 +58,23 @@ def _thin(file, offset, size):
         if command == 0x32:  # LC_BUILD_VERSION, Apple mach-o/loader.h
             if length < 24:
                 raise RuntimeError('Truncated LC_BUILD_VERSION')
-            platform, _minimum, _sdk, tools = struct.unpack_from(order + '4I', commands, cursor + 8)
+            platform, minimum, _sdk, tools = struct.unpack_from(order + '4I', commands, cursor + 8)
             if tools > (length - 24) // 8:
                 raise RuntimeError('Truncated LC_BUILD_VERSION tool table')
-            platforms.append(platform)
+            platforms.append((platform, minimum))
         cursor += length
     if cursor != len(commands) or len(platforms) != 1:
         raise RuntimeError('Exactly one LC_BUILD_VERSION is required to distinguish device from simulator')
-    return {'cpu': cpu, 'subtype': subtype, 'platform': platforms[0], 'filetype': filetype}
+    platform, minimum = platforms[0]
+    return {'cpu': cpu, 'subtype': subtype, 'platform': platform, 'filetype': filetype, 'minos': minimum}
+
+def _packed_version(text):
+    """LC_BUILD_VERSION encoding: major << 16 | minor << 8 | patch."""
+    parts = [int(part) for part in text.split('.')] + [0, 0]
+    return parts[0] << 16 | parts[1] << 8 | parts[2]
+
+def _version_text(packed):
+    return f'{packed >> 16}.{packed >> 8 & 0xff}' + (f'.{packed & 0xff}' if packed & 0xff else '')
 
 def inspect_macho(path):
     path = Path(path)
@@ -150,6 +163,9 @@ def validate_app(app, target):
             for row in rows:
                 if row['cpu'] != expected_cpu or row['platform'] != expected_platform:
                     raise RuntimeError(f"CPU={row['cpu']:#x}, platform={row['platform']} does not match {target}")
+                if row['minos'] < _packed_version(IOS_DEPLOYMENT_TARGET):
+                    raise RuntimeError(f"built for iOS {_version_text(row['minos'])}; App Store Connect requires "
+                                       f"{IOS_DEPLOYMENT_TARGET} or later")
         except (OSError, RuntimeError) as error:
             raise RuntimeError(f'Invalid iOS payload {path.relative_to(app)}: {error}. Rebuild for {target}; do not reuse a simulator/device bundle interchangeably.') from error
     return len(required)

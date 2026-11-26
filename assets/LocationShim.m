@@ -50,15 +50,8 @@ static volatile double g_gs26_last_location_unix_s = NAN;
 @implementation GS26LocationShim
 
 - (void)startSensorsIfAuthorized {
-  CLAuthorizationStatus status;
-  if ([self.mgr respondsToSelector:@selector(authorizationStatus)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunguarded-availability-new"
-    status = self.mgr.authorizationStatus;
-#pragma clang diagnostic pop
-  } else {
-    status = [CLLocationManager authorizationStatus];
-  }
+  // iOS 14 / macOS 11 API; both are below the deployment targets.
+  CLAuthorizationStatus status = self.mgr.authorizationStatus;
   g_gs26_auth_status = (int)status;
 
   BOOL authorized = NO;
@@ -82,15 +75,8 @@ static volatile double g_gs26_last_location_unix_s = NAN;
 }
 
 - (void)requestAuthorizationIfNeeded {
-  CLAuthorizationStatus status;
-  if ([self.mgr respondsToSelector:@selector(authorizationStatus)]) {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wunguarded-availability-new"
-    status = self.mgr.authorizationStatus;
-#pragma clang diagnostic pop
-  } else {
-    status = [CLLocationManager authorizationStatus];
-  }
+  // iOS 14 / macOS 11 API; both are below the deployment targets.
+  CLAuthorizationStatus status = self.mgr.authorizationStatus;
   g_gs26_auth_status = (int)status;
 
   if (status == kCLAuthorizationStatusNotDetermined &&
@@ -176,10 +162,7 @@ static volatile double g_gs26_last_location_unix_s = NAN;
   g_gs26_last_horizontal_accuracy =
       last.horizontalAccuracy >= 0 ? last.horizontalAccuracy : NAN;
   g_gs26_last_location_unix_s = last.timestamp.timeIntervalSince1970;
-  double altitude = NAN;
-  if (@available(iOS 4.2, macOS 10.7, *)) {
-    altitude = last.verticalAccuracy >= 0 ? last.altitude : NAN;
-  }
+  double altitude = last.verticalAccuracy >= 0 ? last.altitude : NAN;
   self.cb(last.coordinate.latitude, last.coordinate.longitude, altitude);
 }
 

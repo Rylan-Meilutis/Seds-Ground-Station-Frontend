@@ -61,12 +61,7 @@ static NSObject *g_fix_lock;
 }
 
 - (void)refreshAuth {
-  CLAuthorizationStatus status;
-  if (@available(iOS 14.0, *)) {
-    status = self.mgr.authorizationStatus;
-  } else {
-    status = [CLLocationManager authorizationStatus];
-  }
+  CLAuthorizationStatus status = self.mgr.authorizationStatus;
   int code = (int)status;
   if (![CLLocationManager locationServicesEnabled]) {
     code = 5;
@@ -103,9 +98,7 @@ static NSObject *g_fix_lock;
     return;
   }
   m.allowsBackgroundLocationUpdates = YES;
-  if (@available(iOS 11.0, *)) {
-    m.showsBackgroundLocationIndicator = YES;
-  }
+  m.showsBackgroundLocationIndicator = YES;
   if (!self.running) {
     [m startUpdatingLocation];
     if ([CLLocationManager significantLocationChangeMonitoringAvailable]) {

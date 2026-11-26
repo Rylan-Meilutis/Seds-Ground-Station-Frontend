@@ -254,7 +254,7 @@ ensure_dict "CFBundleIcons~ipad:CFBundlePrimaryIcon"
 set_string "CFBundleIcons~ipad:CFBundlePrimaryIcon:CFBundleIconName" "AppIcon"
 
 # iPad multitasking requires a launch screen.
-# Since MinimumOSVersion >= 14, use UILaunchScreen dictionary (no storyboard file needed).
+# Since MinimumOSVersion >= 15, use UILaunchScreen dictionary (no storyboard file needed).
 ensure_dict "UILaunchScreen"
 set_bool_if_missing "UILaunchScreen:UILaunchScreenRequiresPersistentWiFi" "false" 2>/dev/null || true
 # Provide at least one key; BackgroundColor is enough for validation.
@@ -369,9 +369,10 @@ set_bool_if_missing   "LSRequiresIPhoneOS" "true"
 set_bool "UIFileSharingEnabled" "true"
 set_bool "LSSupportsOpeningDocumentsInPlace" "true"
 
-if ! plist_has "MinimumOSVersion"; then
-  set_string "MinimumOSVersion" "14.0"
-fi
+# Always set: App Store Connect refuses anything below 15.0 (ITMS-90068). It
+# matches IOS_DEPLOYMENT_TARGET in scripts/ios_bundle.py, which the binary is
+# linked for.
+set_string "MinimumOSVersion" "15.0"
 
 # -----------------------------------------------------------------------------
 # 2c) Add Xcode/SDK metadata keys Transporter validates for some packages

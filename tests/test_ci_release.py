@@ -120,7 +120,10 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertEqual(unsigned, [("linux", "ubuntu-24.04"), ("linux-arm64", "ubuntu-24.04-arm"), ("windows", "windows-2022")])
         self.assertEqual(self.jobs["android"]["strategy"]["matrix"]["target"], ["android", "android-armv7"])
         macos = [(r["target"], r["runner"]) for r in self.jobs["macos"]["strategy"]["matrix"]["include"]]
-        self.assertEqual(macos, [("macos", "macos-15"), ("macos-intel", "macos-15-intel")])
+        self.assertEqual(macos, [("macos", "xcode-27"), ("macos-intel", "macos-15-intel")])
+        xcode = self.step("macos", "Xcode 27 on Apple silicon")
+        self.assertEqual(xcode["if"], "matrix.runner == 'xcode-27'")
+        self.assertIn("/Applications/Xcode_27.2.app/Contents/Developer", xcode["run"])
         rows = {p["target"]: p["github"] for p in ci.PLATFORMS}
         for target, runner in unsigned + macos:
             self.assertEqual(rows[target], runner)
@@ -191,7 +194,7 @@ class ReleaseWorkflow(unittest.TestCase):
                 self.assertEqual(secrets_in(upload),
                                  {"PLAY_SERVICE_ACCOUNT_JSON_B64"} if name == "play"
                                  else {"APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID"})
-        self.assertEqual(self.jobs["testflight"]["runs-on"], "macos-15")
+        self.assertEqual(self.jobs["testflight"]["runs-on"], "xcode-27")
         self.assertEqual(self.jobs["testflight"]["env"]["CI_FRONTEND_TARGET"], "ios")
         self.assertEqual(self.jobs["play"]["env"]["CI_FRONTEND_TARGET"], "android")
         self.assertIn("python scripts/ci/frontend.py release-ios-signing", [s.get("run") for s in self.jobs["testflight"]["steps"]])
@@ -208,7 +211,8 @@ class ReleaseWorkflow(unittest.TestCase):
             gated = [s for s in self.jobs[name]["steps"] if "dry_run" in json.dumps(s)]
             self.assertEqual([s["run"] for s in gated], ["python scripts/ci/frontend.py release-store-upload"], name)
             self.assertTrue(gated[0]["if"].startswith("${{ !inputs.dry_run && "), name)
-        self.assertEqual(self.jobs["testflight"]["env"]["DEVELOPER_DIR"], "/Applications/Xcode_26.3.app/Contents/Developer")
+        # ITMS-90725: App Store Connect requires the iOS 27 SDK (Xcode 27).
+        self.assertEqual(self.jobs["testflight"]["env"]["DEVELOPER_DIR"], "/Applications/Xcode_27.2.app/Contents/Developer")
         for name in ["android", "macos", "unsigned"]:
             self.assertNotIn("dry_run", json.dumps(self.jobs[name]), name)
         job = self.jobs["dry-run"]
@@ -568,9 +572,11 @@ class ReleaseDriver(unittest.TestCase):
                 with self.subTest(env=sorted(env)), patch.object(ci, "ROOT", root), \
                      patch.object(ci, "find_apksigner", return_value="apksigner"), \
                      patch.object(ci.subprocess, "run", return_value=result), \
+                     patch.object(ci, "android_page_alignment") as alignment, \
                      patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
                     if ok:
                         ci.verify_android_release("android")
+                        alignment.assert_called_once_with([apk], require_native=True)
                     else:
                         with self.assertRaises(RuntimeError):
                             ci.verify_android_release("android")
