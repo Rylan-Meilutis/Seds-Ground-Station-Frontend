@@ -61,10 +61,34 @@ class ReleaseWorkflow(unittest.TestCase):
     def test_tag_is_checked_against_cargo_and_dioxus_before_any_build(self):
         step = self.step("version", "Tag matches Cargo.toml version and Dioxus.toml build")
         self.assertIn("release-version", step["run"])
-        for job in ["unsigned", "android", "macos", *STORE_JOBS]:
-            self.assertEqual(self.jobs[job]["needs"], "version")
+        for job in ["unsigned", "android", "android-launch", "macos", *STORE_JOBS]:
+            # The Play upload also waits for the launch gate.
+            self.assertEqual(self.jobs[job]["needs"], ["version", "android-launch"] if job == "play" else "version")
             checkout = self.jobs[job]["steps"][0]
             self.assertEqual(checkout["with"]["ref"], "${{ needs.version.outputs.ref }}")
+
+    def test_android_launch_gates_publish_dry_run_and_play_without_secrets(self):
+        job = self.jobs["android-launch"]
+        self.assertEqual(secrets_in(job), set())
+        self.assertNotIn("environment", job)
+        self.assertEqual(job["env"], {"CI_FRONTEND_TARGET": "android_sim", "CI_FRONTEND_PROFILE": "release"})
+        runs = [s.get("run") for s in job["steps"]]
+        build = runs.index("python scripts/ci/frontend.py build")
+        self.assertLess(runs.index("python scripts/ci/frontend.py bootstrap"), build)
+        emulator = next(i for i, s in enumerate(job["steps"])
+                        if s.get("uses", "").startswith("reactivecircus/android-emulator-runner@"))
+        self.assertLess(build, emulator)
+        step = job["steps"][emulator]
+        self.assertRegex(step["uses"], r"@[0-9a-f]{40}$")
+        self.assertEqual((step["with"]["api-level"], step["with"]["arch"]), (36, "x86_64"))
+        self.assertIn("scripts/android_launch_smoke.py --apk artifacts/android_sim", step["with"]["script"])
+        self.assertIn("--require-render-log", step["with"]["script"])
+        upload = job["steps"][-1]
+        self.assertFalse(upload["with"]["name"].startswith("release-"), "publish merges release-* artifacts")
+        self.assertNotIn("cache", json.dumps(job))
+        for name in ["publish", "dry-run"]:
+            self.assertIn("needs.android-launch.result == 'success'", self.jobs[name]["if"])
+        self.assertIn("needs.android-launch.result == 'success'", self.jobs["play"]["if"])
 
     def test_secrets_only_in_the_signing_steps_of_the_signing_jobs(self):
         self.assertEqual(self.workflow["permissions"], {"contents": "read"})
@@ -135,7 +159,7 @@ class ReleaseWorkflow(unittest.TestCase):
 
     def test_publish_requires_every_platform_and_macos_skip_only_when_asked(self):
         publish = self.jobs["publish"]
-        self.assertEqual(publish["needs"], ["version", "unsigned", "android", "macos"])
+        self.assertEqual(publish["needs"], ["version", "unsigned", "android", "macos", "android-launch"])
         condition = publish["if"]
         for job in ["version", "unsigned", "android"]:
             self.assertIn(f"needs.{job}.result == 'success'", condition)
@@ -169,11 +193,11 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertNotIn("environment", self.jobs["version"])
 
     def test_store_jobs_skip_without_secrets_and_never_gate_the_release(self):
-        self.assertEqual(self.jobs["publish"]["needs"], ["version", "unsigned", "android", "macos"])
+        self.assertEqual(self.jobs["publish"]["needs"], ["version", "unsigned", "android", "macos", "android-launch"])
         for name, store in [("testflight", "testflight"), ("play", "play")]:
             with self.subTest(job=name):
                 job = self.jobs[name]
-                self.assertEqual(job["needs"], "version")
+                self.assertEqual(job["needs"], ["version", "android-launch"] if name == "play" else "version")
                 self.assertNotIn("continue-on-error", job)
                 steps = job["steps"]
                 check = next(i for i, s in enumerate(steps) if s.get("id") == "store")
@@ -216,7 +240,7 @@ class ReleaseWorkflow(unittest.TestCase):
         for name in ["android", "macos", "unsigned"]:
             self.assertNotIn("dry_run", json.dumps(self.jobs[name]), name)
         job = self.jobs["dry-run"]
-        self.assertEqual(job["needs"], ["version", "unsigned", "android", "macos"])
+        self.assertEqual(job["needs"], ["version", "unsigned", "android", "macos", "android-launch"])
         self.assertIn("inputs.dry_run &&", job["if"])
         self.assertNotIn("!inputs.dry_run", job["if"])
         self.assertNotIn("permissions", job)

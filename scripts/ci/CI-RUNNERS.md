@@ -14,6 +14,19 @@ The phone app compiles against API 36 (Play's target requirement) with the Andro
 
 `build.py` also pins the generated app's `ndkVersion` to the same r28c and sets `ndk { debugSymbolLevel = "SYMBOL_TABLE" }` on the release build type. The Dioxus template writes `packaging { jniLibs.keepDebugSymbols.add(...) }` inside `getByName("debug")`, but `packaging` there resolves to `android.packaging`, so it covered every build type: `stripReleaseDebugSymbols` copied `libmain.so` as is, and `extractReleaseNativeSymbolTables` then skipped it as "already stripped" (both only at `--info`). Build 38 shipped an 84 MB `libmain.so` with `.symtab`/`.debug_*` and no symbols for Play. `build.py` removes that block and keeps debug symbols for the debug variant only (`androidComponents { onVariants(selector().withBuildType("debug")) { ... } }`). Android release builds now fail `check_android_alignment.py --release` if a library has `.debug_*` sections or the AAB lacks `BUNDLE-METADATA/com.android.tools.build.debugsymbols/<abi>/<lib>.so.sym`. Debug builds keep their symbols. A local release build needs NDK 28.2.13676358 installed (`sdkmanager "ndk;28.2.13676358"`); AGP downloads it itself only when the SDK licences are accepted.
 
+### Android launch smoke test (GitHub only)
+
+A build can succeed and the app still not start, so `platforms.yml` job `android-launch` installs the APKs the build job made on x86_64 emulators (ubuntu-24.04 with KVM, `reactivecircus/android-emulator-runner` pinned to a commit) and runs `scripts/android_launch_smoke.py`: `am start -W` of the launcher activity, about 45 s of watching, then logcat, `dumpsys activity activities` and a screenshot (uploaded as `android-launch-*` artifacts). It fails when the process is gone (`pidof`), when logcat from the app's processes shows a `FATAL EXCEPTION`, a `java.lang.*Error` (UnsatisfiedLinkError, NoClassDefFoundError, NoSuchMethodError: missing or stripped `libmain.so`, wrong ABI, JNI classes renamed by R8), a Rust panic, a native crash (`Fatal signal`, the `DEBUG` dump, SIGSEGV/SIGABRT), an ANR or a force-finish, when the launcher activity is not the resumed one, when the app never logs `[startup] app rendered`, or when the middle of the screenshot is one flat colour (a blank web view). Rust's own log lines reach logcat under the `GS26` tag (`src/debug_log.rs`); before, stdout on Android went nowhere and a panic left no trace there.
+
+| Matrix row | Why |
+|---|---|
+| `android_sim` debug, API 36 | the debug path (unstripped, no R8) |
+| `android_sim` release, API 36 | the store path: R8, stripping, symbol extraction, bundletool universal APK |
+| `android_sim` release, API 24 | minSdk: native code that needs newer libc than the manifest allows fails here. Release only, to keep the cost down. The render log line is required, the screenshot is kept but not judged (`--no-screen-check`): the image's built-in WebView is years older than what real Android 7 devices get through Play |
+| `wearos_sim` release, API 34 Wear image | the Wear OS app (Kotlin only, so no render log line; the screenshot still has to show content) |
+
+The runtime permissions are granted at install (`adb install -g`), so a permission dialog does not cover the activity; refusing permissions is not covered. Emulator output stays out of the build step's warning gate; the build steps themselves keep warnings fatal. `release.yml` repeats the API 36 release launch from the tag's commit as `android-launch` (no secrets: it signs with the CI development key) and `publish`, `dry-run` and `play` wait for it. Hosted arm64 runners expose no KVM and macOS runners no nested virtualisation, so the arm64 store APK itself is not launched; the x86_64 build goes through the same Rust, Gradle and packaging code.
+
 ### GitLab runners (gitlab.rylanswebsite.com, project 80)
 
 The instance has only generic, untagged instance runners: 9 and 10, plus 4,

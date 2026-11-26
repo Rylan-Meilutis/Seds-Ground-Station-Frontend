@@ -78,6 +78,32 @@ class PlatformCI(unittest.TestCase):
             self.assertIn(ndk, text, path)
             self.assertNotRegex(text, r"ndk;2[0-7]\.|ndk/2[0-7]\.|GS_NDK=2[0-7]\.", path)
 
+    def test_android_launch_smoke_on_emulators(self):
+        job = self.github["jobs"]["android-launch"]
+        self.assertEqual((job["needs"], job["if"], job["runs-on"]), ("build", "${{ !cancelled() }}", "ubuntu-24.04"))
+        rows = [(r["target"], r["profile"], r["api"]) for r in job["strategy"]["matrix"]["include"]]
+        self.assertEqual(rows, [("android_sim", "debug", 36), ("android_sim", "release", 36),
+                                ("android_sim", "release", 24), ("wearos_sim", "release", 34)])
+        for row in job["strategy"]["matrix"]["include"]:
+            # Only targets the build job makes, as x86_64 for the emulator.
+            self.assertIn(row["target"], [p["target"] for p in ci.PLATFORMS])
+            expected = ("" if row["target"] == "wearos_sim" else
+                        "--require-render-log --no-screen-check" if row["api"] == 24 else "--require-render-log")
+            self.assertEqual(row["render"], expected)
+        download = next(s for s in job["steps"] if s.get("uses") == "actions/download-artifact@v4")
+        self.assertEqual(download["with"]["name"], "frontend-${{ matrix.target }}-${{ matrix.profile }}")
+        emulator = next(s for s in job["steps"] if s.get("uses", "").startswith("reactivecircus/android-emulator-runner@"))
+        self.assertRegex(emulator["uses"], r"@[0-9a-f]{40}$")
+        self.assertEqual(emulator["with"]["arch"], "x86_64")
+        self.assertIn("scripts/android_launch_smoke.py", emulator["with"]["script"])
+        kvm = next(s for s in job["steps"] if s.get("name") == "Enable KVM")
+        self.assertIn("udevadm trigger --name-match=kvm", kvm["run"])
+        upload = job["steps"][-1]
+        self.assertEqual(upload["if"], "always()")
+        self.assertIn("launch-output", upload["with"]["path"])
+        # Emulator output never passes through the build step's warning gate.
+        self.assertNotIn("frontend.py", json.dumps(job))
+
     def gitlab_rows(self):
         return (self.gitlab["frontend-build-docker"]["parallel"]["matrix"]
                 + self.gitlab["frontend-build"]["parallel"]["matrix"])

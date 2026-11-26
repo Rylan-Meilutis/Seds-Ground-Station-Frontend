@@ -22,6 +22,7 @@ tag's commit is on `main` or `dev` (section 0).
 | `android` android-armv7 | ubuntu-24.04 | `SEDS.GS_armv7.apk` (armeabi-v7a, production-signed) |
 | `macos` macos | xcode-27 (Xcode 27.2) | `UBSEDS.GS.dmg` (Apple silicon, Developer ID, notarized and stapled) |
 | `macos` macos-intel | macos-15-intel | `UBSEDS.GS_x86_64.dmg` (Intel, Developer ID, notarized and stapled) |
+| `android-launch` | ubuntu-24.04 (KVM) | no asset: builds the x86_64 release APK (CI development key, no secrets) and launches it on an API 36 emulator; `publish`, `dry-run` and `play` need it to pass |
 | `publish` | ubuntu-24.04 | all of the above, plus `SHA256SUMS` (not in a dry run) |
 | `dry-run` | ubuntu-24.04 | manual dry runs only: checks the signed set, publishes nothing |
 | `testflight` | xcode-27 (Xcode 27.2) | `UBSEDS GS.ipa` (App Store signed) uploaded to App Store Connect / TestFlight, then added to `TESTFLIGHT_GROUPS` if set; not a GitHub asset |
@@ -157,7 +158,8 @@ either way.
 - If the secrets are missing, the job fails with a message naming them. There
   is no fallback to a development key or to an unsigned DMG. The store jobs
   are the exception: with none of their store secrets set they skip with a
-  notice, and `publish` does not depend on them.
+  notice, and `publish` does not depend on them. The Play job does wait for
+  `android-launch`, so a build that does not start never reaches a track.
 - The store jobs upload no workflow artifacts. The `.p8` and the Play
   service-account key are written only for the upload command and deleted
   right after it.

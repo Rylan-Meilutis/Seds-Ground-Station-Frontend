@@ -135,6 +135,10 @@ include!("app_connection.rs");
 // -------------------------
 // App
 // -------------------------
+/// Logged when the root component first renders (scripts/android_launch_smoke.py).
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const APP_RENDERED_LOG_LINE: &str = "[startup] app rendered";
+
 #[component]
 /// Top-level app component that installs global CSS and mounts the router.
 pub fn App() -> Element {
@@ -142,6 +146,8 @@ pub fn App() -> Element {
     crate::startup_diagnostics::mark(crate::startup_diagnostics::Stage::AppRendered);
     #[cfg(not(target_arch = "wasm32"))]
     {
+        // Once per document; the Android launch smoke test waits for this line.
+        use_hook(|| crate::debug_log::append(APP_RENDERED_LOG_LINE));
         // App mounts once per document: after a recovery reload, helpers from
         // the old page and latches from the old virtual dom start over.
         use_hook(crate::webview_recovery::reset_document_scoped_state);

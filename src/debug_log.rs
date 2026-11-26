@@ -195,10 +195,53 @@ pub(crate) fn list_log_artifacts() -> Vec<LogArtifact> {
     }
 }
 
+/// Logcat tag for the app's own log lines (scripts/android_launch_smoke.py
+/// reads it): stdout goes nowhere on Android, so without this a panic or a
+/// startup failure left no trace in logcat.
+#[cfg(target_os = "android")]
+pub(crate) const ANDROID_LOG_TAG: &str = "GS26";
+
+#[cfg(target_os = "android")]
+mod logcat {
+    use std::ffi::{CString, c_char, c_int};
+
+    const ANDROID_LOG_INFO: c_int = 4;
+    const ANDROID_LOG_ERROR: c_int = 6;
+    // Logcat truncates long entries; stay well inside its payload limit.
+    const CHUNK_BYTES: usize = 3000;
+
+    #[link(name = "log")]
+    unsafe extern "C" {
+        fn __android_log_write(prio: c_int, tag: *const c_char, text: *const c_char) -> c_int;
+    }
+
+    pub(super) fn write(message: &str) {
+        let priority = if message.starts_with("[panic]") { ANDROID_LOG_ERROR } else { ANDROID_LOG_INFO };
+        let Ok(tag) = CString::new(super::ANDROID_LOG_TAG) else { return };
+        let mut rest = message;
+        while !rest.is_empty() {
+            let mut end = rest.len().min(CHUNK_BYTES);
+            while !rest.is_char_boundary(end) {
+                end -= 1;
+            }
+            let (chunk, tail) = rest.split_at(end);
+            rest = tail;
+            if let Ok(text) = CString::new(chunk.replace('\0', " ")) {
+                // SAFETY: both pointers are valid NUL-terminated strings for the call.
+                unsafe {
+                    __android_log_write(priority, tag.as_ptr(), text.as_ptr());
+                }
+            }
+        }
+    }
+}
+
 pub(crate) fn append(message: &str) {
     let redacted = crate::log_redaction::redact_urls(message);
     let message = redacted.as_ref();
     let line = formatted_log_line(message);
+    #[cfg(target_os = "android")]
+    logcat::write(message);
 
     #[cfg(target_arch = "wasm32")]
     {
