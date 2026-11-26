@@ -17,6 +17,7 @@ variables:
 # releases are GitHub-only (docs/releasing.md).
 ci-contracts:
   stage: contracts
+  interruptible: true
   image: python:3.11-bookworm
   timeout: 5m
   script:
@@ -24,6 +25,7 @@ ci-contracts:
   - python -W error -m unittest discover -s tests -p 'test_ci*.py' -v
 .frontend-build:
   stage: build
+  interruptible: true
   needs:
   - ci-contracts
   timeout: 2h
@@ -69,9 +71,14 @@ frontend-build-docker:
       CI_FRONTEND_PROFILE:
       - debug
       - release
-# Native shell runners that must be registered with these tags.
+# Native shell runners that must be registered with these tags. Off unless
+# the project CI variable GS_UI_NATIVE_RUNNERS is "true": without the runners
+# these 22 jobs stay pending, and with them a pipeline exceeds the project's
+# limit on jobs in active pipelines, so GitLab refuses to create it at all.
 frontend-build:
   extends: .frontend-build
+  rules:
+  - if: $GS_UI_NATIVE_RUNNERS == "true"
   tags:
   - $UI_RUNNER
   parallel:

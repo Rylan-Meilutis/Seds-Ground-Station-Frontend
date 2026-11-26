@@ -20,8 +20,15 @@ of `platforms.json`.
   SDK/NDK packages. Every download is pinned by SHA-256, except that
   rustup-init is checked against its own published checksum. The runner must
   be x86_64; the script and `validate_host` refuse anything else.
-- **Tagged native runners, `frontend-build`:** these jobs stay pending until a
-  runner with the tag is registered.
+- **Tagged native runners, `frontend-build`:** these 22 jobs are created only
+  when the project CI variable `GS_UI_NATIVE_RUNNERS` is `true`. By default a
+  pipeline has 13 jobs. With all 35, GitLab refused to create the pipeline
+  ("Project exceeded the allowed number of jobs in active pipelines"), and
+  without the runners those jobs would only stay pending. Register the
+  runners first, then the project owner sets the variable (Settings → CI/CD →
+  Variables). Raising the instance's `ci_active_jobs` plan limit may also be
+  needed. Every job is `interruptible`, so with "Auto-cancel redundant
+  pipelines" on, a new push cancels the previous pipeline.
   - Desktop Linux packages (Flatpak, AppImage/FUSE, Ubuntu 24.04
     makepkg/pacman 6.0.2) do not work in an unprivileged Debian container.
   - Windows and Apple targets need their own OS.

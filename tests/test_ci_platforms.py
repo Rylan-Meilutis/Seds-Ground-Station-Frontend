@@ -66,6 +66,18 @@ class PlatformCI(unittest.TestCase):
         self.assertEqual([r["CI_FRONTEND_TARGET"] for r in docker["parallel"]["matrix"]],
                          [t for t, g in bindings.items() if g == "docker"])
 
+    def test_gitlab_native_jobs_are_opt_in_and_jobs_are_interruptible(self):
+        # Without registered native runners those jobs stay pending, and a
+        # pipeline holding them exceeds the project's active-job limit, so
+        # GitLab refuses to create it. They run only when enabled.
+        native, docker = self.gitlab["frontend-build"], self.gitlab["frontend-build-docker"]
+        self.assertEqual(native["rules"], [{"if": '$GS_UI_NATIVE_RUNNERS == "true"'}])
+        self.assertNotIn("rules", docker)
+        self.assertTrue(self.gitlab["ci-contracts"]["interruptible"])
+        self.assertTrue(self.gitlab[".frontend-build"]["interruptible"])
+        default_jobs = 1 + sum(len(r["CI_FRONTEND_PROFILE"]) for r in docker["parallel"]["matrix"])
+        self.assertEqual(default_jobs, 13)
+
     def test_gitlab_generic_docker_runners_only_for_container_safe_linux_targets(self):
         docker = self.gitlab["frontend-build-docker"]
         self.assertNotIn("tags", docker)
