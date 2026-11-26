@@ -176,7 +176,8 @@ class AndroidPackagingContracts(unittest.TestCase):
                     ci.run("android", profile)
                 self.assertEqual(order, ["android-development-key", "build-android-" + profile])
                 # Google Play: every 64-bit .so 16 KB aligned (test_android_alignment.py).
-                alignment.assert_called_once_with([root / "artifacts/android/fixture.apk"], require_native=True)
+                alignment.assert_called_once_with([root / "artifacts/android/fixture.apk"], require_native=True,
+                                                  release=profile == "release")
                 label = root / "artifacts/android/CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt"
                 self.assertIn("Not a production release", label.read_text())
                 manifest = json.loads((root / "ci-results/artifacts.json").read_text())

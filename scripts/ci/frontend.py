@@ -631,9 +631,11 @@ def prepare_android_development_signing(env):
         "distribution_or_update_identity": False}, indent=2) + "\n")
 
 
-def android_page_alignment(packages, *, require_native):
+def android_page_alignment(packages, *, require_native, release=False):
     """Google Play: 16 KB page support for every 64-bit native library
-    (scripts/check_android_alignment.py). Fails the step on any problem."""
+    (scripts/check_android_alignment.py). `release` also requires stripped
+    libraries and, in an AAB, their native debug symbols. Fails the step on
+    any problem."""
     import importlib.util
     spec = importlib.util.spec_from_file_location("check_android_alignment",
                                                   Path(__file__).resolve().parents[1] / "check_android_alignment.py")
@@ -642,9 +644,10 @@ def android_page_alignment(packages, *, require_native):
     packages = [Path(p) for p in packages]
     if not packages:
         raise RuntimeError("No Android package to check for 16 KB page alignment")
-    argv = (["--require-native"] if require_native else []) + [str(p) for p in packages]
+    argv = (["--require-native"] if require_native else []) + (["--release"] if release else []) + [str(p) for p in packages]
     if module.main(argv):
-        raise RuntimeError("Android package is not 16 KB page aligned (Google Play requires it for Android 15+): "
+        raise RuntimeError("Android package failed the Google Play native-code checks (16 KB page alignment"
+                           + (", stripped libraries, native debug symbols" if release else "") + "): "
                            + ", ".join(p.name for p in packages))
 
 
@@ -674,7 +677,9 @@ def run(name, profile):
         raise RuntimeError("Build produced no staged artifacts; not a successful platform build")
     if android_signed(name):
         # Wear OS is Kotlin only; the phone app must carry its Rust library.
-        android_page_alignment([p for p in files if p.suffix in {".apk", ".aab"}], require_native=not is_wear(name))
+        # Debug builds keep their symbols on purpose (the template's keepDebugSymbols).
+        android_page_alignment([p for p in files if p.suffix in {".apk", ".aab"}], require_native=not is_wear(name),
+                               release=name.startswith("android") and profile == "release")
         (output / "CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt").write_text(
             "APK signed with a fresh CI-only development certificate.\n"
             "Not a production release or an identity for updating installed releases.\n"
@@ -1132,7 +1137,7 @@ def verify_android_release(name):
         raise RuntimeError(f"apksigner verify failed (exit {result.returncode})")
     if not re.search(r"^Verified using v2 scheme \(APK Signature Scheme v2\): true$", result.stdout, re.MULTILINE):
         raise RuntimeError("Release APK is not signed with APK Signature Scheme v2")
-    android_page_alignment([apk], require_native=True)
+    android_page_alignment([apk], require_native=True, release=True)
     signers = apk_signers(result.stdout)
     expected = normalized_digest(os.environ.get("SEDS_GS_RELEASE_ANDROID_CERT_SHA256"))
     if len(signers) != 1 or not expected or signers[0][1] != expected:
@@ -1505,7 +1510,7 @@ def verify_store_android(info):
     pinned = normalized_digest(os.environ.get("ANDROID_EXPECTED_CERT_SHA256"))
     if pinned and pinned != expected:
         raise RuntimeError("The upload certificate does not match ANDROID_EXPECTED_CERT_SHA256")
-    android_page_alignment([aab], require_native=True)
+    android_page_alignment([aab], require_native=True, release=True)
     package = bundletool_value(aab, "/manifest/@package")
     version_code = bundletool_value(aab, "/manifest/@android:versionCode")
     if package != IOS_BUNDLE_ID:

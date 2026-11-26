@@ -40,6 +40,9 @@ APP_BUNDLE_NAME = f"{APP_NAME}.app"
 # Matches Dioxus.toml [bundle.macos] minimum_system_version and Info.plist.
 MACOS_DEPLOYMENT_TARGET = "13.0"
 ANDROID_PAGE_SIZE_LINK_ARG = "link-arg=-Wl,-z,max-page-size=16384"
+# NDK r28c: the CI pin (workflows, GitLab prereqs, Dockerfile.builder). AGP
+# strips release native libraries and extracts their symbol tables with it.
+ANDROID_NDK_VERSION = "28.2.13676358"
 MACOS_ALT_APP_BUNDLE_NAME = f"{MACOS_ALT_APP_NAME}.app"
 LEGACY_APP_BUNDLE_NAME = f"{LEGACY_APP_NAME}.app"
 
@@ -2566,6 +2569,25 @@ def _inject_settings_gradle_maven_repo(settings_raw: str, maven_path: str) -> tu
     return settings_raw + suffix, True
 
 
+def _configure_android_native_symbols(raw: str) -> str:
+    """Pin AGP's NDK and ship native debug symbols in the release AAB.
+
+    Without an installed NDK matching AGP's default version, AGP skips
+    stripping (build 38 shipped an 84 MB libmain.so with .symtab/.debug_*)
+    and Play warns that the AAB has no native debug symbols. With ndkVersion
+    pinned, release libraries are stripped and SYMBOL_TABLE puts their symbol
+    tables in BUNDLE-METADATA/com.android.tools.build.debugsymbols/."""
+    raw = re.sub(r'\n\s*ndkVersion\s*=\s*"[^"]*"', "", raw)
+    raw = re.sub(r'\n\s*ndk\s*\{\s*debugSymbolLevel\s*=\s*"[^"]*"\s*\}', "", raw)
+    android = re.search(r"^android\s*\{\n", raw, flags=re.MULTILINE)
+    release = re.search(r'^(\s*)getByName\("release"\)\s*\{\n', raw, flags=re.MULTILINE)
+    if android is None or release is None:
+        raise RuntimeError("Generated Android app Gradle file has no android { } or release build type to configure")
+    indent = release.group(1) + "    "
+    raw = (raw[:release.end()] + f'{indent}ndk {{ debugSymbolLevel = "SYMBOL_TABLE" }}\n' + raw[release.end():])
+    return raw[:android.end()] + f'    ndkVersion = "{ANDROID_NDK_VERSION}"\n' + raw[android.end():]
+
+
 def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None:
     gradle_file = project_dir / "app" / "build.gradle.kts"
     if not gradle_file.exists():
@@ -2582,6 +2604,7 @@ def _configure_android_app_gradle(frontend_dir: Path, project_dir: Path) -> None
     raw = re.sub(r'versionName\s*=\s*"[^"]+"', f'versionName = "{version_name}"', raw)
     if "org.jetbrains.kotlin.gradle.dsl.JvmTarget" not in raw:
         raw = 'import org.jetbrains.kotlin.gradle.dsl.JvmTarget\n\n' + raw
+    raw = _configure_android_native_symbols(raw)
     raw = re.sub(
         r"\n\s*kotlinOptions\s*\{\s*\n\s*jvmTarget\s*=\s*\"17\"\s*\n\s*\}\n",
         "\n    kotlin {\n        compilerOptions {\n            jvmTarget.set(JvmTarget.JVM_17)\n        }\n    }\n",

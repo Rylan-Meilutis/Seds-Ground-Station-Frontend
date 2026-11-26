@@ -63,12 +63,14 @@ class AndroidManifestContract(unittest.TestCase):
             project = Path(temp)
             (project / "app").mkdir()
             gradle = project / "app/build.gradle.kts"
-            gradle.write_text('android {\n    compileSdk = 34\n    minSdk = 24\n    targetSdk = 34\n}\ndependencies {\n}\n')
+            gradle.write_text('android {\n    compileSdk = 34\n    minSdk = 24\n    targetSdk = 34\n'
+                              '    buildTypes {\n        getByName("release") {\n        }\n    }\n}\ndependencies {\n}\n')
             for _ in range(2):
                 build._configure_android_app_gradle(ROOT, project)
             raw = gradle.read_text()
             self.assertEqual(raw.count('implementation("com.google.android.gms:play-services-location:21.3.0")'), 1)
             self.assertEqual(raw.count("play-services-wearable"), 1)
+            self.assertEqual(raw.count('debugSymbolLevel = "SYMBOL_TABLE"'), 1)
 
 
 class ApplePlistContract(unittest.TestCase):

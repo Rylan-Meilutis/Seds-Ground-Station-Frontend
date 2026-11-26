@@ -13,7 +13,12 @@ later. For every 64-bit native library (arm64-v8a, x86_64) this checks:
 devices with 16 KB pages are 64-bit only. In an AAB the zip offsets do not
 matter, since Play builds the device APKs itself.
 
-Usage: check_android_alignment.py [--require-native] FILE.apk|FILE.aab ...
+With --release it also checks the release packaging of native code: no
+library ships `.debug_*` sections (AGP stripped it), and an AAB carries each
+library's symbol table under BUNDLE-METADATA/com.android.tools.build.debugsymbols/
+(`ndk.debugSymbolLevel = "SYMBOL_TABLE"`), which Play uses for crash reports.
+
+Usage: check_android_alignment.py [--require-native] [--release] FILE.apk|FILE.aab ...
 Exit status 1 if any library fails, or if --require-native finds no native
 library at all (an armeabi-v7a-only APK has no 64-bit library to check).
 """
@@ -27,6 +32,7 @@ PAGE = 16 * 1024
 ABIS_64 = {"arm64-v8a", "x86_64"}
 ABIS_32 = {"armeabi-v7a", "x86"}
 PT_LOAD = 1
+SYMBOLS = "BUNDLE-METADATA/com.android.tools.build.debugsymbols"
 
 
 def native_abi(name, bundle):
@@ -68,6 +74,36 @@ def load_alignments(data):
     return aligns
 
 
+def section_names(data):
+    """Names of every section of an ELF image (empty when it has none)."""
+    wide = data[4] == 2
+    order = "<" if data[5] == 1 else ">"
+    if wide:
+        shoff, = struct.unpack_from(order + "Q", data, 40)
+        shentsize, shnum, shstrndx = struct.unpack_from(order + "HHH", data, 58)
+        offset_at, field = 24, "Q"
+    else:
+        shoff, = struct.unpack_from(order + "I", data, 32)
+        shentsize, shnum, shstrndx = struct.unpack_from(order + "HHH", data, 46)
+        offset_at, field = 16, "I"
+    if shoff == 0 or shnum == 0:
+        return []
+    if shstrndx >= shnum or shoff + shnum * shentsize > len(data):
+        raise ValueError("truncated section headers")
+    def header(index):
+        entry = shoff + index * shentsize
+        name, = struct.unpack_from(order + "I", data, entry)
+        offset, size = struct.unpack_from(order + field * 2, data, entry + offset_at)
+        return name, offset, size
+    _name, strings, strings_size = header(shstrndx)
+    table = data[strings:strings + strings_size]
+    names = []
+    for index in range(shnum):
+        name = header(index)[0]
+        names.append(table[name:table.find(b"\0", name)].decode("ascii", "replace"))
+    return names
+
+
 def data_offset(archive, info):
     """Offset of an entry's data, from its local file header."""
     archive.fp.seek(info.header_offset)
@@ -78,12 +114,13 @@ def data_offset(archive, info):
     return info.header_offset + 30 + name_length + extra_length
 
 
-def check(path):
+def check(path, release=False):
     """(problems, notes, native library count) for one APK or AAB."""
     path = Path(path)
     bundle = path.suffix.lower() == ".aab"
     problems, notes, count = [], [], 0
     with zipfile.ZipFile(path) as archive:
+        names = set(archive.namelist())
         for info in archive.infolist():
             abi = native_abi(info.filename, bundle)
             if abi is None:
@@ -91,10 +128,19 @@ def check(path):
             label = f"{path.name}:{info.filename}"
             count += 1
             try:
-                aligns = load_alignments(archive.read(info))
+                data = archive.read(info)
+                aligns = load_alignments(data)
+                debug = [n for n in section_names(data) if n.startswith(".debug_")] if release else []
             except ValueError as error:
                 problems.append(f"{label}: {error}")
                 continue
+            if debug:
+                problems.append(f"{label}: not stripped, has {', '.join(debug[:3])}"
+                                + (" ..." if len(debug) > 3 else "") + " (release libraries must be stripped)")
+            library = PurePosixPath(info.filename).name
+            if release and bundle and not ({f"{SYMBOLS}/{abi}/{library}.sym", f"{SYMBOLS}/{abi}/{library}.dbg"} & names):
+                problems.append(f"{label}: no native debug symbols in {SYMBOLS}/{abi}/ "
+                                '(ndk.debugSymbolLevel = "SYMBOL_TABLE")')
             low = min(aligns)
             if abi in ABIS_32:
                 notes.append(f"{label}: 32-bit, LOAD alignment {low:#x} (not required)")
@@ -120,11 +166,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--require-native", action="store_true",
                         help="fail when a package has no native library")
+    parser.add_argument("--release", action="store_true",
+                        help="also require stripped libraries and, in an AAB, native debug symbols")
     parser.add_argument("packages", nargs="+", type=Path)
     args = parser.parse_args(argv)
     failed = False
     for package in args.packages:
-        problems, notes, count = check(package)
+        problems, notes, count = check(package, release=args.release)
         for line in notes:
             print(line)
         if args.require_native and count == 0:
@@ -133,7 +181,9 @@ def main(argv=None):
             print(f"error: {line}", file=sys.stderr)
         failed = failed or bool(problems)
         print(f"{package.name}: {count} native libraries, "
-              + ("NOT 16 KB page compatible" if problems else "16 KB page compatible"))
+              + ("FAILED" if problems else "16 KB page compatible"
+                 + (", stripped" + (", debug symbols included" if package.suffix.lower() == ".aab" else "")
+                    if args.release else "")))
     return 1 if failed else 0
 
 

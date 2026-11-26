@@ -33,6 +33,28 @@ def elf(p_align, wide=True, loads=2):
     return header + entry(6, 8) + b"".join(entry(1, p_align) for _ in range(loads))
 
 
+def with_sections(data, names):
+    """A 64-bit ELF image with section headers for `names` plus .shstrtab."""
+    names = list(names) + [".shstrtab"]
+    table, offsets = b"\0", []
+    for name in names:
+        offsets.append(len(table))
+        table += name.encode() + b"\0"
+    strings_at = len(data)
+    body = data + table
+    body += bytes(-len(body) % 8)
+    shoff = len(body)
+    headers = bytes(64)  # SHT_NULL
+    for index, name in enumerate(names):
+        last = index == len(names) - 1
+        headers += struct.pack("<IIQQQQIIQQ", offsets[index], 3 if last else 1, 0, 0,
+                               strings_at if last else 0, len(table) if last else 0, 0, 0, 1, 0)
+    image = bytearray(body + headers)
+    struct.pack_into("<Q", image, 40, shoff)
+    struct.pack_into("<HHH", image, 58, 64, len(names) + 1, len(names))
+    return bytes(image)
+
+
 def package(path, entries):
     """entries: (name, data, stored, data_alignment or None)."""
     with zipfile.ZipFile(path, "w") as archive:
@@ -87,7 +109,7 @@ class AndroidAlignmentTests(unittest.TestCase):
         self.assertIn("max-page-size=16384", problems[0])
         code, out, err = self.run_main(apk)
         self.assertEqual(code, 1)
-        self.assertIn("NOT 16 KB page compatible", out)
+        self.assertIn("FAILED", out)
         self.assertIn("error:", err)
 
     def test_stored_library_off_a_16k_boundary_fails_in_apk_only(self):
@@ -109,6 +131,37 @@ class AndroidAlignmentTests(unittest.TestCase):
         apk = package(self.root / "armv7.apk", [("lib/armeabi-v7a/libmain.so", elf(0x1000, wide=False), True, 0x1000)])
         self.assertEqual(align.check(apk)[0::2], ([], 1))
         self.assertEqual(self.run_main("--require-native", apk)[0], 0)
+
+    def test_section_names(self):
+        self.assertEqual(align.section_names(elf(0x4000)), [])
+        stripped = with_sections(elf(0x4000), [".text", ".dynsym"])
+        self.assertEqual(align.section_names(stripped), ["", ".text", ".dynsym", ".shstrtab"])
+        with self.assertRaises(ValueError):
+            align.section_names(stripped[:len(stripped) - 10])
+
+    def test_release_needs_stripped_libraries_and_aab_debug_symbols(self):
+        stripped = with_sections(elf(0x4000), [".text", ".dynsym"])
+        debug = with_sections(elf(0x4000), [".text", ".debug_info", ".debug_line", ".symtab"])
+        sym = "BUNDLE-METADATA/com.android.tools.build.debugsymbols/arm64-v8a/libmain.so.sym"
+        good_aab = package(self.root / "good.aab", [("base/lib/arm64-v8a/libmain.so", stripped, False, None),
+                                                     (sym, b"symbols", False, None)])
+        good_apk = package(self.root / "good.apk", [("lib/arm64-v8a/libmain.so", stripped, True, 0x4000)])
+        self.assertEqual(align.check(good_aab, release=True)[0], [])
+        self.assertEqual(align.check(good_apk, release=True)[0], [])
+        code, out, _ = self.run_main("--require-native", "--release", good_aab)
+        self.assertEqual(code, 0)
+        self.assertIn("stripped, debug symbols included", out)
+        # Build 38: an unstripped libmain.so and no symbol metadata.
+        no_symbols = package(self.root / "nosym.aab", [("base/lib/arm64-v8a/libmain.so", stripped, False, None)])
+        self.assertIn("SYMBOL_TABLE", align.check(no_symbols, release=True)[0][0])
+        unstripped = package(self.root / "debug.apk", [("lib/arm64-v8a/libmain.so", debug, True, 0x4000)])
+        problems = align.check(unstripped, release=True)[0]
+        self.assertEqual(len(problems), 1)
+        self.assertIn(".debug_info, .debug_line", problems[0])
+        # Debug builds keep symbols: only --release looks.
+        self.assertEqual(align.check(unstripped)[0], [])
+        self.assertEqual(align.check(no_symbols)[0], [])
+        self.assertEqual(self.run_main("--release", unstripped)[0], 1)
 
     def test_require_native_and_entry_paths(self):
         empty = package(self.root / "wear.apk", [("assets/x.so", b"data", True, None)])
@@ -135,6 +188,39 @@ class AndroidAlignmentTests(unittest.TestCase):
             for packages, native in [([bad], True), ([good, bad], True), ([wear], True), ([], False)]:
                 with self.subTest(packages=[p.name for p in packages]), self.assertRaises(RuntimeError):
                     ci.android_page_alignment(packages, require_native=native)
+
+    def test_release_gradle_pins_ndk_and_ships_symbol_tables(self):
+        build_spec = importlib.util.spec_from_file_location("build_symbols", ROOT / "build.py")
+        build = importlib.util.module_from_spec(build_spec)
+        sys.modules[build_spec.name] = build
+        build_spec.loader.exec_module(build)
+        # Same NDK as the CI installs, so AGP can strip and extract symbols.
+        self.assertEqual(build.ANDROID_NDK_VERSION, "28.2.13676358")
+        for path in [".github/workflows/platforms.yml", ".github/workflows/release.yml",
+                     "scripts/ci/gitlab_docker_prereqs.sh", "Dockerfile.builder"]:
+            self.assertIn(build.ANDROID_NDK_VERSION, (ROOT / path).read_text(), path)
+        # Shape of the Dioxus 0.7.10 template (assets/android/gen/app/build.gradle.kts.hbs).
+        template = ('plugins {\n    id("com.android.application")\n}\n\nandroid {\n    namespace="x"\n'
+                    '    compileSdk = 36\n    buildTypes {\n        getByName("debug") {\n'
+                    '            isDebuggable = true\n        }\n        getByName("release") {\n'
+                    '            isMinifyEnabled = true\n        }\n    }\n}\n')
+        out = build._configure_android_native_symbols(template)
+        self.assertEqual(build._configure_android_native_symbols(out), out, "idempotent")
+        self.assertIn('android {\n    ndkVersion = "28.2.13676358"\n', out)
+        release = out[out.index('getByName("release")'):]
+        self.assertTrue(release.startswith('getByName("release") {\n            ndk { debugSymbolLevel = "SYMBOL_TABLE" }\n'))
+        self.assertNotIn("debugSymbolLevel", out[:out.index('getByName("release")')], "release only")
+        self.assertEqual(out.count("ndkVersion"), 1)
+        with self.assertRaises(RuntimeError):
+            build._configure_android_native_symbols("android {\n}\n")
+
+    def test_back_button_keeps_key_events_under_target_36(self):
+        # Android 16 with targetSdk 36 enables predictive back and stops
+        # sending KEYCODE_BACK, which WryActivity handles; opt out for now.
+        import xml.etree.ElementTree as ET
+        android = "{http://schemas.android.com/apk/res/android}"
+        root = ET.parse(ROOT / "platform/android/AndroidManifest.xml").getroot()
+        self.assertEqual(root.find("application").get(android + "enableOnBackInvokedCallback"), "false")
 
     def test_build_links_android_libraries_for_16k_pages(self):
         build_spec = importlib.util.spec_from_file_location("build_alignment", ROOT / "build.py")

@@ -576,7 +576,7 @@ class ReleaseDriver(unittest.TestCase):
                      patch.dict(os.environ, env, clear=True), contextlib.redirect_stdout(io.StringIO()):
                     if ok:
                         ci.verify_android_release("android")
-                        alignment.assert_called_once_with([apk], require_native=True)
+                        alignment.assert_called_once_with([apk], require_native=True, release=True)
                     else:
                         with self.assertRaises(RuntimeError):
                             ci.verify_android_release("android")

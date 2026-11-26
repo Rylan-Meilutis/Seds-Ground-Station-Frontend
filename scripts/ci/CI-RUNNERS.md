@@ -10,6 +10,8 @@ Android release builds must support 16 KB memory pages (Google Play, apps target
 
 The phone app compiles against API 36 (Play's target requirement) with the Android Gradle plugin from the Dioxus 0.7.10 template, AGP 8.7.0, which was tested only up to 35 and otherwise prints a fatal "We recommend using a newer Android Gradle plugin" warning. `build.py` writes `android.suppressUnsupportedCompileSdk=36` into the generated `gradle.properties`; the build itself was verified at API 36 on CI. Remove it once the template's AGP supports 36.
 
+`build.py` also pins the generated app's `ndkVersion` to the same r28c and sets `ndk { debugSymbolLevel = "SYMBOL_TABLE" }` on the release build type. Before, AGP looked for its own default NDK (27.0.12077973), found none and silently skipped stripping: build 38 shipped an 84 MB `libmain.so` with `.symtab`/`.debug_*` and no symbols for Play. Android release builds now fail `check_android_alignment.py --release` if a library has `.debug_*` sections or the AAB lacks `BUNDLE-METADATA/com.android.tools.build.debugsymbols/<abi>/<lib>.so.sym`. Debug builds keep their symbols. A local release build needs NDK 28.2.13676358 installed (`sdkmanager "ndk;28.2.13676358"`); AGP downloads it itself only when the SDK licences are accepted.
+
 ### GitLab runners (gitlab.rylanswebsite.com, project 80)
 
 The instance has only generic, untagged instance runners: 9 and 10, plus 4,

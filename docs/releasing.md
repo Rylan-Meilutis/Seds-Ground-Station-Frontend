@@ -46,7 +46,13 @@ Store minimums the release checks:
   macos-15-intel; Developer ID notarisation sets no SDK minimum.
 - **Google Play:** target API 36, and 16 KB page support for every 64-bit
   native library (NDK r28c plus `-z max-page-size=16384`). The release APK
-  and the Play AAB both go through `scripts/check_android_alignment.py`.
+  and the Play AAB both go through `scripts/check_android_alignment.py
+  --release`, which also requires stripped native libraries (no `.debug_*`
+  sections) and, in the AAB, their symbol tables under
+  `BUNDLE-METADATA/com.android.tools.build.debugsymbols/` so Play can
+  symbolicate native crashes. The manifest sets
+  `android:enableOnBackInvokedCallback="false"`, so under target 36 the
+  back button still reaches the WebView as before (no predictive back).
 
 Every job runs the same `scripts/ci/frontend.py bootstrap` and `build.py`
 code paths as the build-only CI (`platforms.yml`), with warnings fatal:
