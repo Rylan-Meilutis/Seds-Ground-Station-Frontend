@@ -184,6 +184,16 @@ class ActivityAndStart(unittest.TestCase):
         self.assertIn(f'ANDROID_LOG_TAG: &str = "{smoke.APP_LOG_TAG}"', (ROOT / "src/debug_log.rs").read_text())
 
 
+class NativeMinSdk(unittest.TestCase):
+    def test_native_code_links_for_the_manifest_min_sdk(self):
+        # dx 0.7.10 links for API 28 unless told otherwise; the manifest says 24.
+        import tomllib
+        dioxus = tomllib.loads((ROOT / "Dioxus.toml").read_text())
+        build = (ROOT / "build.py").read_text()
+        self.assertIn('os.environ.get("ANDROID_MIN_SDK", "24")', build)
+        self.assertEqual(dioxus["application"]["android_min_sdk_version"], 24)
+
+
 class Screenshot(unittest.TestCase):
     def test_content_passes_and_blank_fails(self):
         self.assertIsNone(smoke.screenshot_problem(png(True)))
