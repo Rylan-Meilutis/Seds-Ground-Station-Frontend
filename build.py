@@ -2469,7 +2469,7 @@ def _android_signing_settings(frontend_dir: Path) -> dict[str, str]:
 
 def _android_sdk_levels() -> tuple[int, int, int]:
     min_sdk = int(os.environ.get("ANDROID_MIN_SDK", "24").strip() or "24")
-    target_sdk = int(os.environ.get("ANDROID_TARGET_SDK", "35").strip() or "35")
+    target_sdk = int(os.environ.get("ANDROID_TARGET_SDK", "36").strip() or "36")
     compile_sdk = int(os.environ.get("ANDROID_COMPILE_SDK", str(target_sdk)).strip() or str(target_sdk))
     return min_sdk, target_sdk, compile_sdk
 
@@ -6474,7 +6474,7 @@ def print_usage(exit_code: int = 1) -> None:
     print("  ANDROID_KEY_PASSWORD=...          # defaults from macOS Keychain service gs26-android-key-pass")
     print("  ANDROID_KEYSTORE_TYPE=...         # defaults to JKS")
     print("  ANDROID_MIN_SDK=...               # defaults to 24")
-    print("  ANDROID_TARGET_SDK=...            # defaults to 35")
+    print("  ANDROID_TARGET_SDK=...            # defaults to 36")
     print("  ANDROID_COMPILE_SDK=...           # defaults to ANDROID_TARGET_SDK")
     print("")
     print("Development provisioning profile path:")
