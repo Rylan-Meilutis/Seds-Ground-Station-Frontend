@@ -89,9 +89,18 @@ fn tile_cache_root() -> PathBuf {
     std::env::temp_dir().join("gs26-tile-cache")
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Desktop only: `--fullscreen` on the command line.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android", target_os = "ios")))]
 fn launch_fullscreen_requested() -> bool {
     std::env::args().skip(1).any(|arg| arg == "--fullscreen")
+}
+
+/// Android and iOS load the app as a library with no command line of its own.
+/// Reading `std::env::args` there crashed the Android app at startup (SIGSEGV
+/// in `args_os`), so the arguments are never read on mobile.
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn launch_fullscreen_requested() -> bool {
+    false
 }
 
 #[cfg(not(target_arch = "wasm32"))]

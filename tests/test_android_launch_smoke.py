@@ -194,6 +194,25 @@ class NativeMinSdk(unittest.TestCase):
         self.assertEqual(dioxus["application"]["android_min_sdk_version"], 24)
 
 
+class MobileLaunchArguments(unittest.TestCase):
+    def test_mobile_never_reads_process_arguments(self):
+        # std::env::args crashed the Android app at startup (SIGSEGV in
+        # args_os): Android and iOS load the app as a library with no command
+        # line of its own. Every read of them must be gated to desktop.
+        import re
+        for path in sorted((ROOT / "src").rglob("*.rs")):
+            text = path.read_text()
+            for match in re.finditer(r"std::env::args", text):
+                head = text[: match.start()]
+                fn_start = head.rfind("\nfn ") if head.rfind("\nfn ") > head.rfind("\npub(crate) fn ") else head.rfind("\npub(crate) fn ")
+                attrs = head[max(0, fn_start - 300) : fn_start]
+                cfg = attrs[attrs.rfind("#[cfg(") :] if "#[cfg(" in attrs else ""
+                with self.subTest(file=str(path.relative_to(ROOT))):
+                    self.assertIn('target_os = "android"', cfg, "process arguments read without a desktop-only cfg")
+                    self.assertIn('target_os = "ios"', cfg)
+                    self.assertTrue(cfg.startswith("#[cfg(not("), cfg)
+
+
 class Screenshot(unittest.TestCase):
     def test_content_passes_and_blank_fails(self):
         self.assertIsNone(smoke.screenshot_problem(png(True)))
