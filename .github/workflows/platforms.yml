@@ -28,7 +28,9 @@ jobs:
     timeout-minutes: 120
     strategy:
       fail-fast: false
-      max-parallel: 4
+      # GitHub's own per-account limits (20 jobs, 5 macOS for a public repo)
+      # do the throttling; at 4 the 34 builds queued for hours.
+      max-parallel: 20
       matrix:
         target:
         - web

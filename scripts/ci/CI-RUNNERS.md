@@ -22,8 +22,8 @@ A build can succeed and the app still not start, so `platforms.yml` job `android
 |---|---|
 | `android_sim` debug, API 36 | the debug path (unstripped, no R8) |
 | `android_sim` release, API 36 | the store path: R8, stripping, symbol extraction, bundletool universal APK |
-| `android_sim` release, API 24 | minSdk: native code that needs newer libc than the manifest allows fails here. Release only, to keep the cost down. The render log line is required, the screenshot is kept but not judged (`--no-screen-check`): the image's built-in WebView is years older than what real Android 7 devices get through Play |
-| `wearos_sim` release, API 34 Wear image | the Wear OS app (Kotlin only, so no render log line; the screenshot still has to show content) |
+| `android_sim` release, API 24, `default` image, 2 GB RAM | minSdk: native code that needs newer libc or newer Android APIs than the manifest allows fails here. Release only, to keep the cost down. The image's built-in WebView (52) is years older than what real Android 7 devices get through Play and cannot run the page, so only the launch log line is required (`--require-launch-log --no-screen-check`). With 4 GB the image never finishes booting |
+| `wearos_sim` debug, API 34 Wear image | the Wear OS app (Kotlin only, so no render log line; the screenshot still has to show content). Debug, because the release Wear APK is unsigned in this workflow and will not install |
 
 The runtime permissions are granted at install (`adb install -g`), so a permission dialog does not cover the activity; refusing permissions is not covered. Emulator output stays out of the build step's warning gate; the build steps themselves keep warnings fatal. `release.yml` repeats the API 36 release launch from the tag's commit as `android-launch` (no secrets: it signs with the CI development key) and `publish`, `dry-run` and `play` wait for it. Hosted arm64 runners expose no KVM and macOS runners no nested virtualisation, so the arm64 store APK itself is not launched; the x86_64 build goes through the same Rust, Gradle and packaging code.
 
