@@ -52,7 +52,8 @@ class PlatformCI(unittest.TestCase):
 
     def test_github_native_runner_bindings(self):
         matrix = self.github["jobs"]["build"]["strategy"]["matrix"]
-        self.assertEqual(matrix["include"], [{"target": p["target"], "runner": p["github"]} for p in ci.PLATFORMS])
+        self.assertEqual(matrix["include"], [{"target": p["target"], "runner": p["github"], "deps_cache": p["deps_cache"]}
+                                             for p in ci.PLATFORMS])
         self.assertEqual(self.github["jobs"]["build"]["runs-on"], "${{ matrix.runner }}")
 
     def test_apple_silicon_targets_build_with_xcode_27(self):
@@ -314,6 +315,13 @@ class PlatformCI(unittest.TestCase):
         self.assertLess(names.index("Pinned frontend tools, warnings fatal"), names.index("Cached compiled dependencies"))
         self.assertLess(names.index("Cached compiled dependencies"), names.index("Actual native target build, warnings fatal"))
         self.assertEqual(step["with"]["shared-key"], "${{ matrix.target }}-${{ matrix.profile }}")
+        # Only where it measurably paid off, release rows only, saved by dev only: the
+        # repository keeps 10 GB of caches and evicts the least recently used.
+        self.assertEqual(step["if"], "matrix.deps_cache && matrix.profile == 'release'")
+        self.assertEqual(step["with"]["save-if"], "${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}")
+        self.assertEqual([p["target"] for p in ci.PLATFORMS if p["deps_cache"]],
+                         ["linux", "linux-arm64", "macos", "macos-intel", "android", "ios_sim_intel", "android_sim",
+                          "watchos_sim_intel"])
         self.assertIs(step["with"]["add-job-id-key"], False)
         release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
         count = 0

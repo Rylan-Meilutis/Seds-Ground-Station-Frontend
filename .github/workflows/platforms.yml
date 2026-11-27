@@ -86,38 +86,55 @@ jobs:
         include:
         - target: web
           runner: ubuntu-24.04
+          deps_cache: false
         - target: linux
           runner: ubuntu-24.04
+          deps_cache: true
         - target: linux-arm64
           runner: ubuntu-24.04-arm
+          deps_cache: true
         - target: windows
           runner: windows-2022
+          deps_cache: false
         - target: macos
           runner: xcode-27
+          deps_cache: true
         - target: macos-intel
           runner: macos-15-intel
+          deps_cache: true
         - target: ios
           runner: xcode-27
+          deps_cache: false
         - target: android
           runner: ubuntu-24.04
+          deps_cache: true
         - target: android-armv7
           runner: ubuntu-24.04
+          deps_cache: false
         - target: watchos
           runner: xcode-27
+          deps_cache: false
         - target: wearos
           runner: ubuntu-24.04
+          deps_cache: false
         - target: ios_sim
           runner: xcode-27
+          deps_cache: false
         - target: ios_sim_intel
           runner: macos-15-intel
+          deps_cache: true
         - target: android_sim
           runner: ubuntu-24.04
+          deps_cache: true
         - target: watchos_sim
           runner: xcode-27
+          deps_cache: false
         - target: watchos_sim_intel
           runner: macos-15-intel
+          deps_cache: true
         - target: wearos_sim
           runner: ubuntu-24.04
+          deps_cache: false
     env:
       CI_FRONTEND_TARGET: ${{ matrix.target }}
       CI_FRONTEND_PROFILE: ${{ matrix.profile }}
@@ -225,16 +242,19 @@ jobs:
       id: bootstrap
       run: python scripts/ci/frontend.py bootstrap
     # Compiled dependencies, not the app's own crates; after bootstrap, which
-    # resolves Cargo.lock and installs the pinned toolchain. Saved on push only.
+    # resolves Cargo.lock and installs the pinned toolchain. Only release rows
+    # of the targets where it saved 2.5+ minutes (platforms.json "deps_cache"),
+    # so the repository's 10 GB of caches holds them, dx and Gradle without
+    # evicting anything. Saved by dev pushes only; main keeps just dx and Gradle.
     - name: Cached compiled dependencies
-      if: ${{ !startsWith(matrix.target, 'wearos') }}
+      if: matrix.deps_cache && matrix.profile == 'release'
       uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
       with:
         prefix-key: v1-deps
         shared-key: ${{ matrix.target }}-${{ matrix.profile }}
         add-job-id-key: false
         cache-bin: false
-        save-if: ${{ github.event_name == 'push' }}
+        save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
     # Release rows save, so debug and release never race for the same key.
     - name: Save the dx build tool
       if: github.event_name == 'push' && matrix.profile == 'release' && steps.bootstrap.outputs.dx-built == 'true'

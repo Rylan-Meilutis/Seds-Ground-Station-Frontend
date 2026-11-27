@@ -266,7 +266,8 @@ class CacheContract(unittest.TestCase):
                 if uses.startswith("Swatinem/rust-cache@"):
                     # Compiled dependencies: platform CI saves on push, nothing else saves.
                     self.assertEqual(step["with"]["save-if"],
-                                     "${{ github.event_name == 'push' }}" if path.name == "platforms.yml" else False)
+                                     "${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}"
+                                     if path.name == "platforms.yml" else False)
                     self.assertIs(step["with"]["cache-bin"], False)
                     continue
                 # setup-java/-node/-python (and gradle's own action) can restore caches too.
