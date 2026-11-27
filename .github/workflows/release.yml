@@ -154,6 +154,8 @@ jobs:
         add-job-id-key: false
         cache-bin: false
         save-if: false
+    - name: Fetch the current lock over the restored registry
+      run: python scripts/ci/frontend.py refetch
     - name: Release build, warnings fatal
       run: python scripts/ci/frontend.py release-build
     - name: Stage release assets
@@ -238,6 +240,8 @@ jobs:
         add-job-id-key: false
         cache-bin: false
         save-if: false
+    - name: Fetch the current lock over the restored registry
+      run: python scripts/ci/frontend.py refetch
     - name: Production signing keystore from secrets
       env:
         ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
@@ -330,6 +334,8 @@ jobs:
         add-job-id-key: false
         cache-bin: false
         save-if: false
+    - name: Fetch the current lock over the restored registry
+      run: python scripts/ci/frontend.py refetch
     - name: x86_64 release APK, CI development key, warnings fatal
       run: python scripts/ci/frontend.py build
     - name: Pillow for the screenshot check
@@ -408,6 +414,8 @@ jobs:
         add-job-id-key: false
         cache-bin: false
         save-if: false
+    - name: Fetch the current lock over the restored registry
+      run: python scripts/ci/frontend.py refetch
     - name: Developer ID keychain and notarization profile from secrets
       env:
         MACOS_DEVELOPER_ID_P12_B64: ${{ secrets.MACOS_DEVELOPER_ID_P12_B64 }}
@@ -601,6 +609,9 @@ jobs:
         add-job-id-key: false
         cache-bin: false
         save-if: false
+    - name: Fetch the current lock over the restored registry
+      if: steps.store.outputs.enabled == 'true'
+      run: python scripts/ci/frontend.py refetch
     - name: App Store distribution keychain and profile from secrets
       if: steps.store.outputs.enabled == 'true'
       env:
@@ -704,6 +715,9 @@ jobs:
         add-job-id-key: false
         cache-bin: false
         save-if: false
+    - name: Fetch the current lock over the restored registry
+      if: steps.store.outputs.enabled == 'true'
+      run: python scripts/ci/frontend.py refetch
     - name: Upload keystore from secrets
       if: steps.store.outputs.enabled == 'true'
       env:

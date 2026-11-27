@@ -314,6 +314,10 @@ class PlatformCI(unittest.TestCase):
         self.assertRegex(step["uses"], r"^Swatinem/rust-cache@[0-9a-f]{40}$")
         self.assertLess(names.index("Pinned frontend tools, warnings fatal"), names.index("Cached compiled dependencies"))
         self.assertLess(names.index("Cached compiled dependencies"), names.index("Actual native target build, warnings fatal"))
+        # The cache restores Cargo's registry index as saved, which can predate the
+        # lock bootstrap resolved (cc 1.12.0 in hosted run 45950452142): fetch again.
+        refetch = job["steps"][names.index("Cached compiled dependencies") + 1]
+        self.assertEqual((refetch["run"], refetch["if"]), ("python scripts/ci/frontend.py refetch", step["if"]))
         self.assertEqual(step["with"]["shared-key"], "${{ matrix.target }}-${{ matrix.profile }}")
         # Only where it measurably paid off, release rows only, saved by dev only: the
         # repository keeps 10 GB of caches and evicts the least recently used.
@@ -336,10 +340,19 @@ class PlatformCI(unittest.TestCase):
                                      {"prefix-key": step["with"]["prefix-key"], "add-job-id-key": False, "save-if": False}, name)
                     self.assertEqual(after["with"]["shared-key"], "${{ env.CI_FRONTEND_TARGET }}-release", name)
                     self.assertEqual(after.get("if"), s.get("if"), name)
+                    refetch = steps[i + 2]
+                    self.assertEqual((refetch["run"], refetch.get("if")), ("python scripts/ci/frontend.py refetch", s.get("if")), name)
         self.assertEqual(count, 6)
         # The key hashes CARGO_*/RUST* step env; both workflows must agree.
         self.assertEqual({k: v for k, v in job["env"].items() if k.startswith(("CARGO_", "RUST"))},
                          {k: v for k, v in release["env"].items() if k.startswith(("CARGO_", "RUST"))})
+
+    def test_refetch_fetches_the_current_lock_with_its_own_receipt(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
+             patch.object(ci, "checked") as checked, patch.object(sys, "argv", ["frontend.py", "refetch"]):
+            ci.main()
+        argv, _env, label = checked.call_args.args
+        self.assertEqual((argv, label), (["cargo", "fetch", "--locked"], "application-refetch"))
 
     def test_dx_cache_is_build_only_ci_keyed_by_host_and_target(self):
         job = self.github["jobs"]["build"]

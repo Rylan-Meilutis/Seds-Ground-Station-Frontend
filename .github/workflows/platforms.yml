@@ -255,6 +255,9 @@ jobs:
         add-job-id-key: false
         cache-bin: false
         save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/dev' }}
+    - name: Fetch the current lock over the restored registry
+      if: matrix.deps_cache && matrix.profile == 'release'
+      run: python scripts/ci/frontend.py refetch
     # Release rows save, so debug and release never race for the same key.
     - name: Save the dx build tool
       if: github.event_name == 'push' && matrix.profile == 'release' && steps.bootstrap.outputs.dx-built == 'true'

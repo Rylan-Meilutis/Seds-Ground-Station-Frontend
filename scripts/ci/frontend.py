@@ -340,10 +340,10 @@ def checked_gradle_build(argv, env, label, **options):
             time.sleep(delay)
 
 
-def fetch_application(env):
+def fetch_application(env, label="application-fetch"):
     """Require a clean fetch, or verify an SSL-recovered fetch fully offline."""
     try:
-        checked(["cargo", "fetch", "--locked"], env, "application-fetch")
+        checked(["cargo", "fetch", "--locked"], env, label)
     except CommandFailure as failure:
         if (failure.result != 0 or not failure.warnings
                 or not all(CARGO_FETCH_TRANSIENT.fullmatch(line) for line in failure.warnings)):
@@ -351,7 +351,7 @@ def fetch_application(env):
         # Keep the initial log/receipt unchanged. No second network attempt and
         # no warning exemption in the verification or subsequent build steps.
         checked(["cargo", "fetch", "--locked", "--offline"], env,
-                "application-fetch-offline-verification")
+                label + "-offline-verification")
 
 
 def ci_env():
@@ -2144,7 +2144,7 @@ def store_promote(name, tag):
 def main():
     configure_utf8_console()
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=["bootstrap", "build", "release-version", "release-guard",
+    parser.add_argument("action", choices=["bootstrap", "refetch", "build", "release-version", "release-guard",
                                            "release-android-signing", "release-macos-signing", "release-ios-signing",
                                            "release-build", "release-verify", "release-stage", "release-checksums",
                                            "release-store-check", "release-store-build", "release-store-verify",
@@ -2166,6 +2166,12 @@ def main():
             parser.error(f"{args.action} needs --tag or RELEASE_TAG")
     if args.action == "bootstrap":
         bootstrap(args.target)
+    elif args.action == "refetch":
+        # The dependency cache restores Cargo's registry index as it was when
+        # the cache was saved, which can be older than the lock bootstrap just
+        # resolved; the build then runs offline and cannot find newer crates.
+        # Fetch the current lock again over the restored registry.
+        fetch_application(ci_env(), "application-refetch")
     elif args.action == "build":
         run(args.target, args.profile)
     elif args.action == "release-version":
