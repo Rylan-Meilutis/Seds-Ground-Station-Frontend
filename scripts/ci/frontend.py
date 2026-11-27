@@ -143,6 +143,7 @@ COMPILER_ERROR = re.compile(r"^(?:error(?:\[E[0-9]+\])?: |e: (?:file:|/))|could 
 # Waits before each further attempt of a build that could not download. Maven
 # Central has refused a hosted runner for longer than five minutes.
 DEPENDENCY_RETRY_DELAYS = (60, 240, 600, 900)
+MAVEN_CENTRAL_MIRROR_SCRIPT = Path(__file__).resolve().parent / "maven-central-mirror.gradle"
 
 
 def transient_dependency_failures(text):
@@ -310,12 +311,25 @@ def checked(argv, env, label, *, dioxus_progress=False, android_upstream_r8=Fals
         raise CommandFailure(label, result, warnings)
 
 
+def install_maven_central_mirror():
+    """Route the CI Gradle home's Maven Central requests to Google's mirror.
+
+    Maven Central has refused a hosted runner (HTTP 429) through every
+    dependency retry, about 30 minutes in all; the mirror serves the same files.
+    build.py always builds with ROOT/.gradle-user-home, and Gradle reads every
+    init script in its init.d before evaluating any build."""
+    init_d = ROOT / ".gradle-user-home" / "init.d"
+    init_d.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(MAVEN_CENTRAL_MIRROR_SCRIPT, init_d / MAVEN_CENTRAL_MIRROR_SCRIPT.name)
+
+
 def checked_gradle_build(argv, env, label, **options):
     """`checked`, repeated (bounded) only after a transient dependency download.
 
     A warning in any attempt, or a failure with any other root cause, is final
     at once. Each attempt keeps its own log and receipt; a retry's receipt and
     `<label>-dependency-retries.json` name the failures it follows."""
+    install_maven_central_mirror()
     retries = []
     for attempt in range(1, len(DEPENDENCY_RETRY_DELAYS) + 2):
         current = label if attempt == 1 else f"{label}-dependency-retry-{attempt - 1}"

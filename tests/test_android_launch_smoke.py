@@ -289,6 +289,7 @@ class EmulatorDriver(unittest.TestCase):
             ("shell", "getprop", "ro.product.cpu.abi"): "x86_64\n",
             ("shell", "pidof", PKG): f"{APP}\n",
             ("shell", "dumpsys", "activity", "activities"): RESUMED_36,
+            ("shell", "settings", "get", "system", "screen_off_timeout"): "60000\n",
         }
         calls = []
 
@@ -328,6 +329,15 @@ class EmulatorDriver(unittest.TestCase):
             self.assertLess(calls.index(("shell", "dumpsys", "battery", "unplug")),
                             calls.index(("shell", "am", "start", "-W", "-n", COMPONENT)))
             self.assertIn(("shell", "dumpsys", "battery", "reset"), calls)
+            # The display stays awake through the check (API 24 slept after a minute).
+            self.assertLess(calls.index(("shell", "settings", "put", "system", "screen_off_timeout",
+                                         str(smoke.SCREEN_AWAKE_MS))),
+                            calls.index(("shell", "am", "start", "-W", "-n", COMPONENT)))
+            self.assertLess(calls.index(("shell", "input", "keyevent", "224")),
+                            calls.index(("shell", "am", "start", "-W", "-n", COMPONENT)))
+            # ...and gets its own timeout back afterwards.
+            self.assertGreater(calls.index(("shell", "settings", "put", "system", "screen_off_timeout", "60000")),
+                               calls.index(("shell", "am", "start", "-W", "-n", COMPONENT)))
 
     def test_a_font_size_change_must_keep_the_process(self):
         healthy = "\n".join([START, RENDERED])
@@ -336,7 +346,7 @@ class EmulatorDriver(unittest.TestCase):
 
             def fake(args, capture_output, timeout):
                 key = tuple(args[1:])
-                if key[:4] == ("shell", "settings", "put", "system"):
+                if key[:5] == ("shell", "settings", "put", "system", "font_scale"):
                     state["scaled"] = True
                 if key[:3] == ("shell", "am", "start"):
                     out = AM_OK

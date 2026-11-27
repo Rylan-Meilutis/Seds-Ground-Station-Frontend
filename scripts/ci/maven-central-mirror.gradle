@@ -1,0 +1,24 @@
+// Gradle init script. scripts/ci/frontend.py copies it into the CI Gradle
+// home (.gradle-user-home/init.d) before every Android or Wear OS build;
+// a plain local build.py run does not install it.
+//
+// Maven Central refuses hosted CI runners with HTTP 429 for long stretches;
+// resolve Central artifacts from Google's mirror of it instead.
+def central = ~/^https?:\/\/repo1?\.maven(?:\.apache)?\.org\/maven2\/?$/
+def mirror = 'https://maven-central.storage-download.googleapis.com/maven2/'
+def redirect = { repos ->
+    repos.withType(MavenArtifactRepository).configureEach { repo ->
+        if (repo.url.toString() ==~ central) {
+            repo.url = mirror
+        }
+    }
+}
+beforeSettings { settings ->
+    redirect(settings.pluginManagement.repositories)
+    redirect(settings.buildscript.repositories)
+    redirect(settings.dependencyResolutionManagement.repositories)
+}
+allprojects {
+    redirect(buildscript.repositories)
+    redirect(repositories)
+}

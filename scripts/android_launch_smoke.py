@@ -49,6 +49,9 @@ LOGCAT_LINE = re.compile(r"^\S+\s+\S+\s+(\d+)\s+(\d+)\s+([VDIWEFA])\s+(.*?)\s*: 
 JAVA_ERROR = re.compile(r"\bjava\.lang\.(\w*Error)\b|\b(UnsatisfiedLinkError)\b")
 NATIVE_SIGNAL = re.compile(r"\b(SIGSEGV|SIGABRT|SIGBUS|SIGILL|SIGFPE|SIGTRAP)\b")
 
+# Longer than install, launch, watch and the font-size change together.
+SCREEN_AWAKE_MS = 30 * 60 * 1000
+
 
 def parse_logcat(text):
     """[(pid, tag, level, message)] for each threadtime line; others are skipped."""
@@ -311,6 +314,11 @@ def main(argv=None):
     sdk = shell("getprop", "ro.build.version.sdk").strip()
     abi = shell("getprop", "ro.product.cpu.abi").strip()
     print(f"Emulator: API {sdk}, {abi}", flush=True)
+    # The check runs about a minute after launch; an older image's screen
+    # timeout would sleep the display first and pause the app (API 24 did).
+    screen_timeout = shell("settings", "get", "system", "screen_off_timeout", check=False).strip()
+    shell("settings", "put", "system", "screen_off_timeout", str(SCREEN_AWAKE_MS), check=False)
+    shell("input", "keyevent", "224", check=False)  # wake the display
     shell("input", "keyevent", "82", check=False)  # dismiss the lock screen
     # Wear OS covers every app with its charging screen while the emulator
     # reports a charger; unplug it (harmless on phones).
@@ -358,6 +366,8 @@ def main(argv=None):
         print(f"screenshot failed: {error}", flush=True)
     dumpsys = shell("dumpsys", "activity", "activities", check=False, timeout=60)
     shell("dumpsys", "battery", "reset", check=False)
+    if screen_timeout.isdigit():
+        shell("settings", "put", "system", "screen_off_timeout", screen_timeout, check=False)
     (args.out / "activities.txt").write_text(dumpsys)
     # One -b per buffer: Android 7 reads "main,system,crash" as a single device name.
     logcat = adb("logcat", "-d", "-b", "main", "-b", "system", "-b", "crash", "-v", "threadtime",

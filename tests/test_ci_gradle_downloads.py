@@ -136,6 +136,29 @@ class Retry(unittest.TestCase):
             summary = Path(directory, "summary").read_text() if Path(directory, "summary").exists() else ""
             return spawn.call_count, [c.args[0] for c in sleep.call_args_list], receipts, raw, summary
 
+    def test_every_gradle_build_reads_maven_central_from_the_mirror(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
+             patch.object(ci, "checked") as build:
+            ci.checked_gradle_build(["python"], os.environ.copy(), "release-android")
+            installed = Path(directory, ".gradle-user-home", "init.d", "maven-central-mirror.gradle")
+            self.assertTrue(installed.is_file())
+            build.assert_called_once()
+        script = ci.MAVEN_CENTRAL_MIRROR_SCRIPT.read_text()
+        self.assertEqual(installed.name, ci.MAVEN_CENTRAL_MIRROR_SCRIPT.name)
+        self.assertIn("'https://maven-central.storage-download.googleapis.com/maven2/'", script)
+        # Plugin, settings, buildscript and project repositories alike.
+        for scope in ["settings.pluginManagement.repositories", "settings.buildscript.repositories",
+                      "settings.dependencyResolutionManagement.repositories",
+                      "redirect(buildscript.repositories)", "redirect(repositories)"]:
+            self.assertIn(scope, script)
+        central = re.search(r"def central = ~/(.*)/$", script, re.MULTILINE).group(1).replace("\\/", "/")
+        for url in ["https://repo.maven.apache.org/maven2/", "https://repo.maven.apache.org/maven2",
+                    "https://repo1.maven.org/maven2/"]:
+            self.assertRegex(url, f"^(?:{central})$")
+        for url in ["https://dl.google.com/dl/android/maven2/", "https://plugins.gradle.org/m2/",
+                    "https://repo.maven.apache.org/maven2/extra/"]:
+            self.assertNotRegex(url, f"^(?:{central})$")
+
     def test_clean_build_records_no_retry(self):
         count, delays, receipts, _, summary = self.build([("ok\n", 0)])
         self.assertEqual((count, delays, summary), (1, [], ""))
