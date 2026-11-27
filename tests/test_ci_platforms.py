@@ -262,7 +262,8 @@ class PlatformCI(unittest.TestCase):
             with patch.object(ci, "checked", side_effect=checked):
                 ci.bootstrap("web")
                 self.assertIn(["cargo", "generate-lockfile"], calls)
-                self.assertIn(["cargo", "+" + ci.RUST, "install", "dioxus-cli", "--version", "=0.7.10"], calls)
+                self.assertIn(["cargo", "+" + ci.RUST, "install", "dioxus-cli", "--version", "=0.7.10",
+                               "--root", str(Path(directory) / ".ci-tools/dx")], calls)
                 wasm.assert_called_once_with(("Linux", "x86_64"), "0.2.130", unittest.mock.ANY)
                 self.assertFalse(any("wasm-bindgen-cli" in argv for argv in calls))
                 self.assertFalse(any("--locked" in argv for argv in calls if argv[:3] == ["cargo", "+" + ci.RUST, "install"]))
@@ -271,6 +272,57 @@ class PlatformCI(unittest.TestCase):
                 calls.clear()
                 ci.bootstrap("web")
                 self.assertNotIn(["cargo", "generate-lockfile"], calls)
+
+    def test_cached_dx_is_used_only_at_the_resolved_version(self):
+        def fake_dx(directory, reported):
+            dx = Path(directory) / ".ci-tools/dx/bin/dx"
+            dx.parent.mkdir(parents=True)
+            dx.write_text(f"#!/bin/sh\nprintf '{reported}\\n'\n")
+            dx.chmod(0o755)
+        for reported, reused in [("dioxus 0.7.10 (57d6794)", True), ("dioxus 0.7.9 (1234567)", False),
+                                 ("dioxus 0.7.100 (1234567)", False), ("", False)]:
+            with self.subTest(reported=reported), tempfile.TemporaryDirectory() as directory, \
+                 patch.object(ci, "ROOT", Path(directory)), patch.object(ci, "checked") as checked:
+                (Path(directory) / "ci-results").mkdir()
+                output = Path(directory) / "github-output"
+                fake_dx(directory, reported)
+                with patch.dict(os.environ, {"GITHUB_OUTPUT": str(output)}):
+                    ci.install_dioxus_cli(("Linux", "x86_64"), "0.7.10", os.environ.copy())
+                self.assertEqual(checked.called, not reused)
+                if not reused:
+                    self.assertFalse((Path(directory) / ".ci-tools/dx/bin/dx").exists(), "a stale dx is removed first")
+                self.assertIn(f"dx-built={'false' if reused else 'true'}", output.read_text())
+                self.assertIn(f"dx-version={ci.RUST}-0.7.10", output.read_text())
+                receipt = json.loads((Path(directory) / "ci-results/dioxus-cli.json").read_text())
+                self.assertEqual(receipt["reused_from_cache"], reused)
+
+    def test_dx_cache_is_build_only_ci_keyed_by_host_and_target(self):
+        job = self.github["jobs"]["build"]
+        names = [s.get("name") for s in job["steps"]]
+        restore = job["steps"][names.index("Cached dx build tool")]
+        save = job["steps"][names.index("Save the dx build tool")]
+        bootstrap = names.index("Pinned frontend tools, warnings fatal")
+        self.assertLess(names.index("Cached dx build tool"), bootstrap)
+        self.assertLess(bootstrap, names.index("Save the dx build tool"))
+        self.assertEqual(job["steps"][bootstrap]["id"], "bootstrap")
+        prefix = "dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}--"
+        self.assertEqual((restore["with"]["path"], restore["with"]["restore-keys"]), (".ci-tools/dx", prefix))
+        self.assertEqual(save["with"]["key"], prefix + "${{ steps.bootstrap.outputs.dx-version }}")
+        self.assertEqual(save["if"], "github.event_name == 'push' && matrix.profile == 'release' && steps.bootstrap.outputs.dx-built == 'true'")
+        # Prefix matching must not cross targets (android vs android-armv7).
+        targets = [r["target"] for r in ci.PLATFORMS]
+        for a in targets:
+            for b in targets:
+                if a != b:
+                    self.assertFalse(f"{b}--".startswith(f"{a}--"))
+        self.assertNotIn(".ci-tools/dx", (ROOT / ".github/workflows/release.yml").read_text())
+
+    def test_hosted_runners_use_every_core_gitlab_keeps_two(self):
+        self.assertEqual(self.github["jobs"]["build"]["env"]["CI_CARGO_JOBS"], "cores")
+        self.assertEqual(yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())["env"]["CI_CARGO_JOBS"], "cores")
+        with patch.dict(os.environ, {"CI_CARGO_JOBS": "cores"}):
+            self.assertEqual(ci.ci_env()["CARGO_BUILD_JOBS"], str(os.cpu_count()))
+        self.assertNotIn("CI_CARGO_JOBS", (ROOT / ".gitlab-ci.yml").read_text())
 
     def test_wasm_release_pins_cover_all_native_hosts_and_future_abi_fails(self):
         for row in ci.PLATFORMS:

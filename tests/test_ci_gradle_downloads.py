@@ -217,6 +217,9 @@ class CacheContract(unittest.TestCase):
 
     def test_cache_paths_are_exactly_the_download_directories(self):
         steps = [s for s in self.steps(yaml.safe_load((ROOT / ".github/workflows/platforms.yml").read_text())) if "cache" in s.get("uses", "")]
+        # The other cache is the dx CLI (test_ci_platforms.DxCache).
+        self.assertEqual([s["with"]["path"] for s in steps if "gradle" not in s["with"]["path"]], [".ci-tools/dx", ".ci-tools/dx"])
+        steps = [s for s in steps if "gradle" in s["with"]["path"]]
         self.assertEqual([s["uses"] for s in steps], ["actions/cache/restore@v4", "actions/cache/save@v4"])
         for step in steps:
             self.assertEqual(step["with"]["path"].split(), self.PATHS)
@@ -244,7 +247,7 @@ class CacheContract(unittest.TestCase):
 
     def test_only_pushes_save_and_pull_requests_never_do(self):
         steps = list(self.steps(yaml.safe_load((ROOT / ".github/workflows/platforms.yml").read_text())))
-        save = next(s for s in steps if s.get("uses", "").startswith("actions/cache/save@"))
+        save = next(s for s in steps if s.get("uses", "").startswith("actions/cache/save@") and "gradle" in s["with"]["path"])
         self.assertTrue(save["if"].startswith("github.event_name == 'push' && "))
         self.assertNotIn("||", re.sub(r"\([^)]*\)", "", save["if"]))
         self.assertNotIn("always()", save["if"])

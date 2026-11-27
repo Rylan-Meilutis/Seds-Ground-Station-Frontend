@@ -362,7 +362,10 @@ def ci_env():
                  or (name.startswith("CARGO_TARGET_") and name.endswith("_RUSTFLAGS"))]
     if overrides:
         raise RuntimeError(f"CI warning flags require a clean runner environment; remove {sorted(overrides)}")
-    env.update({"RUSTUP_TOOLCHAIN": RUST, "CARGO_BUILD_JOBS": "2", "CARGO_INCREMENTAL": "0",
+    # Two by default (the GitLab Docker runners are shared); CI_CARGO_JOBS=cores
+    # lets a dedicated hosted runner use every core it has.
+    jobs = str(os.cpu_count() or 2) if env.get("CI_CARGO_JOBS") == "cores" else "2"
+    env.update({"RUSTUP_TOOLCHAIN": RUST, "CARGO_BUILD_JOBS": jobs, "CARGO_INCREMENTAL": "0",
                 "CARGO_PROFILE_DEV_DEBUG": "0", "CARGO_PROFILE_TEST_DEBUG": "0", "RUSTFLAGS": "-D warnings",
                 "RUSTDOCFLAGS": "-D warnings", "CARGO_TERM_COLOR": "never", "NO_COLOR": "1"})
     # Never forward local deployment credentials into build-only jobs.
@@ -372,7 +375,7 @@ def ci_env():
                            "MACOS_DEVELOPER_ID_", "APPLE_NOTARY_", "APPLE_APP_SPECIFIC_",
                            "IOS_APPSTORE_", "PLAY_SERVICE_ACCOUNT_")) or key in {"APPLE_ID", "APPLE_TEAM_ID"}:
             env.pop(key)
-    bins = [ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
+    bins = [ROOT / ".ci-tools/dx/bin", ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
     # build.py's repo-managed AAB -> universal APK stage consumes this value;
     # dx itself builds the AAB through Gradle and need not read this variable.
@@ -573,6 +576,34 @@ def resolved_tool_versions():
     return versions
 
 
+def install_dioxus_cli(host, version, env):
+    """dx into .ci-tools/dx. Compiling it takes 20-35 minutes, so build-only CI
+    restores a previous copy from the Actions cache; it is used only if it
+    reports exactly the version the application lock resolved, otherwise it is
+    rebuilt. The release workflow never restores it and always builds."""
+    root = ROOT / ".ci-tools/dx"
+    if (ROOT / ".ci-tools").is_symlink() or root.is_symlink():
+        raise RuntimeError("Refusing linked CI tools directory")
+    dx = root / "bin" / ("dx.exe" if host[0] == "Windows" else "dx")
+    reported = ""
+    if dx.is_file():
+        result = subprocess.run([str(dx), "--version"], capture_output=True, text=True, env=env)
+        reported = result.stdout.strip() if result.returncode == 0 else ""
+    reused = re.fullmatch(rf"dioxus {re.escape(version)}(\s.*)?", reported) is not None
+    if not reused:
+        if root.exists():
+            shutil.rmtree(root)
+        # Exact CLI version; it resolves its own dependencies afresh, matching
+        # the app bootstrap policy for published CLI locks with yanked crates.
+        # Explicit selection avoids Cargo's implicit-toolchain warning.
+        checked(["cargo", "+" + RUST, "install", "dioxus-cli", "--version", "=" + version, "--root", str(root)],
+                env, "dioxus-cli")
+    receipt = {"version": version, "reused_from_cache": reused, "reported": reported or None,
+               "binary_sha256": file_sha256(dx) if dx.is_file() else None}
+    (ROOT / "ci-results/dioxus-cli.json").write_text(json.dumps(receipt, indent=2) + "\n")
+    github_file("GITHUB_OUTPUT", {"dx-built": "false" if reused else "true", "dx-version": f"{RUST}-{version}"})
+
+
 def bootstrap(name):
     host = validate_host(name)
     env = ci_env()
@@ -606,10 +637,7 @@ def bootstrap(name):
     receipt.parent.mkdir(exist_ok=True)
     receipt.write_text(json.dumps({"versions": versions,
                                   "lock_sha256": file_sha256(ROOT / "Cargo.lock")}, indent=2) + "\n")
-    # Exact CLI versions; resolve their own dependencies afresh, matching the
-    # app bootstrap policy for published CLI locks containing yanked crates.
-    # Explicit selection avoids Cargo's implicit-toolchain warning during install.
-    checked(["cargo", "+" + RUST, "install", "dioxus-cli", "--version", "=" + versions["dioxus"]], env, "dioxus-cli")
+    install_dioxus_cli(host, versions["dioxus"], env)
     install_wasm_bindgen(host, versions["wasm-bindgen"], env)
     npm = shutil.which("npm")
     checked([npm, "install", "--prefix", str(ROOT / ".ci-tools/node"), "esbuild@0.25.12"], env, "esbuild")

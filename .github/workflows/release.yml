@@ -51,7 +51,8 @@ concurrency:
   cancel-in-progress: false
 env:
   RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-  CARGO_BUILD_JOBS: '2'
+  # Every core of the hosted runner (scripts/ci/frontend.py ci_env).
+  CI_CARGO_JOBS: cores
   CARGO_INCREMENTAL: '0'
 jobs:
   version:

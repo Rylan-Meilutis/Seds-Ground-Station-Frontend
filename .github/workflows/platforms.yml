@@ -91,7 +91,8 @@ jobs:
     env:
       CI_FRONTEND_TARGET: ${{ matrix.target }}
       CI_FRONTEND_PROFILE: ${{ matrix.profile }}
-      CARGO_BUILD_JOBS: '2'
+      # Every core of the hosted runner (scripts/ci/frontend.py ci_env).
+      CI_CARGO_JOBS: cores
       CARGO_INCREMENTAL: '0'
     steps:
     - uses: actions/checkout@v4
@@ -163,8 +164,26 @@ jobs:
           !.gradle-user-home/caches/modules-2/gc.properties
         key: gradle-downloads-${{ startsWith(matrix.target, 'wearos') && 'wearos' || 'android' }}-${{ hashFiles('build.py', 'Cargo.toml', 'watch/wear/**/*.gradle.kts', 'watch/wear/gradle/**') }}
         restore-keys: gradle-downloads-${{ startsWith(matrix.target, 'wearos') && 'wearos' || 'android' }}-
+    # The dx CLI takes 20-35 minutes to compile. bootstrap uses a restored copy
+    # only if it reports the exact version the lock resolved, else rebuilds it.
+    # Build-only CI: the release workflow never restores this cache.
+    - name: Cached dx build tool
+      if: ${{ !startsWith(matrix.target, 'wearos') }}
+      uses: actions/cache/restore@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}--restore-only
+        restore-keys: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}--
     - name: Pinned frontend tools, warnings fatal
+      id: bootstrap
       run: python scripts/ci/frontend.py bootstrap
+    # Release rows save, so debug and release never race for the same key.
+    - name: Save the dx build tool
+      if: github.event_name == 'push' && matrix.profile == 'release' && steps.bootstrap.outputs.dx-built == 'true'
+      uses: actions/cache/save@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}--${{ steps.bootstrap.outputs.dx-version }}
     - name: Actual native target build, warnings fatal
       run: python scripts/ci/frontend.py build
     - name: Save Gradle downloads
