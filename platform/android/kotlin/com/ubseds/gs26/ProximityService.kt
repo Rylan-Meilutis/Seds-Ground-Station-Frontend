@@ -58,6 +58,8 @@ class ProximityService : Service() {
             } else {
                 startForeground(NOTIFICATION_ID, notification)
             }
+            notificationShown = Build.VERSION.SDK_INT < 24 ||
+                getSystemService(NotificationManager::class.java)?.areNotificationsEnabled() == true
         } catch (t: Throwable) {
             Log.w(TAG, "proximity foreground service refused", t)
             stopSelf()
@@ -133,7 +135,26 @@ class ProximityService : Service() {
         }
     }
 
+
+    // Started before the user answered the notification prompt (asked at the
+    // same moment), Android drops this service's notification and never shows
+    // it again. Post it once more on the first fix after notifications are
+    // allowed, so the ongoing notification is always visible while it runs.
+    private var notificationShown = false
+
+    private fun showNotificationOnceAllowed() {
+        if (notificationShown) return
+        val manager = getSystemService(NotificationManager::class.java) ?: return
+        if (Build.VERSION.SDK_INT >= 24 && !manager.areNotificationsEnabled()) return
+        notificationShown = true
+        try {
+            manager.notify(NOTIFICATION_ID, notification(this))
+        } catch (t: Throwable) {
+            Log.w(TAG, "could not post the service notification", t)
+        }
+    }
     private fun forward(location: Location) {
+        showNotificationOnceAllowed()
         try {
             LocationShim.nativeOnLocationUpdate(
                 location.latitude,

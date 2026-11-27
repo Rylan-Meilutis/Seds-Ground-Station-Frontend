@@ -449,13 +449,16 @@ async fn predicted_area() -> Result<(Vec<[f64; 2]>, &'static str, String), Strin
     Ok((polygon, "flight_plan", label))
 }
 
-async fn operator_put(body: Value) -> Result<Status, String> {
-    let owner = super::recording_download::ExportOwner::capture_observer_selected(|| true);
+/// A settings write with the panel's owner: bound to its station and sign-in,
+/// and allowed to write (an observer owner is refused by `put_captured`).
+async fn operator_put(factory: super::station_settings_request::Factory, body: Value) -> Result<Status, String> {
+    let owner = factory.capture();
     super::station_settings_request::put_captured::<_, Status>(SETTINGS_PATH, &body, owner).await
 }
 
 #[component]
 pub(super) fn RecoverySearchPanel(theme: ThemeConfig) -> Element {
+    let factory = super::station_settings_request::use_factory();
     let status = STATUS.read().clone();
     let device = DEVICE.read().clone();
     let local_on = *LOCAL_ON.read();
@@ -623,7 +626,7 @@ pub(super) fn RecoverySearchPanel(theme: ThemeConfig) -> Element {
                                 let text = swath();
                                 run(Box::pin(async move {
                                     let width = parse_swath(&text)?;
-                                    apply_status(operator_put(json!({"swath_width_m": width})).await?);
+                                    apply_status(operator_put(factory, json!({"swath_width_m": width})).await?);
                                     Ok(format!("Swath width set to {width:.0} m."))
                                 }));
                             },
@@ -633,7 +636,7 @@ pub(super) fn RecoverySearchPanel(theme: ThemeConfig) -> Element {
                             style: "padding:4px 10px;border-radius:999px;border:1px solid {theme.button_border};background:none;color:inherit;cursor:pointer;",
                             onclick: move |_| run(Box::pin(async move {
                                 let (polygon, source, label) = predicted_area().await?;
-                                apply_status(operator_put(json!({"target": {"polygon": polygon, "source": source, "label": label}})).await?);
+                                apply_status(operator_put(factory, json!({"target": {"polygon": polygon, "source": source, "label": label}})).await?);
                                 Ok(format!("Search area set from the {}.", source_label(source)))
                             })),
                             "Use predicted landing area"
@@ -642,7 +645,7 @@ pub(super) fn RecoverySearchPanel(theme: ThemeConfig) -> Element {
                             button { r#type: "button", disabled: busy(),
                                 style: "padding:4px 10px;border-radius:999px;border:1px solid {theme.button_border};background:none;color:inherit;cursor:pointer;",
                                 onclick: move |_| run(Box::pin(async move {
-                                    apply_status(operator_put(json!({"target": null})).await?);
+                                    apply_status(operator_put(factory, json!({"target": null})).await?);
                                     Ok("Search area removed.".to_string())
                                 })),
                                 "Remove area"
@@ -686,7 +689,7 @@ pub(super) fn RecoverySearchPanel(theme: ThemeConfig) -> Element {
                 on_confirm: move |_| {
                     confirm_clear.set(false);
                     run(Box::pin(async move {
-                        let owner = super::recording_download::ExportOwner::capture_observer_selected(|| true);
+                        let owner = factory.capture();
                         let s = super::station_settings_request::delete_captured::<Status>(TRACKS_PATH, owner).await?;
                         apply_status(s);
                         Ok("Search tracks cleared.".to_string())

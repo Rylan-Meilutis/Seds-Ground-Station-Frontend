@@ -655,6 +655,9 @@ pub(super) fn ProximityUserSettings(theme: ThemeConfig) -> Element {
 /// read-only for everyone else, with the device list.
 #[component]
 pub(super) fn ProximityAdminSettings(theme: ThemeConfig) -> Element {
+    // A write owner bound to this view's station and sign-in, as the other
+    // station settings use; an observer owner cannot carry a write.
+    let factory = super::station_settings_request::use_factory();
     let status = PROXIMITY_STATUS.read().clone();
     let admin = crate::auth::is_admin();
     let current = status.as_ref().map(|s| s.settings).unwrap_or_default();
@@ -743,7 +746,7 @@ pub(super) fn ProximityAdminSettings(theme: ThemeConfig) -> Element {
                 on_cancel: move |_| confirming.set(false),
                 on_confirm: move |_| {
                     let body = SettingsUpdate::between(&current, &draft.peek());
-                    let owner = super::recording_download::ExportOwner::capture_observer_selected(|| true);
+                    let owner = factory.capture();
                     busy.set(true);
                     spawn(async move {
                         let reply = super::station_settings_request::put_captured::<_, Status>(SETTINGS_PATH, &body, owner).await;

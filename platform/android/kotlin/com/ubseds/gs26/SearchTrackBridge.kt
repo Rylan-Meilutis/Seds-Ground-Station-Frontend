@@ -66,7 +66,12 @@ object SearchTrackBridge {
         }
     }
 
-    private fun askForNotifications(context: Context) {
+    /**
+     * Asks once (Android 13+) for the notification permission, without which
+     * a foreground service's ongoing notification is hidden: the recovery
+     * search and the proximity lock both rely on theirs being seen.
+     */
+    internal fun askForNotifications(context: Context) {
         val activity = context as? Activity ?: return
         val prefs = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         val notificationsGranted = Build.VERSION.SDK_INT < SearchTrackPolicy.SDK_NOTIFICATION_PERMISSION ||

@@ -125,3 +125,29 @@ class ApplePlistContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProximityNotificationPermission(unittest.TestCase):
+    def test_starting_the_service_asks_for_notifications(self):
+        """Android 13+ hides a foreground service's notification without
+        POST_NOTIFICATIONS; the proximity flow never asked for it, so its
+        "Proximity lock" notification was invisible (API 36 emulator)."""
+        root = Path(__file__).resolve().parents[1] / "platform/android/kotlin/com/ubseds/gs26"
+        bridge = (root / "ProximityBridge.kt").read_text(encoding="utf-8")
+        start = bridge[bridge.index("fun start(context: Context, lat: Double"):]
+        start = start[:start.index("startForegroundService")]
+        self.assertIn("SearchTrackBridge.askForNotifications(context)", start)
+        search = (root / "SearchTrackBridge.kt").read_text(encoding="utf-8")
+        self.assertIn("internal fun askForNotifications(context: Context)", search)
+
+    def test_services_post_their_notification_once_allowed(self):
+        """The prompt and the service start together; a notification posted
+        before the answer is dropped, so each service posts it again on its
+        first location fix after notifications are allowed."""
+        root = Path(__file__).resolve().parents[1] / "platform/android/kotlin/com/ubseds/gs26"
+        for name in ["ProximityService.kt", "SearchTrackService.kt"]:
+            service = (root / name).read_text(encoding="utf-8")
+            forward = service[service.index("private fun forward(location: Location) {"):]
+            self.assertIn("showNotificationOnceAllowed()", forward.split("\n")[1], name)
+            self.assertIn("manager.areNotificationsEnabled()", service, name)
+            self.assertIn("manager.notify(NOTIFICATION_ID, notification(this))", service, name)

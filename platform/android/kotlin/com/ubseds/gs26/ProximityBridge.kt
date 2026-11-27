@@ -111,6 +111,8 @@ object ProximityBridge {
             running.update(lat, lon, radius)
             return
         }
+        // The "Proximity lock" notification is how the user sees it running.
+        SearchTrackBridge.askForNotifications(context)
         val intent = Intent(context, ProximityService::class.java)
             .putExtra(ProximityService.EXTRA_LAT, lat)
             .putExtra(ProximityService.EXTRA_LON, lon)
