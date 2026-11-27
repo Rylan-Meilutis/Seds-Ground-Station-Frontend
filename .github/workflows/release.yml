@@ -209,6 +209,18 @@ jobs:
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
+    # Gradle's downloads saved by platform CI; Maven Central rate-limits
+    # (429) hosted runners. Restored only, never saved here.
+    - name: Cached Gradle downloads
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          .gradle-user-home/caches/modules-2
+          .gradle-user-home/wrapper/dists
+          !.gradle-user-home/caches/modules-2/modules-2.lock
+          !.gradle-user-home/caches/modules-2/gc.properties
+        key: gradle-downloads-android-${{ hashFiles('build.py', 'Cargo.toml', 'watch/wear/**/*.gradle.kts', 'watch/wear/gradle/**') }}
+        restore-keys: gradle-downloads-android-
     - name: Cached dx build tool
       uses: actions/cache/restore@v5
       with:
@@ -289,6 +301,18 @@ jobs:
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
+    # Gradle's downloads saved by platform CI; Maven Central rate-limits
+    # (429) hosted runners. Restored only, never saved here.
+    - name: Cached Gradle downloads
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          .gradle-user-home/caches/modules-2
+          .gradle-user-home/wrapper/dists
+          !.gradle-user-home/caches/modules-2/modules-2.lock
+          !.gradle-user-home/caches/modules-2/gc.properties
+        key: gradle-downloads-android-${{ hashFiles('build.py', 'Cargo.toml', 'watch/wear/**/*.gradle.kts', 'watch/wear/gradle/**') }}
+        restore-keys: gradle-downloads-android-
     - name: Cached dx build tool
       uses: actions/cache/restore@v5
       with:
@@ -647,6 +671,19 @@ jobs:
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
+    # Gradle's downloads saved by platform CI; Maven Central rate-limits
+    # (429) hosted runners. Restored only, never saved here.
+    - name: Cached Gradle downloads
+      if: steps.store.outputs.enabled == 'true'
+      uses: actions/cache/restore@v5
+      with:
+        path: |
+          .gradle-user-home/caches/modules-2
+          .gradle-user-home/wrapper/dists
+          !.gradle-user-home/caches/modules-2/modules-2.lock
+          !.gradle-user-home/caches/modules-2/gc.properties
+        key: gradle-downloads-android-${{ hashFiles('build.py', 'Cargo.toml', 'watch/wear/**/*.gradle.kts', 'watch/wear/gradle/**') }}
+        restore-keys: gradle-downloads-android-
     - name: Cached dx build tool
       if: steps.store.outputs.enabled == 'true'
       uses: actions/cache/restore@v5

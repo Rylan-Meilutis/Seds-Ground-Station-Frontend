@@ -273,10 +273,27 @@ class CacheContract(unittest.TestCase):
                 self.assertFalse({k for k in step.get("with", {}) if k.startswith("cache")}, (path.name, uses))
                 self.assertNotIn("setup-gradle", uses)
                 if path.name != "platforms.yml" and "cache" in uses:
-                    # Only the dx CLI, restored and never saved (test_ci_platforms.DxCache).
-                    self.assertEqual((path.name, uses, step["with"]["path"]),
-                                     ("release.yml", "actions/cache/restore@v5", ".ci-tools/dx"))
+                    # Only the dx CLI and Gradle's downloads, restored and never saved.
+                    self.assertEqual((path.name, uses), ("release.yml", "actions/cache/restore@v5"))
+                    if step["with"]["path"] != ".ci-tools/dx":
+                        self.assertEqual(step["with"]["path"].split(), self.PATHS)
+                        self.assertEqual(step["with"]["restore-keys"], "gradle-downloads-android-")
         self.assertNotIn("secrets.", (ROOT / ".github/workflows/platforms.yml").read_text())
+
+    def test_release_android_jobs_restore_the_platform_gradle_key(self):
+        platforms = yaml.safe_load((ROOT / ".github/workflows/platforms.yml").read_text())
+        restore = next(s for s in platforms["jobs"]["build"]["steps"] if s.get("name") == "Cached Gradle downloads")
+        release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+        expected = restore["with"]["key"].replace("${{ startsWith(matrix.target, 'wearos') && 'wearos' || 'android' }}", "android")
+        for name in ("android", "android-launch", "play"):
+            steps = release["jobs"][name]["steps"]
+            names = [s.get("name") for s in steps]
+            step = steps[names.index("Cached Gradle downloads")]
+            self.assertEqual(step["with"]["key"], expected, name)
+            self.assertLess(names.index("Cached Gradle downloads"), names.index("Pinned frontend tools, warnings fatal"), name)
+        for name, job in release["jobs"].items():
+            if name not in ("android", "android-launch", "play"):
+                self.assertNotIn("Cached Gradle downloads", [s.get("name") for s in job.get("steps", [])], name)
 
     def test_gradle_home_is_the_cached_one_for_every_gradle_target(self):
         for name in ("android", "wearos"):

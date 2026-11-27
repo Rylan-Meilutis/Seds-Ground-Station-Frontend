@@ -198,7 +198,7 @@ jobs:
 
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
     # Downloaded dependencies only; nothing a build generates and no signing
-    # files. Build-only CI: the release workflow never restores this cache.
+    # files. release.yml restores the android key too and never saves it.
     - name: Cached Gradle downloads
       id: gradle-downloads
       if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')

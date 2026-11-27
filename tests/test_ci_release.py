@@ -87,7 +87,8 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertFalse(upload["with"]["name"].startswith("release-"), "publish merges release-* artifacts")
         # The only cache is the dx CLI restore (test_ci_platforms).
         cached = [s["with"].get("path") or s["uses"].split("@")[0] for s in job["steps"] if "cache" in s.get("uses", "")]
-        self.assertEqual(cached, [".ci-tools/dx", "Swatinem/rust-cache"])
+        self.assertEqual(cached[1:], [".ci-tools/dx", "Swatinem/rust-cache"])
+        self.assertTrue(cached[0].startswith(".gradle-user-home/caches/modules-2"))
         self.assertIs(next(s for s in job["steps"] if s.get("uses", "").startswith("Swatinem/"))["with"]["save-if"], False)
         self.assertNotIn("cache/save", json.dumps(job))
         for name in ["publish", "dry-run"]:
