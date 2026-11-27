@@ -6,6 +6,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 from unittest.mock import patch
 
@@ -382,6 +383,51 @@ class EmulatorDriver(unittest.TestCase):
                 self.assertEqual(code, expected, err.getvalue())
                 if restarts:
                     self.assertIn("font-size change", err.getvalue())
+
+    def test_launch_waits_for_the_wear_setup_wizard(self):
+        wizard = "  ResumedActivity: ActivityRecord{1 u0 com.google.android.wearable.setupwizard/.steps.status.EmulatorStatusActivity t2}"
+        home = "  ResumedActivity: ActivityRecord{2 u0 com.google.android.wearable.sysui/.mainui.activity.SysUiActivity t5}"
+        polls = iter([("0", wizard), ("1", wizard), ("1", home)])
+        state = {"current": next(polls)}
+
+        def fake_shell(*args, **kwargs):
+            if args[:2] == ("settings", "get"):
+                if args[3] == "user_setup_complete":
+                    state["current"] = next(polls, ("1", home))
+                    return state["current"][0] + "\n"
+                return "1\n"
+            if args[:2] == ("dumpsys", "activity"):
+                return state["current"][1] + "\n"
+            return ""
+
+        with patch.object(smoke, "shell", side_effect=fake_shell), patch.object(smoke.time, "sleep") as sleep, \
+                patch.object(smoke.time, "monotonic", side_effect=itertools.count(0, 1)), \
+                patch("sys.stdout", io.StringIO()) as out:
+            self.assertIsNone(smoke.wait_for_setup())
+        self.assertIn("Waiting for device setup", out.getvalue())
+        self.assertIn(unittest.mock.call(5), sleep.call_args_list)
+
+    def test_a_setup_task_still_open_behind_the_front_counts(self):
+        behind = "\n".join([
+            "  ResumedActivity: ActivityRecord{2 u0 com.UBSEDS.GS26/com.ubseds.gs26.wear.MainActivity t3}",
+            "      * Hist #0: ActivityRecord{1 u0 com.google.android.wearable.setupwizard/.steps.status.EmulatorStatusActivity t2}"])
+        with patch.object(smoke, "shell", side_effect=lambda *a, **k: "1\n" if a[0] == "settings" else behind):
+            self.assertIn("setupwizard", smoke.setup_pending())
+
+    def test_setup_done_or_unknown_does_not_wait(self):
+        for value in ("1", "", "null"):
+            with self.subTest(value=value), \
+                    patch.object(smoke, "shell", side_effect=lambda *a, **k: value + "\n" if a[0] == "settings" else RESUMED_36), \
+                    patch.object(smoke.time, "sleep") as sleep:
+                self.assertIsNone(smoke.wait_for_setup())
+                sleep.assert_not_called()
+
+    def test_setup_that_never_finishes_is_reported(self):
+        with patch.object(smoke, "shell", side_effect=lambda *a, **k: "0\n" if a[0] == "settings" else ""), \
+                patch.object(smoke.time, "sleep"), \
+                patch.object(smoke.time, "monotonic", side_effect=itertools.count(0, 50)), \
+                patch("sys.stdout", io.StringIO()):
+            self.assertEqual(smoke.wait_for_setup(timeout=300), "secure user_setup_complete=0")
 
     def test_find_apk_needs_exactly_one(self):
         with tempfile.TemporaryDirectory() as temp:

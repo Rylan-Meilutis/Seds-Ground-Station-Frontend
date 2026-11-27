@@ -271,6 +271,47 @@ def wait_for_boot(timeout=600):
     raise RuntimeError("emulator did not finish booting")
 
 
+SETUP_ACTIVITY = re.compile(r"setupwizard|sdksetup|provision", re.IGNORECASE)
+
+
+def setup_pending():
+    """What still holds up device setup, or None once it is done.
+
+    A cold-booted Wear image runs its setup wizard after sys.boot_completed;
+    when the wizard finishes it opens the watch home over whatever is in front
+    (hosted run 46041390158: the app launched, 3 s later home covered it). A
+    setting that reads empty or "null" is unknown, not pending."""
+    for namespace, key in (("secure", "user_setup_complete"), ("global", "device_provisioned")):
+        if shell("settings", "get", namespace, key, check=False).strip() == "0":
+            return f"{namespace} {key}=0"
+    dumpsys = shell("dumpsys", "activity", "activities", check=False, timeout=60)
+    for line in dumpsys.splitlines():
+        # The wizard in front, or its task still open behind (it comes back
+        # to the front for its last step).
+        if (re.search(r"\b(?:ResumedActivity|mResumedActivity|topResumedActivity)\b", line)
+                or re.search(r"\b(?:Hist|Run) #[0-9]+:", line)) and SETUP_ACTIVITY.search(line):
+            return line.strip()
+    return None
+
+
+def wait_for_setup(timeout=300):
+    """Block until device setup is over, so nothing it starts covers the app."""
+    deadline = time.monotonic() + timeout
+    pending = setup_pending()
+    if pending is None:
+        return None
+    print(f"Waiting for device setup to finish ({pending})", flush=True)
+    while time.monotonic() < deadline:
+        time.sleep(3)
+        pending = setup_pending()
+        if pending is None:
+            # Setup's last step opens home; let it settle before the launch.
+            time.sleep(5)
+            return None
+    print(f"device setup still running after {timeout} s: {pending}", flush=True)
+    return pending
+
+
 def running_pids(package):
     out = shell("pidof", package, check=False).split()
     if not out:  # Older toybox: fall back to ps.
@@ -324,6 +365,7 @@ def main(argv=None):
     # reports a charger; unplug it (harmless on phones).
     shell("dumpsys", "battery", "unplug", check=False)
     install(apk, int(sdk) if sdk.isdigit() else 0)
+    setup_problem = wait_for_setup()
     adb("logcat", "-b", "all", "-c", check=False)
 
     am_start = shell("am", "start", "-W", "-n", args.component, check=False, timeout=180)
@@ -380,6 +422,8 @@ def main(argv=None):
                         check_screen=not args.no_screen_check)
     if config_problem:
         problems.append(config_problem)
+    if setup_problem and problems:
+        problems.append(f"device setup had not finished before the launch: {setup_problem}")
     report = {"apk": apk.name, "component": args.component, "api": sdk, "abi": abi,
               "wait_seconds": args.wait, "pids": sorted(pids), "problems": problems}
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n")
