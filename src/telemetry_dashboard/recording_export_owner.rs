@@ -12,6 +12,11 @@ use std::{
 // lives in this module. All identities come from their existing actual owners.
 use super::super::native_session as session;
 
+/// What `ExportOwner::check` returns once its station, login, connection or
+/// data epoch has moved on. Callers that may simply ask again compare with it.
+pub(crate) const STALE_OWNER_ERROR: &str =
+    "Export canceled: recording, station, login or connection changed. Select the recording again.";
+
 pub(crate) struct ExportOwner {
     session: session::Owner,
     identity: auth::RequestIdentity,
@@ -123,7 +128,7 @@ impl ExportOwner {
         if self.is_current() {
             Ok(())
         } else {
-            Err("Export canceled: recording, station, login or connection changed. Select the recording again.".into())
+            Err(STALE_OWNER_ERROR.into())
         }
     }
     pub(crate) async fn wait<F: Future>(&self, future: F) -> Result<F::Output, String> {

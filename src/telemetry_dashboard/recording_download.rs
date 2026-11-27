@@ -2,7 +2,7 @@
 mod export_owner;
 #[path = "recording_diagnostics_view.rs"]
 mod recording_diagnostics_view;
-pub(super) use export_owner::ExportOwner;
+pub(super) use export_owner::{ExportOwner, STALE_OWNER_ERROR};
 #[cfg(not(target_arch = "wasm32"))]
 #[path = "recording_download_file.rs"]
 mod local_file;

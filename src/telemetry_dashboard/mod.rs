@@ -1476,6 +1476,31 @@ pub(crate) fn frontend_topology_message_age_ms() -> Option<i64> {
     Some((monotonic_now_ms() as i64).saturating_sub(last_mono_ms))
 }
 
+/// Delay before asking for the layout again after `err`, or None when the
+/// error is final. Only a request that outlived its connection state (the
+/// owner check) is asked again, at most five times, 250 ms to 2 s apart.
+fn layout_refresh_retry_delay_ms(attempt: u32, err: &str) -> Option<u32> {
+    (err == recording_download::STALE_OWNER_ERROR && attempt < 5).then(|| (250u32 << attempt).min(2_000))
+}
+
+async fn layout_refresh_sleep_ms(ms: u32) {
+    #[cfg(target_arch = "wasm32")]
+    gloo_timers::future::TimeoutFuture::new(ms).await;
+    #[cfg(not(target_arch = "wasm32"))]
+    tokio::time::sleep(std::time::Duration::from_millis(u64::from(ms))).await;
+}
+
+#[test]
+fn layout_refresh_asks_again_only_after_a_stale_owner() {
+    let stale = recording_download::STALE_OWNER_ERROR;
+    assert_eq!(
+        (0..6).map(|attempt| layout_refresh_retry_delay_ms(attempt, stale)).collect::<Vec<_>>(),
+        vec![Some(250), Some(500), Some(1_000), Some(2_000), Some(2_000), None]
+    );
+    assert_eq!(layout_refresh_retry_delay_ms(0, "HTTP GET /api/layout timed out"), None);
+    assert_eq!(layout_refresh_retry_delay_ms(0, "HTTP 401"), None);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn refresh_layout_after_ws_reconnect(
     layout_config: Signal<Option<LayoutConfig>>,
@@ -1504,10 +1529,28 @@ fn refresh_layout_after_ws_reconnect(
     let generation = next_layout_generation();
 
     spawn(async move {
-        let result = http_get_json::<LayoutConfig>("/api/layout").await;
-        if !layout_generation_current(generation) {
-            return;
-        }
+        let mut attempt = 0;
+        let result = loop {
+            let result = http_get_json::<LayoutConfig>("/api/layout").await;
+            if !layout_generation_current(generation) {
+                return;
+            }
+            // The request outlived the state it was made for (the reseed right
+            // after a connect bumps the data epoch). This refresh is still the
+            // latest one, so ask again rather than leave "Loading layout..."
+            // up until the next reconnect.
+            match result.as_ref().err().and_then(|err| layout_refresh_retry_delay_ms(attempt, err)) {
+                Some(delay) => {
+                    attempt += 1;
+                    log!("[layout] reconnect refresh outlived its connection state; asking again in {delay} ms");
+                    layout_refresh_sleep_ms(delay).await;
+                    if !layout_generation_current(generation) {
+                        return;
+                    }
+                }
+                None => break result,
+            }
+        };
         match result {
             Ok(layout) => {
                 if let Err(err) = layout.validate() {

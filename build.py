@@ -2749,9 +2749,29 @@ ANDROID_MAIN_ACTIVITY_OPENED_FILES = """class MainActivity : WryActivity() {
     // Replay files opened from other apps (OpenedFileBridge, src/opened_file.rs).
     override fun onCreate(savedInstanceState: android.os.Bundle?) {
         super.onCreate(savedInstanceState)
+        keepContentClearOfSystemBars()
         if (savedInstanceState == null) {
             com.ubseds.gs26.OpenedFileBridge.accept(this, intent)
         }
+    }
+
+    // Apps targeting API 35+ are drawn edge to edge on Android 15+: the web
+    // view reached under the status bar, where touches go to the system, so
+    // the header (ABORT included) answered only on its bottom few pixels.
+    // Pad the content by the status and navigation bars, the display cutout
+    // and the keyboard instead (the keyboard as adjustResize did before
+    // edge to edge); the padding takes the app's background.
+    private fun keepContentClearOfSystemBars() {
+        if (android.os.Build.VERSION.SDK_INT < 30) return
+        val content = findViewById<android.view.View>(android.R.id.content) ?: return
+        content.setBackgroundColor(0xFF030712.toInt())
+        content.setOnApplyWindowInsetsListener { view, insets ->
+            val clear = insets.getInsets(android.view.WindowInsets.Type.systemBars() or
+                android.view.WindowInsets.Type.displayCutout() or android.view.WindowInsets.Type.ime())
+            view.setPadding(clear.left, clear.top, clear.right, clear.bottom)
+            insets
+        }
+        content.requestApplyInsets()
     }
 
     override fun onNewIntent(intent: android.content.Intent) {

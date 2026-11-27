@@ -148,6 +148,13 @@ class AndroidContract(unittest.TestCase):
         self.assertIn("override fun onNewIntent(intent: android.content.Intent)", raw)
         self.assertIn("setIntent(intent)", raw)
         self.assertIn("if (savedInstanceState == null)", raw, "recreation does not reopen the file")
+        # Edge to edge (targetSdk 35+ on Android 15+): the content is padded
+        # clear of the status bar so the header and ABORT take touches.
+        self.assertEqual(raw.count("keepContentClearOfSystemBars()"), 2)
+        self.assertIn("android.view.WindowInsets.Type.systemBars()", raw)
+        self.assertIn("android.view.WindowInsets.Type.displayCutout()", raw)
+        self.assertIn("android.view.WindowInsets.Type.ime()", raw)
+        self.assertIn("view.setPadding(clear.left, clear.top, clear.right, clear.bottom)", raw)
 
     def test_unknown_main_activity_shape_fails_loudly(self):
         with tempfile.TemporaryDirectory() as temporary:
