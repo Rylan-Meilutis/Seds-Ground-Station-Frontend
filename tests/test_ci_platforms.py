@@ -541,6 +541,8 @@ class PlatformCI(unittest.TestCase):
 
     def test_env_fatal_warnings_no_signing_credentials_or_unsafe_rustflags(self):
         with patch.dict(os.environ, {"RUSTFLAGS": "-A warnings", "ANDROID_KEYSTORE_PASSWORD": "fixture", "NOTARY_PASSWORD": "fixture", "IOS_DISTRIBUTION_MOBILEPROVISION": "fixture"}):
+            # The default; release.yml's own CI_CARGO_JOBS=cores is set while this runs there.
+            os.environ.pop("CI_CARGO_JOBS", None)
             env = ci.ci_env()
         self.assertEqual(env["RUSTFLAGS"], "-D warnings")
         self.assertEqual(env["RUSTDOCFLAGS"], "-D warnings")
