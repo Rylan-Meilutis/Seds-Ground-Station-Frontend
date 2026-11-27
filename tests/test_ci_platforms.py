@@ -40,7 +40,15 @@ class PlatformCI(unittest.TestCase):
         self.assertEqual(strategy["matrix"]["target"], list(targets.TARGETS))
         self.assertEqual(strategy["matrix"]["profile"], ["debug", "release"])
         self.assertIs(strategy["fail-fast"], False)
-        self.assertEqual(len(strategy["matrix"]["target"]) * 2, 34)
+        # Release for every target, debug only where platforms.json says so.
+        debug = [p["target"] for p in ci.PLATFORMS if p["debug"]]
+        self.assertEqual(debug, ["web", "linux", "android_sim", "wearos_sim"])
+        self.assertEqual(strategy["matrix"]["exclude"],
+                         [{"target": p["target"], "profile": "debug"} for p in ci.PLATFORMS if not p["debug"]])
+        self.assertEqual(len(strategy["matrix"]["target"]) * 2 - len(strategy["matrix"]["exclude"]), 21)
+        # The launch test installs these debug builds.
+        launch = self.github["jobs"]["android-launch"]["strategy"]["matrix"]["include"]
+        self.assertTrue({r["target"] for r in launch if r["profile"] == "debug"} <= set(debug))
 
     def test_github_native_runner_bindings(self):
         matrix = self.github["jobs"]["build"]["strategy"]["matrix"]
@@ -121,7 +129,9 @@ class PlatformCI(unittest.TestCase):
         rows = self.gitlab_rows()
         self.assertEqual(sorted(r["CI_FRONTEND_TARGET"] for r in rows), sorted(targets.TARGETS))
         self.assertEqual(len(rows), len(targets.TARGETS))
-        self.assertTrue(all(r["CI_FRONTEND_PROFILE"] == ["debug", "release"] for r in rows))
+        debug = {p["target"]: p["debug"] for p in ci.PLATFORMS}
+        for r in rows:
+            self.assertEqual(r["CI_FRONTEND_PROFILE"], ["debug", "release"] if debug[r["CI_FRONTEND_TARGET"]] else ["release"])
         native, docker = self.gitlab["frontend-build"], self.gitlab["frontend-build-docker"]
         self.assertEqual(native["tags"], ["$UI_RUNNER"])
         for job in [native, docker, self.gitlab[".frontend-build"]]:
@@ -142,7 +152,7 @@ class PlatformCI(unittest.TestCase):
         self.assertTrue(self.gitlab["ci-contracts"]["interruptible"])
         self.assertTrue(self.gitlab[".frontend-build"]["interruptible"])
         default_jobs = 1 + sum(len(r["CI_FRONTEND_PROFILE"]) for r in docker["parallel"]["matrix"])
-        self.assertEqual(default_jobs, 13)
+        self.assertEqual(default_jobs, 10)
 
     def test_gitlab_generic_docker_runners_only_for_container_safe_linux_targets(self):
         docker = self.gitlab["frontend-build-docker"]
@@ -296,6 +306,33 @@ class PlatformCI(unittest.TestCase):
                 receipt = json.loads((Path(directory) / "ci-results/dioxus-cli.json").read_text())
                 self.assertEqual(receipt["reused_from_cache"], reused)
 
+    def test_dependency_cache_after_bootstrap_shared_with_release(self):
+        job = self.github["jobs"]["build"]
+        names = [s.get("name") for s in job["steps"]]
+        step = job["steps"][names.index("Cached compiled dependencies")]
+        self.assertRegex(step["uses"], r"^Swatinem/rust-cache@[0-9a-f]{40}$")
+        self.assertLess(names.index("Pinned frontend tools, warnings fatal"), names.index("Cached compiled dependencies"))
+        self.assertLess(names.index("Cached compiled dependencies"), names.index("Actual native target build, warnings fatal"))
+        self.assertEqual(step["with"]["shared-key"], "${{ matrix.target }}-${{ matrix.profile }}")
+        self.assertIs(step["with"]["add-job-id-key"], False)
+        release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+        count = 0
+        for name, rjob in release["jobs"].items():
+            steps = rjob.get("steps", [])
+            for i, s in enumerate(steps):
+                if s.get("run") == "python scripts/ci/frontend.py bootstrap":
+                    count += 1
+                    after = steps[i + 1]
+                    self.assertEqual(after["uses"], step["uses"], name)
+                    self.assertEqual({k: after["with"][k] for k in ("prefix-key", "add-job-id-key", "save-if")},
+                                     {"prefix-key": step["with"]["prefix-key"], "add-job-id-key": False, "save-if": False}, name)
+                    self.assertEqual(after["with"]["shared-key"], "${{ env.CI_FRONTEND_TARGET }}-release", name)
+                    self.assertEqual(after.get("if"), s.get("if"), name)
+        self.assertEqual(count, 6)
+        # The key hashes CARGO_*/RUST* step env; both workflows must agree.
+        self.assertEqual({k: v for k, v in job["env"].items() if k.startswith(("CARGO_", "RUST"))},
+                         {k: v for k, v in release["env"].items() if k.startswith(("CARGO_", "RUST"))})
+
     def test_dx_cache_is_build_only_ci_keyed_by_host_and_target(self):
         job = self.github["jobs"]["build"]
         names = [s.get("name") for s in job["steps"]]
@@ -315,7 +352,23 @@ class PlatformCI(unittest.TestCase):
             for b in targets:
                 if a != b:
                     self.assertFalse(f"{b}--".startswith(f"{a}--"))
-        self.assertNotIn(".ci-tools/dx", (ROOT / ".github/workflows/release.yml").read_text())
+        # The release workflow restores the same keys before every bootstrap, never saves.
+        release = yaml.safe_load((ROOT / ".github/workflows/release.yml").read_text())
+        release_prefix = "dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--"
+        bootstraps = 0
+        for name, rjob in release["jobs"].items():
+            steps = rjob.get("steps", [])
+            for i, step in enumerate(steps):
+                if step.get("run") == "python scripts/ci/frontend.py bootstrap":
+                    bootstraps += 1
+                    before = steps[i - 1]
+                    self.assertEqual((before["uses"], before["with"]["path"], before["with"]["restore-keys"]),
+                                     ("actions/cache/restore@v4", ".ci-tools/dx", release_prefix), name)
+                    self.assertEqual(before.get("if"), step.get("if"), name)
+                    self.assertIn(rjob["env"]["CI_FRONTEND_TARGET"].replace("${{ matrix.target }}", targets[0]),
+                                  targets, name)
+                self.assertFalse(step.get("uses", "").startswith("actions/cache/save"), name)
+        self.assertEqual(bootstraps, 6)
 
     def test_hosted_runners_use_every_core_gitlab_keeps_two(self):
         self.assertEqual(self.github["jobs"]["build"]["env"]["CI_CARGO_JOBS"], "cores")

@@ -120,8 +120,23 @@ jobs:
     - name: Windows MSVC environment
       if: runner.os == 'Windows'
       uses: ilammy/msvc-dev-cmd@v1
+    - name: Cached dx build tool
+      uses: actions/cache/restore@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--restore-only
+        restore-keys: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--
     - name: Pinned frontend tools, warnings fatal
       run: python scripts/ci/frontend.py bootstrap
+    # Compiled dependencies saved by platform CI (tags read main's); never saved here.
+    - name: Cached compiled dependencies
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      with:
+        prefix-key: v1-deps
+        shared-key: ${{ env.CI_FRONTEND_TARGET }}-release
+        add-job-id-key: false
+        cache-bin: false
+        save-if: false
     - name: Release build, warnings fatal
       run: python scripts/ci/frontend.py release-build
     - name: Stage release assets
@@ -177,8 +192,23 @@ jobs:
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
+    - name: Cached dx build tool
+      uses: actions/cache/restore@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--restore-only
+        restore-keys: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--
     - name: Pinned frontend tools, warnings fatal
       run: python scripts/ci/frontend.py bootstrap
+    # Compiled dependencies saved by platform CI (tags read main's); never saved here.
+    - name: Cached compiled dependencies
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      with:
+        prefix-key: v1-deps
+        shared-key: ${{ env.CI_FRONTEND_TARGET }}-release
+        add-job-id-key: false
+        cache-bin: false
+        save-if: false
     - name: Production signing keystore from secrets
       env:
         ANDROID_UPLOAD_KEYSTORE_B64: ${{ secrets.ANDROID_UPLOAD_KEYSTORE_B64 }}
@@ -242,8 +272,23 @@ jobs:
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
+    - name: Cached dx build tool
+      uses: actions/cache/restore@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--restore-only
+        restore-keys: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--
     - name: Pinned frontend tools, warnings fatal
       run: python scripts/ci/frontend.py bootstrap
+    # Compiled dependencies saved by platform CI (tags read main's); never saved here.
+    - name: Cached compiled dependencies
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      with:
+        prefix-key: v1-deps
+        shared-key: ${{ env.CI_FRONTEND_TARGET }}-release
+        add-job-id-key: false
+        cache-bin: false
+        save-if: false
     - name: x86_64 release APK, CI development key, warnings fatal
       run: python scripts/ci/frontend.py build
     - name: Pillow for the screenshot check
@@ -305,8 +350,23 @@ jobs:
       run: echo "DEVELOPER_DIR=/Applications/Xcode_27.2.app/Contents/Developer" >> "$GITHUB_ENV"
     - name: Xcode availability
       run: xcodebuild -version
+    - name: Cached dx build tool
+      uses: actions/cache/restore@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--restore-only
+        restore-keys: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--
     - name: Pinned frontend tools, warnings fatal
       run: python scripts/ci/frontend.py bootstrap
+    # Compiled dependencies saved by platform CI (tags read main's); never saved here.
+    - name: Cached compiled dependencies
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      with:
+        prefix-key: v1-deps
+        shared-key: ${{ env.CI_FRONTEND_TARGET }}-release
+        add-job-id-key: false
+        cache-bin: false
+        save-if: false
     - name: Developer ID keychain and notarization profile from secrets
       env:
         MACOS_DEVELOPER_ID_P12_B64: ${{ secrets.MACOS_DEVELOPER_ID_P12_B64 }}
@@ -480,9 +540,26 @@ jobs:
     - name: Xcode availability
       if: steps.store.outputs.enabled == 'true'
       run: xcodebuild -version
+    - name: Cached dx build tool
+      if: steps.store.outputs.enabled == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--restore-only
+        restore-keys: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--
     - name: Pinned frontend tools, warnings fatal
       if: steps.store.outputs.enabled == 'true'
       run: python scripts/ci/frontend.py bootstrap
+    # Compiled dependencies saved by platform CI (tags read main's); never saved here.
+    - name: Cached compiled dependencies
+      if: steps.store.outputs.enabled == 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      with:
+        prefix-key: v1-deps
+        shared-key: ${{ env.CI_FRONTEND_TARGET }}-release
+        add-job-id-key: false
+        cache-bin: false
+        save-if: false
     - name: App Store distribution keychain and profile from secrets
       if: steps.store.outputs.enabled == 'true'
       env:
@@ -553,9 +630,26 @@ jobs:
         echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"
 
         echo "ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/28.2.13676358" >> "$GITHUB_ENV"'
+    - name: Cached dx build tool
+      if: steps.store.outputs.enabled == 'true'
+      uses: actions/cache/restore@v4
+      with:
+        path: .ci-tools/dx
+        key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--restore-only
+        restore-keys: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ env.CI_FRONTEND_TARGET }}--
     - name: Pinned frontend tools, warnings fatal
       if: steps.store.outputs.enabled == 'true'
       run: python scripts/ci/frontend.py bootstrap
+    # Compiled dependencies saved by platform CI (tags read main's); never saved here.
+    - name: Cached compiled dependencies
+      if: steps.store.outputs.enabled == 'true'
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      with:
+        prefix-key: v1-deps
+        shared-key: ${{ env.CI_FRONTEND_TARGET }}-release
+        add-job-id-key: false
+        cache-bin: false
+        save-if: false
     - name: Upload keystore from secrets
       if: steps.store.outputs.enabled == 'true'
       env:

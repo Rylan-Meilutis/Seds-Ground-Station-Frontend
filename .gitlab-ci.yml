@@ -53,15 +53,12 @@ frontend-build-docker:
       - release
     - CI_FRONTEND_TARGET: android
       CI_FRONTEND_PROFILE:
-      - debug
       - release
     - CI_FRONTEND_TARGET: android-armv7
       CI_FRONTEND_PROFILE:
-      - debug
       - release
     - CI_FRONTEND_TARGET: wearos
       CI_FRONTEND_PROFILE:
-      - debug
       - release
     - CI_FRONTEND_TARGET: android_sim
       CI_FRONTEND_PROFILE:
@@ -73,7 +70,7 @@ frontend-build-docker:
       - release
 # Native shell runners that must be registered with these tags. Off unless
 # the project CI variable GS_UI_NATIVE_RUNNERS is "true": without the runners
-# these 22 jobs stay pending, and with them a pipeline exceeds the project's
+# these 12 jobs stay pending, and with them a pipeline exceeds the project's
 # limit on jobs in active pipelines, so GitLab refuses to create it at all.
 frontend-build:
   extends: .frontend-build
@@ -90,51 +87,41 @@ frontend-build:
       UI_RUNNER: gs-ui-linux-x64
     - CI_FRONTEND_TARGET: linux-arm64
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-linux-arm64
     - CI_FRONTEND_TARGET: windows
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-windows-x64
     - CI_FRONTEND_TARGET: macos
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-arm64
     - CI_FRONTEND_TARGET: macos-intel
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-x64
     - CI_FRONTEND_TARGET: ios
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-arm64
     - CI_FRONTEND_TARGET: watchos
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-arm64
     - CI_FRONTEND_TARGET: ios_sim
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-arm64
     - CI_FRONTEND_TARGET: ios_sim_intel
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-x64
     - CI_FRONTEND_TARGET: watchos_sim
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-arm64
     - CI_FRONTEND_TARGET: watchos_sim_intel
       CI_FRONTEND_PROFILE:
-      - debug
       - release
       UI_RUNNER: gs-ui-macos-x64

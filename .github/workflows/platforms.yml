@@ -53,6 +53,36 @@ jobs:
         profile:
         - debug
         - release
+        # Release builds every target. Debug only where it adds coverage: the
+        # web and desktop debug paths, and the emulator builds the launch test
+        # installs (scripts/ci/platforms.json "debug").
+        exclude:
+        - target: linux-arm64
+          profile: debug
+        - target: windows
+          profile: debug
+        - target: macos
+          profile: debug
+        - target: macos-intel
+          profile: debug
+        - target: ios
+          profile: debug
+        - target: android
+          profile: debug
+        - target: android-armv7
+          profile: debug
+        - target: watchos
+          profile: debug
+        - target: wearos
+          profile: debug
+        - target: ios_sim
+          profile: debug
+        - target: ios_sim_intel
+          profile: debug
+        - target: watchos_sim
+          profile: debug
+        - target: watchos_sim_intel
+          profile: debug
         include:
         - target: web
           runner: ubuntu-24.04
@@ -166,7 +196,7 @@ jobs:
         restore-keys: gradle-downloads-${{ startsWith(matrix.target, 'wearos') && 'wearos' || 'android' }}-
     # The dx CLI takes 20-35 minutes to compile. bootstrap uses a restored copy
     # only if it reports the exact version the lock resolved, else rebuilds it.
-    # Build-only CI: the release workflow never restores this cache.
+    # release.yml restores the same keys (tags read main's caches).
     - name: Cached dx build tool
       if: ${{ !startsWith(matrix.target, 'wearos') }}
       uses: actions/cache/restore@v4
@@ -177,6 +207,17 @@ jobs:
     - name: Pinned frontend tools, warnings fatal
       id: bootstrap
       run: python scripts/ci/frontend.py bootstrap
+    # Compiled dependencies, not the app's own crates; after bootstrap, which
+    # resolves Cargo.lock and installs the pinned toolchain. Saved on push only.
+    - name: Cached compiled dependencies
+      if: ${{ !startsWith(matrix.target, 'wearos') }}
+      uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0  # v2.9.3
+      with:
+        prefix-key: v1-deps
+        shared-key: ${{ matrix.target }}-${{ matrix.profile }}
+        add-job-id-key: false
+        cache-bin: false
+        save-if: ${{ github.event_name == 'push' }}
     # Release rows save, so debug and release never race for the same key.
     - name: Save the dx build tool
       if: github.event_name == 'push' && matrix.profile == 'release' && steps.bootstrap.outputs.dx-built == 'true'

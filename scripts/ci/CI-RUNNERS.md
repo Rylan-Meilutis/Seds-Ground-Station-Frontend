@@ -1,6 +1,6 @@
 # Frontend CI runners
 
-Both providers run the SAME actual `build.py --target <target> --debug|--release --no-sign` through `scripts/ci/frontend.py`. Coverage is every12 target in `scripts/build_targets.py`,24jobs/provider. This means supported architecture/build variants, not every historical OS/Xcode version. iOSdevice builds an unsigned app; simulators are built, never launched. Android builds APK variants signed with a fresh job-local development certificate. Each Android artifact includes `CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt`; the private key is never uploaded. These APKs are not production releases or an identity for updating installed releases. Local user signing settings remain unchanged. This is not distribution signing, notarization, device acceptance or store upload. Missing platform capability is a failed/pending gate, never successful Linux emulation.
+Both providers run the SAME actual `build.py --target <target> --debug|--release --no-sign` through `scripts/ci/frontend.py`. Coverage is every target in `scripts/build_targets.py` as a release build, plus debug builds for web, linux, android_sim and wearos_sim (`"debug"` in `platforms.json`): 21 jobs per provider. This means supported architecture/build variants, not every historical OS/Xcode version. iOSdevice builds an unsigned app; simulators are built, never launched. Android builds APK variants signed with a fresh job-local development certificate. Each Android artifact includes `CI-DEVELOPMENT-SIGNED-NOT-FOR-DISTRIBUTION.txt`; the private key is never uploaded. These APKs are not production releases or an identity for updating installed releases. Local user signing settings remain unchanged. This is not distribution signing, notarization, device acceptance or store upload. Missing platform capability is a failed/pending gate, never successful Linux emulation.
 
 GitHub uses real hosted labels Ubuntu24.04 x64/ARM64, Windows2022/MSVC, `xcode-27` (macOS 27 ARM64, Xcode 27.2) and macOS15-intel. Native host+architecture is checked before bootstrap and build.
 
@@ -16,7 +16,9 @@ The phone app compiles against API 36 (Play's target requirement) with the Andro
 
 ### Build speed (GitHub)
 
-Compiling the dx CLI took 20-35 minutes of every Rust job. `platforms.yml` restores `.ci-tools/dx` from the Actions cache (key `dx-v1-<os>-<arch>-<target>--<rust>-<dioxus>`); `frontend.py bootstrap` uses it only if `dx --version` reports exactly the dioxus version the fresh lock resolved, otherwise it deletes it and builds dx again, and release rows on `push` save the new copy. Pull requests never save. `release.yml` never restores it, so signed releases always build dx from source. Hosted jobs set `CI_CARGO_JOBS=cores` so Cargo uses every core; GitLab's shared Docker runners keep 2. `max-parallel: 20` leaves the throttling to GitHub's own limits (20 jobs, 5 macOS).
+Compiling the dx CLI took 20-35 minutes of every Rust job. `platforms.yml` restores `.ci-tools/dx` from the Actions cache (key `dx-v1-<os>-<arch>-<target>--<rust>-<dioxus>`); `frontend.py bootstrap` uses it only if `dx --version` reports exactly the dioxus version the fresh lock resolved, otherwise it deletes it and builds dx again, and release rows on `push` save the new copy. Pull requests never save. `release.yml` restores the same keys before each bootstrap but never saves; a tag run reads the caches saved by `main`'s platform CI, and a dry run on dev also reads dev's. The same version check applies, so a release builds dx itself whenever no matching copy is cached. Hosted jobs set `CI_CARGO_JOBS=cores` so Cargo uses every core; GitLab's shared Docker runners keep 2. `max-parallel: 20` leaves the throttling to GitHub's own limits (20 jobs, 5 macOS).
+
+Compiled dependencies (not the app's own crates) are cached with `Swatinem/rust-cache`, pinned by commit, after bootstrap has resolved `Cargo.lock`: key `v1-deps-<target>-<profile>` plus the toolchain, lock and `CARGO_*`/`RUST*` environment hashes, with fallback to the nearest older lock. Platform CI saves on push; `release.yml` restores `<target>-release` and never saves. Before saving, the action drops the workspace crates, the dx bundle output and anything a week old. GitHub keeps 10 GB of caches per repository and evicts the least recently used, so an evicted entry costs one cold build, never a failure.
 
 ### Android launch smoke test (GitHub only)
 
@@ -47,9 +49,10 @@ of `platforms.json`.
   SDK/NDK packages. Every download is pinned by SHA-256, except that
   rustup-init is checked against its own published checksum. The runner must
   be x86_64; the script and `validate_host` refuse anything else.
-- **Tagged native runners, `frontend-build`:** these 22 jobs are created only
+- **Tagged native runners, `frontend-build`:** these 12 jobs are created only
   when the project CI variable `GS_UI_NATIVE_RUNNERS` is `true`. By default a
-  pipeline has 13 jobs. With all 35, GitLab refused to create the pipeline
+  pipeline has 10 jobs (22 with them). With all 35 of the earlier matrix,
+  GitLab refused to create the pipeline
   ("Project exceeded the allowed number of jobs in active pipelines"), and
   without the runners those jobs would only stay pending. Register the
   runners first, then the project owner sets the variable (Settings → CI/CD →

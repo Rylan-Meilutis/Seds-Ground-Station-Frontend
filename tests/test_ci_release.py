@@ -85,7 +85,11 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertIn("--require-render-log", step["with"]["script"])
         upload = job["steps"][-1]
         self.assertFalse(upload["with"]["name"].startswith("release-"), "publish merges release-* artifacts")
-        self.assertNotIn("cache", json.dumps(job))
+        # The only cache is the dx CLI restore (test_ci_platforms).
+        cached = [s["with"].get("path") or s["uses"].split("@")[0] for s in job["steps"] if "cache" in s.get("uses", "")]
+        self.assertEqual(cached, [".ci-tools/dx", "Swatinem/rust-cache"])
+        self.assertIs(next(s for s in job["steps"] if s.get("uses", "").startswith("Swatinem/"))["with"]["save-if"], False)
+        self.assertNotIn("cache/save", json.dumps(job))
         for name in ["publish", "dry-run"]:
             self.assertIn("needs.android-launch.result == 'success'", self.jobs[name]["if"])
         self.assertIn("needs.android-launch.result == 'success'", self.jobs["play"]["if"])

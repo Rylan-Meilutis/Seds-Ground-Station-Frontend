@@ -580,7 +580,7 @@ def install_dioxus_cli(host, version, env):
     """dx into .ci-tools/dx. Compiling it takes 20-35 minutes, so build-only CI
     restores a previous copy from the Actions cache; it is used only if it
     reports exactly the version the application lock resolved, otherwise it is
-    rebuilt. The release workflow never restores it and always builds."""
+    rebuilt. Platform CI saves it; release.yml only restores it."""
     root = ROOT / ".ci-tools/dx"
     if (ROOT / ".ci-tools").is_symlink() or root.is_symlink():
         raise RuntimeError("Refusing linked CI tools directory")

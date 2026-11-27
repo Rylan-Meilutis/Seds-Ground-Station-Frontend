@@ -216,7 +216,8 @@ class CacheContract(unittest.TestCase):
             yield from job.get("steps", [])
 
     def test_cache_paths_are_exactly_the_download_directories(self):
-        steps = [s for s in self.steps(yaml.safe_load((ROOT / ".github/workflows/platforms.yml").read_text())) if "cache" in s.get("uses", "")]
+        steps = [s for s in self.steps(yaml.safe_load((ROOT / ".github/workflows/platforms.yml").read_text()))
+                 if "cache" in s.get("uses", "") and not s["uses"].startswith("Swatinem/rust-cache@")]
         # The other cache is the dx CLI (test_ci_platforms.DxCache).
         self.assertEqual([s["with"]["path"] for s in steps if "gradle" not in s["with"]["path"]], [".ci-tools/dx", ".ci-tools/dx"])
         steps = [s for s in steps if "gradle" in s["with"]["path"]]
@@ -262,11 +263,19 @@ class CacheContract(unittest.TestCase):
             workflow = yaml.safe_load(path.read_text())
             for step in self.steps(workflow):
                 uses = step.get("uses", "")
+                if uses.startswith("Swatinem/rust-cache@"):
+                    # Compiled dependencies: platform CI saves on push, nothing else saves.
+                    self.assertEqual(step["with"]["save-if"],
+                                     "${{ github.event_name == 'push' }}" if path.name == "platforms.yml" else False)
+                    self.assertIs(step["with"]["cache-bin"], False)
+                    continue
                 # setup-java/-node/-python (and gradle's own action) can restore caches too.
                 self.assertFalse({k for k in step.get("with", {}) if k.startswith("cache")}, (path.name, uses))
                 self.assertNotIn("setup-gradle", uses)
-                if path.name != "platforms.yml":
-                    self.assertNotIn("cache", uses, path.name)
+                if path.name != "platforms.yml" and "cache" in uses:
+                    # Only the dx CLI, restored and never saved (test_ci_platforms.DxCache).
+                    self.assertEqual((path.name, uses, step["with"]["path"]),
+                                     ("release.yml", "actions/cache/restore@v4", ".ci-tools/dx"))
         self.assertNotIn("secrets.", (ROOT / ".github/workflows/platforms.yml").read_text())
 
     def test_gradle_home_is_the_cached_one_for_every_gradle_target(self):
