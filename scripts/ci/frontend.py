@@ -627,7 +627,9 @@ def bootstrap(name):
     # fresh CI checkout, then pin host CLI versions to the resulting crate ABIs.
     if not (ROOT / "Cargo.lock").exists():
         checked(["cargo", "generate-lockfile"], env, "resolve-application-lock")
-    checked([sys.executable, "-m", "pip", "install", "Pillow==12.0.0"], env, "pillow")
+    # GitLab's Docker jobs run as root, and pip warns about that on every install.
+    checked([sys.executable, "-m", "pip", "install", "--root-user-action=ignore", "--disable-pip-version-check",
+             "Pillow==12.0.0"], env, "pillow")
     versions = resolved_tool_versions()
     # Resolve/download the exact application lock before dx's timer-based
     # metadata spinner; subsequent application Cargo work is offline/locked.
