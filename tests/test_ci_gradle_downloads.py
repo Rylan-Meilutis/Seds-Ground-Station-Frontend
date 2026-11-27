@@ -221,7 +221,7 @@ class CacheContract(unittest.TestCase):
         # The other cache is the dx CLI (test_ci_platforms.DxCache).
         self.assertEqual([s["with"]["path"] for s in steps if "gradle" not in s["with"]["path"]], [".ci-tools/dx", ".ci-tools/dx"])
         steps = [s for s in steps if "gradle" in s["with"]["path"]]
-        self.assertEqual([s["uses"] for s in steps], ["actions/cache/restore@v4", "actions/cache/save@v4"])
+        self.assertEqual([s["uses"] for s in steps], ["actions/cache/restore@v5", "actions/cache/save@v5"])
         for step in steps:
             self.assertEqual(step["with"]["path"].split(), self.PATHS)
             self.assertFalse(set(step["with"]) - {"path", "key", "restore-keys"})
@@ -275,7 +275,7 @@ class CacheContract(unittest.TestCase):
                 if path.name != "platforms.yml" and "cache" in uses:
                     # Only the dx CLI, restored and never saved (test_ci_platforms.DxCache).
                     self.assertEqual((path.name, uses, step["with"]["path"]),
-                                     ("release.yml", "actions/cache/restore@v4", ".ci-tools/dx"))
+                                     ("release.yml", "actions/cache/restore@v5", ".ci-tools/dx"))
         self.assertNotIn("secrets.", (ROOT / ".github/workflows/platforms.yml").read_text())
 
     def test_gradle_home_is_the_cached_one_for_every_gradle_target(self):

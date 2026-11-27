@@ -132,7 +132,7 @@ class ReleaseWorkflow(unittest.TestCase):
             if job != "unsigned":
                 self.assertLess(build, runs.index("python scripts/ci/frontend.py release-verify"))
                 self.assertLess(runs.index("python scripts/ci/frontend.py release-verify"), stage)
-            uploads = [s for s in self.jobs[job]["steps"] if s.get("uses") == "actions/upload-artifact@v4"]
+            uploads = [s for s in self.jobs[job]["steps"] if s.get("uses") == "actions/upload-artifact@v6"]
             assets = [u for u in uploads if u["with"]["name"] == "release-${{ matrix.target }}"]
             self.assertEqual(len(assets), 1)
             self.assertEqual(assets[0]["with"]["path"], "release-assets/${{ matrix.target }}/")

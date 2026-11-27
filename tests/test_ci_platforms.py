@@ -105,7 +105,7 @@ class PlatformCI(unittest.TestCase):
             expected = ("" if row["target"] == "wearos_sim" else
                         "--require-launch-log --no-screen-check" if row["api"] == 24 else "--require-render-log")
             self.assertEqual(row["render"], expected)
-        download = next(s for s in job["steps"] if s.get("uses") == "actions/download-artifact@v4")
+        download = next(s for s in job["steps"] if s.get("uses") == "actions/download-artifact@v7")
         self.assertEqual(download["with"]["name"], "frontend-${{ matrix.target }}-${{ matrix.profile }}")
         emulator = next(s for s in job["steps"] if s.get("uses", "").startswith("reactivecircus/android-emulator-runner@"))
         self.assertRegex(emulator["uses"], r"@[0-9a-f]{40}$")
@@ -363,12 +363,27 @@ class PlatformCI(unittest.TestCase):
                     bootstraps += 1
                     before = steps[i - 1]
                     self.assertEqual((before["uses"], before["with"]["path"], before["with"]["restore-keys"]),
-                                     ("actions/cache/restore@v4", ".ci-tools/dx", release_prefix), name)
+                                     ("actions/cache/restore@v5", ".ci-tools/dx", release_prefix), name)
                     self.assertEqual(before.get("if"), step.get("if"), name)
                     self.assertIn(rjob["env"]["CI_FRONTEND_TARGET"].replace("${{ matrix.target }}", targets[0]),
                                   targets, name)
                 self.assertFalse(step.get("uses", "").startswith("actions/cache/save"), name)
         self.assertEqual(bootstraps, 6)
+
+    def test_actions_run_on_node_24_and_msvc_comes_from_vcvars(self):
+        # Node 20 actions are deprecated on the hosted runners; ilammy/msvc-dev-cmd has no Node 24 release.
+        for name in ("platforms.yml", "release.yml"):
+            text = (ROOT / ".github/workflows" / name).read_text()
+            self.assertNotIn("uses: ilammy/", text)
+            for old in ("checkout@v4", "setup-python@v5", "setup-node@v4", "setup-java@v4", "cache/restore@v4",
+                        "cache/save@v4", "upload-artifact@v4", "download-artifact@v4", "setup-android@v3"):
+                self.assertNotIn(old, text, name)
+            workflow = yaml.safe_load(text)
+            msvc = [s for job in workflow["jobs"].values() for s in job.get("steps", []) if s.get("name") == "Windows MSVC environment"]
+            self.assertEqual(len(msvc), 1, name)
+            self.assertEqual((msvc[0]["if"], msvc[0]["shell"]), ("runner.os == 'Windows'", "pwsh"))
+            for needle in ("vswhere.exe", "Microsoft.VisualStudio.Component.VC.Tools.x86.x64", "vcvars64.bat", "GITHUB_ENV", "$LASTEXITCODE"):
+                self.assertIn(needle, msvc[0]["run"], name)
 
     def test_hosted_runners_use_every_core_gitlab_keeps_two(self):
         self.assertEqual(self.github["jobs"]["build"]["env"]["CI_CARGO_JOBS"], "cores")
@@ -567,7 +582,7 @@ class PlatformCI(unittest.TestCase):
 
     def test_artifacts_logs_always_retained_and_collision_free(self):
         steps = self.github["jobs"]["build"]["steps"]
-        upload = next(x for x in steps if x.get("uses") == "actions/upload-artifact@v4")
+        upload = next(x for x in steps if x.get("uses") == "actions/upload-artifact@v6")
         self.assertEqual(upload["if"], "always()")
         self.assertIn("matrix.target", upload["with"]["name"])
         self.assertIn("matrix.profile", upload["with"]["name"])

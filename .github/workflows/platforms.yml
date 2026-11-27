@@ -16,8 +16,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - uses: actions/checkout@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     - run: python -m pip install PyYAML==6.0.3
@@ -125,11 +125,11 @@ jobs:
       CI_CARGO_JOBS: cores
       CARGO_INCREMENTAL: '0'
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - uses: actions/checkout@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
-    - uses: actions/setup-node@v4
+    - uses: actions/setup-node@v5
       with:
         node-version: '22'
     - name: Linux native libraries
@@ -139,7 +139,24 @@ jobs:
         sudo apt-get install -y pkg-config build-essential libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev libclang-dev cmake ninja-build patchelf file unzip zip fuse3 libfuse2t64 rpm makepkg libarchive-tools pacman-package-manager fakeroot flatpak desktop-file-utils appstream gnupg zstd
     - name: Windows MSVC environment
       if: runner.os == 'Windows'
-      uses: ilammy/msvc-dev-cmd@v1
+      # What ilammy/msvc-dev-cmd did (it has no Node 24 release): run the
+      # newest Visual Studio's vcvars64.bat and export what it changed.
+      shell: pwsh
+      run: |
+        $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+        $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+        if (-not $vs) { throw 'No Visual Studio with the x64 C++ tools' }
+        $vcvars = Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+        $before = @{}
+        Get-ChildItem env: | ForEach-Object { $before[$_.Name] = $_.Value }
+        $lines = cmd /c "`"$vcvars`" >nul && set"
+        if ($LASTEXITCODE -ne 0) { throw "vcvars64.bat failed: $LASTEXITCODE" }
+        foreach ($line in $lines) {
+          if ($line -match '^([^=]+)=(.*)$' -and $before[$Matches[1]] -cne $Matches[2]) {
+            "$($Matches[1])=$($Matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          }
+        }
+        if (-not ($lines -match '^VCToolsInstallDir=')) { throw 'vcvars64.bat set no VCToolsInstallDir' }
     # App Store Connect requires the iOS 27 SDK (ITMS-90725), as the store
     # build uses. The xcode-27 image is Apple silicon only; the Intel
     # simulator and macOS targets stay on Xcode 26 until an Intel image has 27.
@@ -163,12 +180,12 @@ jobs:
         xcrun --sdk watchsimulator --show-sdk-version
 
         brew install xcodegen'
-    - uses: actions/setup-java@v4
+    - uses: actions/setup-java@v5
       if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
       with:
         distribution: temurin
         java-version: '17'
-    - uses: android-actions/setup-android@v3
+    - uses: android-actions/setup-android@v4
       with:
         packages: platform-tools
       if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
@@ -185,7 +202,7 @@ jobs:
     - name: Cached Gradle downloads
       id: gradle-downloads
       if: startsWith(matrix.target, 'android') || startsWith(matrix.target, 'wearos')
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: |
           .gradle-user-home/caches/modules-2
@@ -199,7 +216,7 @@ jobs:
     # release.yml restores the same keys (tags read main's caches).
     - name: Cached dx build tool
       if: ${{ !startsWith(matrix.target, 'wearos') }}
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@v5
       with:
         path: .ci-tools/dx
         key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}--restore-only
@@ -221,7 +238,7 @@ jobs:
     # Release rows save, so debug and release never race for the same key.
     - name: Save the dx build tool
       if: github.event_name == 'push' && matrix.profile == 'release' && steps.bootstrap.outputs.dx-built == 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: .ci-tools/dx
         key: dx-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}--${{ steps.bootstrap.outputs.dx-version }}
@@ -229,7 +246,7 @@ jobs:
       run: python scripts/ci/frontend.py build
     - name: Save Gradle downloads
       if: github.event_name == 'push' && matrix.profile == 'release' && (matrix.target == 'android' || matrix.target == 'wearos') && steps.gradle-downloads.outputs.cache-hit != 'true'
-      uses: actions/cache/save@v4
+      uses: actions/cache/save@v5
       with:
         path: |
           .gradle-user-home/caches/modules-2
@@ -237,7 +254,7 @@ jobs:
           !.gradle-user-home/caches/modules-2/modules-2.lock
           !.gradle-user-home/caches/modules-2/gc.properties
         key: ${{ steps.gradle-downloads.outputs.cache-primary-key }}
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v6
       if: always()
       with:
         name: frontend-${{ matrix.target }}-${{ matrix.profile }}
@@ -300,13 +317,13 @@ jobs:
           component: com.UBSEDS.GS26/com.ubseds.gs26.wear.MainActivity
           render: ''
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-python@v5
+    - uses: actions/checkout@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     - name: Pillow for the screenshot check
       run: python -m pip install -r requirements.txt
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@v7
       with:
         name: frontend-${{ matrix.target }}-${{ matrix.profile }}
         path: launch-input
@@ -327,7 +344,7 @@ jobs:
         emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
         disable-animations: true
         script: python scripts/android_launch_smoke.py --apk launch-input/artifacts/${{ matrix.target }} --component ${{ matrix.component }} --out launch-output --wait 45 ${{ matrix.render }}
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@v6
       if: always()
       with:
         name: android-launch-${{ matrix.target }}-${{ matrix.profile }}-api${{ matrix.api }}

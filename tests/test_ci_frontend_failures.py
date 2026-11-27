@@ -330,7 +330,7 @@ class PlatformPrerequisites(unittest.TestCase):
         import yaml
         github = yaml.safe_load((ROOT / ".github/workflows/platforms.yml").read_text())
         steps = github["jobs"]["build"]["steps"]
-        android = next(step for step in steps if step.get("uses") == "android-actions/setup-android@v3")
+        android = next(step for step in steps if step.get("uses") == "android-actions/setup-android@v4")
         self.assertEqual(android["with"]["packages"], "platform-tools")
         linux = next(step for step in steps if step.get("name") == "Linux native libraries")["run"]
         for package in ["makepkg", "libarchive-tools", "pacman-package-manager", "fakeroot", "flatpak", "rpm", "desktop-file-utils", "appstream", "gnupg", "zstd"]:

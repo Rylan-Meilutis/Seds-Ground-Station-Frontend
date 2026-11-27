@@ -50,11 +50,11 @@ jobs:
       guarded: ${{ steps.guard.outputs.guarded }}
       ref: ${{ steps.guard.outputs.ref }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         ref: refs/tags/${{ env.RELEASE_TAG }}
         fetch-depth: 0
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     - name: Protected ref, tag on main or dev
@@ -75,10 +75,10 @@ jobs:
       PLAY_PROMOTE_FROM: ${{ inputs.play_from_track }}
       PLAY_TRACK: ${{ inputs.play_to_track }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         ref: ${{ needs.version.outputs.ref }}
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     - name: Google Play secret configured, testing track allowed
@@ -104,10 +104,10 @@ jobs:
       CI_FRONTEND_TARGET: ios
       TESTFLIGHT_GROUPS: ${{ inputs.testflight_groups }}
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v5
       with:
         ref: ${{ needs.version.outputs.ref }}
-    - uses: actions/setup-python@v5
+    - uses: actions/setup-python@v6
       with:
         python-version: '3.11'
     - name: App Store Connect key configured, group names valid
