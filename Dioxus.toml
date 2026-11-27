@@ -7,7 +7,7 @@ out_dir = "dist"
 asset_dir = "assets"
 icon = "assets/icon.png"
 category = "public.app-category.utilities"
-build = "39"
+build = "40"
 # Android: link native code for the manifest's minSdk (build.py ANDROID_MIN_SDK,
 # 24). Unset, dx 0.7.10 links for API 28, and the library may then need libc
 # symbols that Android 7.0-8.1 (API 24-27) do not have, so it would not load.

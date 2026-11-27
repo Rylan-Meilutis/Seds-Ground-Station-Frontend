@@ -1,6 +1,6 @@
 [package]
 name = "groundstation_frontend"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 authors = ["Rylan Meilutis <rylan.meilutis@gmail.com>"]
 description = "Dioxus powered frontend for easy irec rocket control and managment over Web, Desktop, and Mobile."
