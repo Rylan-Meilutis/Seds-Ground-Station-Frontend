@@ -10,6 +10,7 @@ the store API keys to move an existing build between testing tracks/groups.
 from __future__ import annotations
 
 import argparse
+import http.client
 import base64
 import datetime
 import hashlib
@@ -404,29 +405,80 @@ def wasm_bindgen_asset(host, version):
         raise RuntimeError(f"No pinned official wasm-bindgen {version} binary for {host}; update release checksums") from None
 
 
-def download(url, archive, *, limit=64 * 1024 * 1024):
-    """Bounded retries for transient transport failures; pins are checked by callers."""
+def download(url, archive, *, limit=64 * 1024 * 1024, seconds=120, attempts=3):
+    """Bounded retries for transient transport failures; pins are checked by callers.
+
+    A body cut short of its Content-Length (http.client.IncompleteRead) is a
+    transient failure too, never a short file."""
     if archive.exists() or archive.is_symlink():
         raise RuntimeError("Refusing stale download path")
-    for attempt in range(3):
+    for attempt in range(attempts):
         started = time.monotonic()
         try:
             with urllib.request.urlopen(url, timeout=120) as response, archive.open("xb") as out:
                 total = 0
+                headers = getattr(response, "headers", None)
+                expected = headers.get("Content-Length") if headers is not None else None
                 while chunk := response.read(1024 * 1024):
                     total += len(chunk)
-                    if total > limit or time.monotonic() - started > 120:
-                        raise RuntimeError("Tool download exceeds its size bound or 120 seconds")
+                    if total > limit or time.monotonic() - started > seconds:
+                        raise RuntimeError(f"Tool download exceeds its size bound or {seconds} seconds")
                     out.write(chunk)
+                if expected is not None and expected.isdigit() and total != int(expected):
+                    raise http.client.IncompleteRead(b"", int(expected) - total)
             return
-        except (urllib.error.URLError, TimeoutError, ConnectionError) as error:
+        except (urllib.error.URLError, TimeoutError, ConnectionError, http.client.HTTPException) as error:
             archive.unlink(missing_ok=True)
             transient = not isinstance(error, urllib.error.HTTPError) or error.code in {408, 429, 500, 502, 503, 504}
             if isinstance(error, urllib.error.HTTPError):
                 error.close()
-            if not transient or attempt == 2:
+            if not transient or attempt == attempts - 1:
                 raise
             time.sleep(1 << attempt)
+
+
+# dx 0.7.10 embeds the WebView2 offline installer in the NSIS installer (its
+# default install mode) and downloads it once, with no retry; a dropped
+# connection failed hosted run 46037245689. dx skips the download when the
+# file is already in its tools directory (~/.dx/tools, or DX_HOME/tools).
+WEBVIEW2_OFFLINE_URL = "https://go.microsoft.com/fwlink/?linkid=2099617"
+WEBVIEW2_OFFLINE_NAME = "MicrosoftEdgeWebView2RuntimeInstaller_x64.exe"
+
+
+def dx_tools_dir():
+    home = os.environ.get("DX_HOME")
+    return (Path(home) if home else Path.home() / ".dx") / "tools"
+
+
+def install_webview2_offline_installer(env):
+    """Prefetch the installer with retries; Microsoft's signature must verify.
+
+    The link always serves Microsoft's current build, so there is no fixed
+    checksum to pin; the Authenticode signature stands in for one."""
+    tools = dx_tools_dir()
+    tools.mkdir(parents=True, exist_ok=True)
+    destination = tools / WEBVIEW2_OFFLINE_NAME
+    if destination.exists() or destination.is_symlink():
+        raise RuntimeError(f"Refusing a WebView2 installer already at {destination}; use a fresh runner")
+    with tempfile.TemporaryDirectory(prefix="webview2-", dir=tools) as temporary:
+        staged = Path(temporary) / WEBVIEW2_OFFLINE_NAME
+        download(WEBVIEW2_OFFLINE_URL, staged, limit=512 * 1024 * 1024, seconds=900, attempts=5)
+        script = ("$s = Get-AuthenticodeSignature -LiteralPath $env:WEBVIEW2_INSTALLER; "
+                  "if ($s.Status -ne 'Valid' -or $s.SignerCertificate.Subject -notmatch "
+                  "'^CN=Microsoft Corporation, ') { Write-Output \"$($s.Status) $($s.SignerCertificate.Subject)\"; exit 1 }; "
+                  "Write-Output $s.SignerCertificate.Subject")
+        result = subprocess.run(["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+                                env={**env, "WEBVIEW2_INSTALLER": str(staged)},
+                                capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            raise RuntimeError("WebView2 offline installer is not validly signed by Microsoft: "
+                               + (result.stdout + result.stderr).strip()[:500])
+        size = staged.stat().st_size
+        staged.rename(destination)
+    (ROOT / "ci-results/webview2-offline-installer.json").write_text(json.dumps({
+        "url": WEBVIEW2_OFFLINE_URL, "path": str(destination), "bytes": size,
+        "sha256": file_sha256(destination), "signer": result.stdout.strip(),
+    }, indent=2) + "\n")
 
 
 def install_wasm_bindgen(host, version, env):
@@ -660,6 +712,8 @@ def bootstrap(name):
     install_binaryen(host)
     if name.startswith("android"):
         install_bundletool(env)
+    if name == "windows":
+        install_webview2_offline_installer(env)
     if name in {"linux", "linux-arm64"}:
         for tool in ["makepkg", "bsdtar", "pacman", "fakeroot", "flatpak", "rpmbuild", "desktop-file-validate", "appstreamcli", "gpg"]:
             if not shutil.which(tool, path=env["PATH"]):

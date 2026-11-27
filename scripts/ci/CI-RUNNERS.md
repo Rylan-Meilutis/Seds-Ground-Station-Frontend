@@ -245,6 +245,17 @@ Non-Android `dx` commands also capture their own bounded failure output through 
 
 A dependency download answered with 429 or 5xx never enters that fallback; it fails the build as a download failure (see below).
 
+## WebView2 offline installer (Windows)
+
+dx 0.7.10 embeds Microsoft's WebView2 offline installer in the NSIS installer, which is its default install mode. dx downloads that installer once, with no retry: a dropped connection failed hosted run 46037245689 ("end of file before message length reached"). On Windows, `frontend.py bootstrap` now fetches it first:
+- Source: `go.microsoft.com/fwlink/?linkid=2099617`.
+- Retries: up to 5 attempts. A body shorter than its Content-Length counts as a failed attempt.
+- Check: `Get-AuthenticodeSignature` must report a valid signature from `CN=Microsoft Corporation`. The link always serves Microsoft's current build, so there is no fixed checksum to pin.
+- Install: the file goes into dx's tools directory (`~/.dx/tools`, or `DX_HOME/tools`), where dx finds it and skips its own download.
+- Receipt: `ci-results/webview2-offline-installer.json` records the size, SHA-256 and signer.
+
+The file was about 249 MB on 2026-11-27.
+
 ## Gradle dependency downloads
 
 Every CI Android and Wear OS build first installs `scripts/ci/maven-central-mirror.gradle` into `.gradle-user-home/init.d`. The init script points every Maven Central repository (plugin, settings, buildscript and project) at Google's mirror, `maven-central.storage-download.googleapis.com/maven2`. Maven Central refused one hosted runner with 429 on every attempt over about 30 minutes (main run 45963903338, android-armv7). With an empty Gradle home, the generated phone project and the Wear project made no requests to Maven Central and resolved everything from the mirror. A plain local `build.py` run does not install it.
