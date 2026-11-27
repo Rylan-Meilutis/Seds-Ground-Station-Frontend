@@ -3877,9 +3877,21 @@ def _finalize_android_release(frontend_dir: Path, package_type: str) -> None:
                  "--out", str(signed), str(source)], cwd=frontend_dir, env=env)
             run([signer, "verify", "--verbose", str(signed)], cwd=frontend_dir, env=env)
         else:
-            run(["jarsigner", "-keystore", settings["ANDROID_KEYSTORE_PATH"], "-storetype", settings["ANDROID_KEYSTORE_TYPE"],
-                 "-storepass:env", "GS_ANDROID_STORE_PASSWORD", "-keypass:env", "GS_ANDROID_KEY_PASSWORD",
-                 "-signedjar", str(signed), str(source), settings["ANDROID_KEY_ALIAS"]], cwd=frontend_dir, env=env)
+            sign = ["jarsigner", "-keystore", settings["ANDROID_KEYSTORE_PATH"], "-storetype", settings["ANDROID_KEYSTORE_TYPE"],
+                    "-storepass:env", "GS_ANDROID_STORE_PASSWORD", "-keypass:env", "GS_ANDROID_KEY_PASSWORD",
+                    "-signedjar", str(signed), str(source), settings["ANDROID_KEY_ALIAS"]]
+            print(f"Running: {_cmd_to_str(sign)} (cwd={frontend_dir})", flush=True)
+            # Print jarsigner's report ourselves and end it with a blank line: newer JDKs end
+            # their "Warning:" block without one, and this script's own output must not run
+            # into it (scripts/ci/frontend.py reads that block up to the blank line).
+            signing = subprocess.run(sign, cwd=frontend_dir, env=os.environ | env, stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT)
+            report = signing.stdout.decode("utf-8", errors="replace").rstrip("\n")
+            if report:
+                print(report, flush=True)
+            print(flush=True)
+            if signing.returncode:
+                raise subprocess.CalledProcessError(signing.returncode, sign)
             verification = run_capture(["jarsigner", "-verify", str(signed)], cwd=frontend_dir, env=env)
             if "jar verified." not in verification or "unsigned entries" in verification:
                 raise RuntimeError("Android bundle signature verification failed.")

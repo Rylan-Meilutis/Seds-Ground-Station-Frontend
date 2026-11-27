@@ -1,3 +1,5 @@
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -185,7 +187,9 @@ class FinalReleaseTests(unittest.TestCase):
                     flag = '--out' if kind == 'apk' else '-signedjar'
                     if flag in command: Path(command[command.index(flag)+1]).write_text('signed')
                     self.assertEqual(kwargs['env']['GS_ANDROID_STORE_PASSWORD'], 'store-secret')
-                with patch.object(build, '_require_android_release_settings', return_value=settings), patch.object(build, 'dist_dir', return_value=root), patch.object(build, '_detect_android_sdk_root', return_value=None), patch.object(build.shutil, 'which', return_value='/tools/apksigner'), patch.object(build, 'run', side_effect=run), patch.object(build, 'run_capture', return_value='jar verified.'):
+                    return subprocess.CompletedProcess(command, 0, b'jar signed.\n', None)
+                # jarsigner signs through subprocess.run (its report is printed and closed with a blank line).
+                with patch.object(build, '_require_android_release_settings', return_value=settings), patch.object(build, 'dist_dir', return_value=root), patch.object(build, '_detect_android_sdk_root', return_value=None), patch.object(build.shutil, 'which', return_value='/tools/apksigner'), patch.object(build, 'run', side_effect=run), patch.object(build.subprocess, 'run', side_effect=run), patch.object(build, 'run_capture', return_value='jar verified.'), contextlib.redirect_stdout(io.StringIO()):
                     build._finalize_android_release(root, kind)
                 self.assertEqual(artifact.read_text(), 'signed')
                 self.assertNotIn('store-secret', repr(commands))
@@ -198,8 +202,10 @@ class FinalReleaseTests(unittest.TestCase):
             artifact = root / f'{build.ANDROID_APP_NAME}.aab'
             artifact.write_text('original')
             settings = dict(ANDROID_KEYSTORE_PATH='/keys/release.jks', ANDROID_KEY_ALIAS='upload', ANDROID_KEYSTORE_TYPE='JKS', ANDROID_KEYSTORE_PASSWORD='secret', ANDROID_KEY_PASSWORD='secret')
-            def sign(command, **kwargs): Path(command[command.index('-signedjar')+1]).write_text('bad-signature')
-            with patch.object(build, '_require_android_release_settings', return_value=settings), patch.object(build, 'dist_dir', return_value=root), patch.object(build, 'run', side_effect=sign), patch.object(build, 'run_capture', return_value='jar is unsigned.'):
+            def sign(command, **kwargs):
+                Path(command[command.index('-signedjar')+1]).write_text('bad-signature')
+                return subprocess.CompletedProcess(command, 0, b'jar signed.\n', None)
+            with patch.object(build, '_require_android_release_settings', return_value=settings), patch.object(build, 'dist_dir', return_value=root), patch.object(build.subprocess, 'run', side_effect=sign), patch.object(build, 'run_capture', return_value='jar is unsigned.'), contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(RuntimeError): build._finalize_android_release(root, 'aab')
             self.assertEqual(artifact.read_text(), 'original')
 

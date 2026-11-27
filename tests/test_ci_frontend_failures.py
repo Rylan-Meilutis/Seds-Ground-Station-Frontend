@@ -180,6 +180,43 @@ assert sys.stdout.encoding.lower()=='utf-8' and sys.stderr.encoding.lower()=='ut
                 failure = error
             return failure, json.loads((Path(directory) / "ci-results/build.json").read_text())
 
+    def test_build_py_closes_jarsigner_block_before_its_own_output(self):
+        # JDK 17.0.21 (Release run 45945293150) ends the block without a blank line, and
+        # build.py's buffered output then ran into it and made it fatal. Run the real
+        # _finalize_android_release with a jarsigner that prints exactly that.
+        fake_jarsigner = (
+            "import shutil,sys\n"
+            "a=sys.argv[1:]\n"
+            "if '-verify' in a: print('jar verified.'); sys.exit(0)\n"
+            "shutil.copy(a[-2], a[a.index('-signedjar')+1])\n"
+            "sys.stdout.write(" + repr(f"jar signed.\n\n{ci.JARSIGNER_HEADER} \n{ci.JARSIGNER_SELF_SIGNED}\n"
+                                        f"{ci.JARSIGNER_POSIX}\n") + ")\n")
+        driver = (
+            "import importlib.util,sys\nfrom pathlib import Path\n"
+            "spec=importlib.util.spec_from_file_location('b',sys.argv[1]);b=importlib.util.module_from_spec(spec);spec.loader.exec_module(b)\n"
+            "work=Path(sys.argv[2]);dist=work/'dist';dist.mkdir();(dist/(b.ANDROID_APP_NAME+'.aab')).write_bytes(b'PK')\n"
+            "b.dist_dir=lambda _d:dist\n"
+            "b._require_android_release_settings=lambda _d:{'ANDROID_KEYSTORE_PATH':'k.jks','ANDROID_KEYSTORE_TYPE':'JKS',"
+            "'ANDROID_KEYSTORE_PASSWORD':'x','ANDROID_KEY_PASSWORD':'x','ANDROID_KEY_ALIAS':'up'}\n"
+            "print('Removing existing generated Android project: fixture')\n"
+            "b._finalize_android_release(work,'aab')\n"
+            "print('Renaming android artifact: done')\n")
+        with tempfile.TemporaryDirectory() as directory, patch.object(ci, "ROOT", Path(directory)), \
+             contextlib.redirect_stdout(io.StringIO()):
+            tools = Path(directory) / "bin"
+            tools.mkdir()
+            (tools / "jarsigner").write_text(f"#!{sys.executable}\n" + fake_jarsigner)
+            (tools / "jarsigner").chmod(0o755)
+            (Path(directory) / "driver.py").write_text(driver)
+            env = os.environ.copy()
+            env["PATH"] = str(tools) + os.pathsep + env["PATH"]
+            ci.checked([sys.executable, str(Path(directory) / "driver.py"), str(ROOT / "build.py"), directory], env,
+                       "store-android", android_store_signing=True)
+            receipt = json.loads((Path(directory) / "ci-results/store-android.json").read_text())
+        self.assertEqual(receipt["warning_lines"], 0)
+        self.assertEqual(receipt["jarsigner_self_signed_notices"],
+                         [ci.JARSIGNER_HEADER, ci.JARSIGNER_SELF_SIGNED, ci.JARSIGNER_POSIX])
+
     # From hosted run 45823770913 (watchOS on Xcode 27.2).
     XCODE_APPINTENTS = ("2026-11-26 15:20:12.894 appintentsmetadataprocessor[68979:210764] warning: Metadata extraction "
                         "skipped, no AppIntents.framework dependency found")
