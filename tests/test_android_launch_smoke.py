@@ -284,6 +284,7 @@ class EmulatorDriver(unittest.TestCase):
         crash = "\n".join([START, RENDERED, *FAILURES["native crash"]])
         responses = {
             ("shell", "getprop", "sys.boot_completed"): "1\n",
+            ("shell", "pm", "path", "android"): "package:/system/framework/framework-res.apk\n",
             ("shell", "getprop", "ro.build.version.sdk"): "36\n",
             ("shell", "getprop", "ro.product.cpu.abi"): "x86_64\n",
             ("shell", "pidof", PKG): f"{APP}\n",
@@ -347,6 +348,8 @@ class EmulatorDriver(unittest.TestCase):
                     out = "5000\n" if restarts and state["scaled"] else f"{APP}\n"
                 elif key == ("shell", "getprop", "sys.boot_completed"):
                     out = "1\n"
+                elif key == ("shell", "pm", "path", "android"):
+                    out = "package:/system/framework/framework-res.apk\n"
                 elif key == ("shell", "settings", "get", "system", "font_scale"):
                     out = "1.0\n"
                 elif key == ("shell", "dumpsys", "activity", "activities"):
@@ -384,3 +387,42 @@ class EmulatorDriver(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Install(unittest.TestCase):
+    def test_no_streamed_install_before_android_8(self):
+        apk = Path("app.apk")
+        self.assertEqual(smoke.install_args(apk, 24), ["install", "-r", "-g", "--no-streaming", "app.apk"])
+        self.assertEqual(smoke.install_args(apk, 25), ["install", "-r", "-g", "--no-streaming", "app.apk"])
+        self.assertEqual(smoke.install_args(apk, 26), ["install", "-r", "-g", "app.apk"])
+        self.assertEqual(smoke.install_args(apk, 36), ["install", "-r", "-g", "app.apk"])
+
+    def test_waits_for_package_manager_then_retries_one_stuck_install(self):
+        answers = iter(["", "Error: Could not access the Package Manager", "package:/system/framework/framework-res.apk"])
+        calls = []
+
+        def adb(*args, **kwargs):
+            calls.append(args)
+            if len(calls) == 1:
+                raise subprocess.TimeoutExpired(["adb", *args], kwargs.get("timeout"))
+            return "Success"
+        with patch.object(smoke, "shell", side_effect=lambda *a, **k: next(answers)) as shell, \
+             patch.object(smoke, "adb", side_effect=adb), patch.object(smoke.time, "sleep"):
+            smoke.install(Path("app.apk"), 24)
+        self.assertEqual(shell.call_count, 3)
+        self.assertEqual(calls, [tuple(smoke.install_args(Path("app.apk"), 24))] * 2)
+
+    def test_second_stuck_install_fails_the_run(self):
+        def adb(*args, **kwargs):
+            raise subprocess.TimeoutExpired(["adb", *args], 300)
+        with patch.object(smoke, "shell", return_value="package:/x"), patch.object(smoke, "adb", side_effect=adb), \
+             patch.object(smoke.time, "sleep"):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                smoke.install(Path("app.apk"), 24)
+
+    def test_package_manager_that_never_starts_fails_the_run(self):
+        clock = itertools.count(0, 60)
+        with patch.object(smoke, "shell", return_value=""), patch.object(smoke.time, "sleep"), \
+             patch.object(smoke.time, "monotonic", side_effect=lambda: next(clock)):
+            with self.assertRaisesRegex(RuntimeError, "package manager did not start"):
+                smoke.install(Path("app.apk"), 24)

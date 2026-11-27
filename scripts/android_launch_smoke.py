@@ -234,6 +234,30 @@ def shell(*args, **kwargs):
     return adb("shell", *args, **kwargs)
 
 
+def install_args(apk, sdk):
+    # Before Android 8 a streamed install (APK piped into `cmd package`) can
+    # hang on a slow emulator; copy the APK first and let pm install it.
+    return ["install", "-r", "-g", *(["--no-streaming"] if sdk < 26 else []), str(apk)]
+
+
+def install(apk, sdk, attempts=2, timeout=300):
+    # sys.boot_completed can come before the package manager answers.
+    deadline = time.monotonic() + 180
+    while "package:" not in shell("pm", "path", "android", check=False, timeout=30):
+        if time.monotonic() > deadline:
+            raise RuntimeError("package manager did not start within 180 s of boot")
+        time.sleep(2)
+    for attempt in range(1, attempts + 1):
+        try:
+            adb(*install_args(apk, sdk), timeout=timeout)
+            return
+        except (subprocess.TimeoutExpired, RuntimeError) as error:
+            if attempt == attempts:
+                raise
+            print(f"install attempt {attempt} failed ({error}); retrying", flush=True)
+            time.sleep(10)
+
+
 def wait_for_boot(timeout=600):
     adb("wait-for-device", timeout=timeout)
     deadline = time.monotonic() + timeout
@@ -291,7 +315,7 @@ def main(argv=None):
     # Wear OS covers every app with its charging screen while the emulator
     # reports a charger; unplug it (harmless on phones).
     shell("dumpsys", "battery", "unplug", check=False)
-    adb("install", "-r", "-g", str(apk), timeout=600)
+    install(apk, int(sdk) if sdk.isdigit() else 0)
     adb("logcat", "-b", "all", "-c", check=False)
 
     am_start = shell("am", "start", "-W", "-n", args.component, check=False, timeout=180)
