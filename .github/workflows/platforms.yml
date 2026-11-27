@@ -204,12 +204,14 @@ jobs:
           profile: debug
           api: 36
           image: google_apis
+          ram: 4096M
           component: com.UBSEDS.GS26/dev.dioxus.main.MainActivity
           render: --require-render-log
         - target: android_sim
           profile: release
           api: 36
           image: google_apis
+          ram: 4096M
           component: com.UBSEDS.GS26/dev.dioxus.main.MainActivity
           render: --require-render-log
         - target: android_sim
@@ -217,6 +219,9 @@ jobs:
           api: 24
           # The API 24 google_apis image hung in boot (adb stopped answering).
           image: default
+          # With 4 GB the API 24 image never finishes booting and adb hangs;
+          # 2 GB boots in seconds (reproduced on a local emulator).
+          ram: 2048M
           component: com.UBSEDS.GS26/dev.dioxus.main.MainActivity
           # The API 24 image's built-in WebView (52, from 2016) is years older
           # than what real Android 7 devices get through Play and cannot run
@@ -229,6 +234,7 @@ jobs:
           profile: debug
           api: 34
           image: android-wear
+          ram: 4096M
           component: com.UBSEDS.GS26/com.ubseds.gs26.wear.MainActivity
           render: ''
     steps:
@@ -254,7 +260,7 @@ jobs:
         api-level: ${{ matrix.api }}
         target: ${{ matrix.image }}
         arch: x86_64
-        ram-size: 4096M
+        ram-size: ${{ matrix.ram }}
         disk-size: 6000M
         emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -camera-front none
         disable-animations: true

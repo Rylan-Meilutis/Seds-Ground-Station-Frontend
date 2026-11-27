@@ -88,6 +88,9 @@ class PlatformCI(unittest.TestCase):
         # google_apis image hung in boot.
         images = {(r["target"], r["api"]): r["image"] for r in job["strategy"]["matrix"]["include"]}
         self.assertEqual(images[("android_sim", 24)], "default")
+        # The API 24 image hangs in boot with 4 GB of RAM.
+        rams = {(r["target"], r["api"]): r["ram"] for r in job["strategy"]["matrix"]["include"]}
+        self.assertEqual(rams, {("android_sim", 36): "4096M", ("android_sim", 24): "2048M", ("wearos_sim", 34): "4096M"})
         for row in job["strategy"]["matrix"]["include"]:
             # Only targets the build job makes, as x86_64 for the emulator.
             self.assertIn(row["target"], [p["target"] for p in ci.PLATFORMS])
@@ -100,6 +103,7 @@ class PlatformCI(unittest.TestCase):
         self.assertRegex(emulator["uses"], r"@[0-9a-f]{40}$")
         self.assertLessEqual(emulator["timeout-minutes"], job["timeout-minutes"] - 10, "a hung emulator fails the step")
         self.assertEqual(emulator["with"]["arch"], "x86_64")
+        self.assertEqual(emulator["with"]["ram-size"], "${{ matrix.ram }}")
         self.assertIn("scripts/android_launch_smoke.py", emulator["with"]["script"])
         kvm = next(s for s in job["steps"] if s.get("name") == "Enable KVM")
         self.assertIn("udevadm trigger --name-match=kvm", kvm["run"])
