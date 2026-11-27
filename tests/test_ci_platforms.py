@@ -578,16 +578,20 @@ class PlatformCI(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, name):
                     ci.ci_env()
 
-    def test_parsed_linux_install_script_is_two_valid_shell_commands(self):
+    def test_parsed_linux_install_script_is_three_valid_shell_commands(self):
         import shlex
         step = next(s for s in self.github["jobs"]["build"]["steps"]
                     if s.get("name") == "Linux native libraries")
         lines = [shlex.split(line) for line in step["run"].splitlines() if line.strip()]
-        self.assertEqual(len(lines), 2)
-        self.assertEqual(lines[0], ["sudo", "apt-get", "update"])
-        self.assertEqual(lines[1][:4], ["sudo", "apt-get", "install", "-y"])
+        self.assertEqual(len(lines), 3)
+        # Only Microsoft's apt sources are dropped (403 in run 46046192557),
+        # never the Ubuntu ones the packages come from.
+        self.assertEqual(lines[0], ["sudo", "grep", "-rlE", r"packages\.microsoft\.com", "/etc/apt/sources.list.d/",
+                                    "|", "xargs", "-r", "sudo", "rm", "-f"])
+        self.assertEqual(lines[1], ["sudo", "apt-get", "-o", "Acquire::Retries=3", "update"])
+        self.assertEqual(lines[2][:6], ["sudo", "apt-get", "-o", "Acquire::Retries=3", "install", "-y"])
         for package in ["libgtk-3-dev", "libwebkit2gtk-4.1-dev", "librsvg2-dev", "libfuse2t64"]:
-            self.assertIn(package, lines[1])
+            self.assertIn(package, lines[2])
 
     def test_binaryen_all_real_host_assets_checksum_pinned(self):
         for p in ci.PLATFORMS:
