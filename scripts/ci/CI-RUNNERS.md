@@ -283,4 +283,15 @@ with `--final` for Android and macOS:
 - They are deleted by an `always()` cleanup step.
 - They are never uploaded.
 
-`tests/test_ci_release.py` enforces this. See `docs/releasing.md`.
+The `testflight` job (`xcode-27`) builds `--target ios --final`, or
+`--target watchos --final` when the optional watch App Store profile secrets
+are set: `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64` (watch app) and
+`IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64` (its widget). They are
+decoded into the same `$RUNNER_TEMP/seds-release-signing` directory and
+removed by the same cleanup. Only then does the job install XcodeGen
+(`brew install xcodegen`) and use the image's watchOS SDK, as the `watchos`
+row of `platforms.yml` does. Without the watch secret the job builds the
+iPhone-only IPA and its summary says the watch app is not embedded.
+
+`tests/test_ci_release.py` and `tests/test_ci_watch_store.py` enforce this.
+See `docs/releasing.md`.

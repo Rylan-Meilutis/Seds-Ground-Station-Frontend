@@ -28,7 +28,9 @@ MACOS_SECRETS = {"MACOS_DEVELOPER_ID_P12_B64", "MACOS_DEVELOPER_ID_P12_PASSWORD"
                  "APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
                  "APPLE_ID", "APPLE_APP_SPECIFIC_PASSWORD", "APPLE_TEAM_ID"}
 TESTFLIGHT_SECRETS = {"IOS_DISTRIBUTION_P12_B64", "IOS_DISTRIBUTION_P12_PASSWORD", "IOS_APPSTORE_PROFILE_B64",
-                      "APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID"}
+                      "APPLE_NOTARY_KEY_P8_B64", "APPLE_NOTARY_KEY_ID", "APPLE_NOTARY_ISSUER_ID",
+                      # Optional App Store profiles for the embedded Apple Watch app and its widget.
+                      "IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64", "IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64"}
 PLAY_SECRETS = ANDROID_SECRETS | {"PLAY_SERVICE_ACCOUNT_JSON_B64"}
 SIGNING_JOBS = {"android": ANDROID_SECRETS, "macos": MACOS_SECRETS, "testflight": TESTFLIGHT_SECRETS,
                 "play": PLAY_SECRETS}
@@ -209,8 +211,12 @@ class ReleaseWorkflow(unittest.TestCase):
                 self.assertEqual(steps[check]["run"], f"python scripts/ci/frontend.py release-store-check --store {store}")
                 for step in steps[check + 1:-1]:
                     upload_step = step.get("run") == "python scripts/ci/frontend.py release-store-upload"
+                    # XcodeGen is installed only when the watch app will be embedded.
+                    watch_step = name == "testflight" and "xcodegen" in step.get("run", "")
                     self.assertEqual(step.get("if"), "${{ !inputs.dry_run && steps.store.outputs.enabled == 'true' }}"
-                                     if upload_step else "steps.store.outputs.enabled == 'true'", step)
+                                     if upload_step else
+                                     "steps.store.outputs.enabled == 'true' && steps.signing.outputs.watch == 'true'"
+                                     if watch_step else "steps.store.outputs.enabled == 'true'", step)
                 for step in steps[:check]:
                     self.assertEqual(secrets_in(step), set())
                 runs = [s.get("run") for s in steps]
@@ -227,6 +233,16 @@ class ReleaseWorkflow(unittest.TestCase):
         self.assertEqual(self.jobs["testflight"]["env"]["CI_FRONTEND_TARGET"], "ios")
         self.assertEqual(self.jobs["play"]["env"]["CI_FRONTEND_TARGET"], "android")
         self.assertIn("python scripts/ci/frontend.py release-ios-signing", [s.get("run") for s in self.jobs["testflight"]["steps"]])
+        testflight = self.jobs["testflight"]["steps"]
+        runs = [s.get("run", "") for s in testflight]
+        signing = runs.index("python scripts/ci/frontend.py release-ios-signing")
+        self.assertEqual(testflight[signing]["id"], "signing")
+        self.assertEqual(set(testflight[signing]["env"]) & {"IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64",
+                                                             "IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64"},
+                         {"IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64", "IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64"})
+        xcodegen = next(i for i, run in enumerate(runs) if "brew install xcodegen" in run)
+        self.assertLess(signing, xcodegen)
+        self.assertLess(xcodegen, runs.index("python scripts/ci/frontend.py release-store-build"))
         self.assertIn("python scripts/ci/frontend.py release-android-signing", [s.get("run") for s in self.jobs["play"]["steps"]])
 
     def test_dry_run_signs_and_keeps_artifacts_but_publishes_nothing(self):

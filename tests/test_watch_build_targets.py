@@ -189,16 +189,59 @@ class WatchOSCommands(unittest.TestCase):
                 targets.handle_target_args(["--target", "watchos"], root, Mock(), package_ios)
             package_ios.assert_called_once_with(root, sign_kind="distribution", debug_mode=False, watch_app=product)
 
-    def test_final_is_refused_for_watch_targets(self):
-        for name in ["watchos", "wearos"]:
+    def test_final_is_refused_for_ad_hoc_and_wear_watch_targets(self):
+        for name in ["watchos_sim", "watchos_sim_intel", "wearos", "wearos_sim"]:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as d, quiet(), \
                  patch.object(targets.platform, "system", return_value="Darwin"), \
                  patch.dict(os.environ, {"ANDROID_HOME": "/sdk"}), \
                  patch.object(targets.subprocess, "run") as run, \
-                 contextlib.redirect_stderr(io.StringIO()):
+                 contextlib.redirect_stderr(io.StringIO()) as err:
                 with self.assertRaisesRegex(SystemExit, name):
                     targets.handle_target_args(["--target", name, "--final"], Path(d), Mock(), Mock(), Mock())
                 run.assert_not_called()
+                self.assertIn("only the watchos target", err.getvalue())
+
+    def test_final_watchos_needs_the_watch_distribution_profile(self):
+        with tempfile.TemporaryDirectory() as d, quiet(), \
+             patch.object(targets.platform, "system", return_value="Darwin"), \
+             patch.dict(os.environ, {"IOS_WATCH_DISTRIBUTION_MOBILEPROVISION": ""}), \
+             patch.object(targets.subprocess, "run") as run, \
+             contextlib.redirect_stderr(io.StringIO()) as err:
+            finalize = Mock()
+            with self.assertRaisesRegex(SystemExit, "watchos"):
+                targets.handle_target_args(["--target", "watchos", "--final"], Path(d), Mock(), Mock(), finalize)
+            run.assert_not_called()
+            finalize.assert_not_called()
+            self.assertIn("needs IOS_WATCH_DISTRIBUTION_MOBILEPROVISION", err.getvalue())
+        self.assertIn("does not exist", targets.final_watch_target_problem(
+            "watchos", {"IOS_WATCH_DISTRIBUTION_MOBILEPROVISION": "/missing/watch.mobileprovision"}))
+
+    def test_final_watchos_builds_and_distribution_signs_the_embedded_watch_app(self):
+        with tempfile.TemporaryDirectory() as d, quiet():
+            root = Path(d)
+            profile = root / "watch-appstore.mobileprovision"
+            profile.write_bytes(b"profile")
+            fake_ios_app(root)
+            product = fake_watch_product(root, "watchos", False)
+            events = []
+            finalize = Mock(side_effect=lambda r, platform, package_type, *, prepare:
+                            events.append(("prepare" if prepare else "finalize", platform)))
+            builder = Mock(side_effect=lambda *a, **kw: events.append(("build", kw["rust_target"])))
+            package_ios = Mock(side_effect=lambda *a, **kw: events.append(("ipa", kw["sign_kind"])))
+            with patch.object(targets.platform, "system", return_value="Darwin"), \
+                 patch.object(targets, "watch_tool_problem", return_value=None), \
+                 patch.dict(os.environ, {"IOS_WATCH_DISTRIBUTION_MOBILEPROVISION": str(profile)}), \
+                 patch.object(targets.subprocess, "run"):
+                targets.handle_target_args(["--target", "watchos", "--final"], root, builder, package_ios, finalize)
+            self.assertEqual(events, [("prepare", "ios"), ("build", "aarch64-apple-ios"), ("ipa", "distribution"),
+                                      ("finalize", "ios")])
+            package_ios.assert_called_once_with(root, sign_kind="distribution", debug_mode=False, watch_app=product)
+            self.assertTrue((root / "artifacts" / "watchos").is_dir())
+        # Never ad hoc or development: --final still refuses --no-sign and --debug.
+        for option in ["--no-sign", "--debug"]:
+            with self.subTest(option=option), self.assertRaises(SystemExit), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                targets.parse_args(["--target", "watchos", "--final", option])
 
     def test_linux_refuses_explicit_watchos(self):
         with patch.object(targets.platform, "system", return_value="Linux"), quiet(), contextlib.redirect_stderr(io.StringIO()):

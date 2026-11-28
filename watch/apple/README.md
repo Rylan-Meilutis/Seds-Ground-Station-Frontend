@@ -112,7 +112,10 @@ documented example snapshot and unknown page kinds. In Xcode, open
 * **Distribution:** a signed `watchos` build signs the embedded watch app
   first, with the profile in `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION` (bundle
   id `com.UBSEDS.GS26.watchkitapp`, same team), then the iOS app.
-  `--no-sign` leaves both unsigned. `--final` does not cover the watch yet.
+  `--no-sign` leaves both unsigned. `--target watchos --final` is the
+  TestFlight build with the watch app inside (needs that profile); the
+  embedded copies get the phone app's version and build. See
+  `docs/releasing.md` → "The Apple Watch app in the IPA".
 * The phone side (`assets/WatchBridge.m`) needs `WatchConnectivity.framework`
   linked; `build.rs` already does that for iOS builds.
 

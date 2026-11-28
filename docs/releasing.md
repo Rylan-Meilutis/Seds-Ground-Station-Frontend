@@ -35,7 +35,9 @@ dots). There are a few differences:
   builds it with `PKGEXT=.pkg.tar.gz`.
 - New assets: deb, rpm, Linux arm64, the armv7 APK and the Intel DMG.
 
-watchOS and Wear OS are not part of the release. iOS goes only to TestFlight.
+iOS goes only to TestFlight. The Apple Watch app ships inside that IPA once
+its App Store profiles exist (see "The Apple Watch app in the IPA" below);
+there is no separate watchOS asset. Wear OS is not part of the release.
 
 Store minimums the release checks:
 
@@ -295,6 +297,8 @@ secrets first.
 | `IOS_DISTRIBUTION_P12_B64` | base64 of the Apple Distribution certificate and private key, exported as `.p12` |
 | `IOS_DISTRIBUTION_P12_PASSWORD` | the `.p12` export password |
 | `IOS_APPSTORE_PROFILE_B64` | base64 of the **App Store** provisioning profile for `com.UBSEDS.GS26`, made with that certificate |
+| `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64` | optional: base64 of the **App Store** profile for the watch app `com.UBSEDS.GS26.watchkitapp`, made with the same certificate |
+| `IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64` | optional: base64 of the **App Store** profile for the watch widget `com.UBSEDS.GS26.watchkitapp.widgets`, made with the same certificate |
 | `APPLE_NOTARY_KEY_P8_B64`, `APPLE_NOTARY_KEY_ID`, `APPLE_NOTARY_ISSUER_ID` | the same App Store Connect API key as notarization. It also uploads builds (Developer role or higher) |
 
 On the Mac (`R` as above):
@@ -315,20 +319,23 @@ The `testflight` job runs these steps:
    `<team>.com.UBSEDS.GS26`: no device list, not enterprise, no
    `get-task-allow`, not expired. It imports the `.p12` into a temporary
    keychain, then requires exactly one Apple Distribution identity whose
-   certificate the profile lists.
-3. `release-store-build`: `build.py --target ios --release --final`. That is
-   the existing distribution path. `package_ios_ipa_with_script` with
-   `sign_kind="distribution"` runs `scripts/ios_package_sign.sh`, which
-   chooses the identity from the keychain search list by the profile's
-   certificates, applies the profile's entitlements and zips
-   `dist/ipas/UBSEDS GS.ipa`.
+   certificate the profile lists. Then the watch profiles, if set (below).
+3. `release-store-build`: `build.py --target ios --release --final`, or
+   `--target watchos` when the watch profile was prepared (the same iPhone app
+   with the watch app embedded). That is the existing distribution path.
+   `package_ios_ipa_with_script` with `sign_kind="distribution"` runs
+   `scripts/ios_package_sign.sh`, which chooses the identity from the keychain
+   search list by the profile's certificates, signs the watch widget and the
+   watch app with their own profiles first, applies each profile's
+   entitlements and zips `dist/ipas/UBSEDS GS.ipa`.
 4. `release-store-verify` checks:
    - the bundle id;
    - `CFBundleShortVersionString` is the Cargo version and `CFBundleVersion`
      is the Dioxus build;
    - the embedded App Store profile;
    - `codesign --verify --deep --strict`;
-   - the Apple Distribution authority.
+   - the Apple Distribution authority;
+   - the embedded watch app, when there is one (below).
 5. `release-store-upload`: `xcrun altool --upload-app --type ios --apiKey <id>
    --apiIssuer <issuer>`. `AuthKey_<id>.p8` is placed in
    `$RUNNER_TEMP/seds-release-signing/appstoreconnect-home/.appstoreconnect/private_keys`,
@@ -339,23 +346,92 @@ The `testflight` job runs these steps:
 The build shows up in App Store Connect → TestFlight after processing. It is
 never submitted for App Store review; that stays a manual step.
 
-**The Apple Watch app is not in the IPA.**
+#### The Apple Watch app in the IPA
 
-- `build_targets.py` refuses `--final` for the `watchos` target.
-- There are no App Store profiles for the watch app or its widget extension.
-- The iOS app is signed with `codesign` by `ios_package_sign.sh`, not by
-  `xcodebuild`. So Xcode cloud signing (`-allowProvisioningUpdates` with
-  `-authenticationKeyPath` / `-authenticationKeyID` /
-  `-authenticationKeyIssuerID`), which could create the missing profiles with
-  the App Store Connect key, does not apply here.
+The IPA carries the Apple Watch app the way other iPhone apps with a watch app
+do: one App Store app, `com.UBSEDS.GS26`, with the watch app at
+`Payload/GS26.app/Watch/GS26Watch.app` (`com.UBSEDS.GS26.watchkitapp`) and its
+push-to-talk widget at `GS26Watch.app/PlugIns/GS26WatchWidgets.appex`
+(`com.UBSEDS.GS26.watchkitapp.widgets`). TestFlight and the App Store install
+the watch app on the paired watch from the iPhone app. Each part is signed
+with `codesign` by `ios_package_sign.sh` using its own App Store profile, so
+those two profiles have to exist as secrets; Xcode cloud signing does not
+apply here.
 
-To ship the watch app later, choose one:
+What the job does with the two optional secrets:
 
-- Create the two App Store profiles in the developer portal and provide them
-  as `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION` /
-  `IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION`, which `build.py` already
-  reads. `--final` then has to allow `watchos`.
-- Move the watch build to an `xcodebuild archive` with cloud signing.
+| Watch secret | Widget secret | IPA | Job summary |
+|---|---|---|---|
+| not set | either | iPhone app only, as before; the release is not failed | "Apple Watch app: **not embedded**" (a set widget secret is ignored with a warning) |
+| set | not set | watch app without its widget (complication) | "Apple Watch app: **embedded** … **without** its push-to-talk widget" |
+| set | set | watch app with its widget | "Apple Watch app: **embedded** …, with its push-to-talk widget" |
+
+A watch secret that is set but wrong fails the job. `release-ios-signing`
+decodes each one to `$RUNNER_TEMP/seds-release-signing/watch-appstore.mobileprovision`
+/ `watch-widgets-appstore.mobileprovision` (mode 600) and requires:
+
+- an App Store profile (no device list, not enterprise, no `get-task-allow`)
+  whose `application-identifier` is `<team>.com.UBSEDS.GS26.watchkitapp` /
+  `<team>.com.UBSEDS.GS26.watchkitapp.widgets`;
+- the same team as the iPhone profile;
+- the Apple Distribution certificate from `IOS_DISTRIBUTION_P12_B64` in its
+  certificate list;
+- not expired. The expiry is reported like the iPhone profile's, with a
+  warning under 30 days.
+
+It exports `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION` /
+`IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION` for `build.py` and sets the
+step output `watch`, which installs XcodeGen for the build. The profiles are
+deleted with the rest of the signing directory by `release-cleanup`; nothing
+is uploaded or cached. Build-only CI drops every `IOS_WATCH_*` variable.
+
+`build.py --target watchos --final` needs `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION`;
+`--final` still refuses the ad hoc simulator watch targets, Wear OS, `--debug`
+and `--no-sign`. When the watch app is embedded, it and the widget get the
+iPhone app's `CFBundleShortVersionString` and `CFBundleVersion` (the watch
+project's own version is 1.0 (1)); App Store Connect rejects a mismatch.
+
+`release-store-verify` then also requires, when the watch profile was prepared:
+
+- exactly `Watch/GS26Watch.app`, bundle id `com.UBSEDS.GS26.watchkitapp`,
+  `WKCompanionAppBundleIdentifier` `com.UBSEDS.GS26`;
+- the watch app's and the widget's version and build equal to the iPhone app's;
+- for the watch app and the widget (the widget only when its profile was
+  prepared, and then it must be there): an embedded App Store profile for its
+  own bundle id and the iPhone app's team, signed by the same Apple
+  Distribution identity and team as the iPhone app, and entitlements whose
+  `application-identifier` and team match, without `get-task-allow`, and with
+  no key its profile does not grant.
+
+Without the watch profile it requires that there is no `Watch` folder, and the
+summary says the watch app is not embedded.
+
+**Owner steps, once** (on the Mac, `R` as above):
+
+1. Developer portal → Certificates, Identifiers & Profiles → Identifiers:
+   check that the App IDs `com.UBSEDS.GS26.watchkitapp` and
+   `com.UBSEDS.GS26.watchkitapp.widgets` exist (they do if the development
+   profiles in `docs/watch-companion.md` were made); otherwise **+** → App IDs →
+   App, explicit bundle id, no extra capabilities.
+2. Profiles → **+** → Distribution → **App Store Connect** (watchOS apps use
+   iOS profiles) → App ID `com.UBSEDS.GS26.watchkitapp` → the **Apple
+   Distribution** certificate that is in `IOS_DISTRIBUTION_P12_B64` → name it
+   e.g. `GS26 Watch App Store` → download `GS26Watch_AppStore.mobileprovision`.
+3. The same for `com.UBSEDS.GS26.watchkitapp.widgets` →
+   `GS26WatchWidgets_AppStore.mobileprovision`.
+4. Add the secrets, then delete the downloaded files:
+
+   ```sh
+   base64 -i GS26Watch_AppStore.mobileprovision | gh secret set IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64 -R "$R"
+   base64 -i GS26WatchWidgets_AppStore.mobileprovision | gh secret set IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64 -R "$R"
+   ```
+
+5. Check with a dry run of `release.yml` from dev: the `testflight` job summary
+   says "Apple Watch app: **embedded**".
+
+When the Apple Distribution certificate is renewed, regenerate all three App
+Store profiles with the new certificate and update the three profile secrets;
+a profile without the `.p12`'s certificate fails the job.
 
 ### Android → Google Play testing track
 

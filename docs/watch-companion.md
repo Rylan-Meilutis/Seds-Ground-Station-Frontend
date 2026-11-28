@@ -729,6 +729,32 @@ see the README's "Watch companion targets". Manual builds: `watch/apple/README.m
 (macOS + Xcode) and `watch/wear/README.md` (Gradle). Phone-side Rust is covered
 by the normal test commands.
 
+### In TestFlight and App Store builds
+
+The Apple Watch app ships inside the iPhone app's IPA, as one App Store app:
+`GS26.app/Watch/GS26Watch.app`, with the push-to-talk widget in its
+`PlugIns`. Installing GS26 from TestFlight or the App Store offers the watch
+app on the paired watch (Watch app on the iPhone → Available Apps, or
+automatically when "Automatic App Install" is on). There is no separate watch
+listing and no separate watchOS release asset.
+
+The release workflow's `testflight` job embeds it when two App Store
+provisioning profiles exist as secrets, made with the same Apple Distribution
+certificate as the iPhone app:
+
+* `IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64`: App ID
+  `com.UBSEDS.GS26.watchkitapp`;
+* `IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64`: App ID
+  `com.UBSEDS.GS26.watchkitapp.widgets`.
+
+Without the first, the IPA has the iPhone app only and the job summary says
+"Apple Watch app: **not embedded**"; without the second, the watch app ships
+without the complication. The embedded watch app and widget get the iPhone
+app's version and build. The owner steps (making the two profiles in the
+developer portal and adding the secrets from the Mac), the checks and the
+verification of the IPA are in `docs/releasing.md` → "The Apple Watch app in
+the IPA". The Wear OS app is not released.
+
 ## Deploy to a watch for testing
 
 **Refreshing profiles.** After adding a device or regenerating a profile in the
@@ -759,7 +785,9 @@ ID + profile to get the PTT complication`; nothing else changes. To get it:
    Profiles**, or point `IOS_WATCH_WIDGETS_DEVELOPMENT_MOBILEPROVISION` at it.
    The newest of the local file and an installed profile wins, as for the
    other profiles. Distribution builds use
-   `IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION`.
+   `IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION` (an App Store profile; a
+   development profile there is skipped the same way). The TestFlight job
+   sets it from a secret (see "In TestFlight and App Store builds").
 
 A profile that does not list the watch is skipped the same way, with its
 reason. `watchos_sim_deploy` always includes the widget (simulators need no

@@ -193,7 +193,31 @@ def embed_watch_app(watch_app, ios_app):
     if destination.exists(): shutil.rmtree(destination)
     destination.parent.mkdir(exist_ok=True)
     shutil.copytree(watch_app, destination, symlinks=True)
+    stamp_watch_versions(destination, ios_info)
     return destination
+
+
+WATCH_VERSION_KEYS = ("CFBundleShortVersionString", "CFBundleVersion")
+
+
+def stamp_watch_versions(watch_app, ios_info):
+    """Give the (unsigned, copied) watch app and its widget extension the iOS
+    app's version and build: App Store Connect rejects an IPA whose embedded
+    watch app or extension has a different CFBundleShortVersionString or
+    CFBundleVersion. The watch project's own MARKETING_VERSION stays 1.0."""
+    values = {key: ios_info[key] for key in WATCH_VERSION_KEYS if ios_info.get(key)}
+    if not values:
+        return
+    appex = watch_widget_appex(watch_app)
+    for bundle in [Path(watch_app)] + ([appex] if appex else []):
+        path = bundle / "Info.plist"
+        raw = path.read_bytes()
+        info = plistlib.loads(raw)
+        if all(info.get(key) == value for key, value in values.items()):
+            continue
+        info.update(values)
+        fmt = plistlib.FMT_BINARY if raw.startswith(b"bplist") else plistlib.FMT_XML
+        path.write_bytes(plistlib.dumps(info, fmt=fmt))
 
 
 def simulator_watch_adhoc_sign_commands(watch_app):
@@ -366,6 +390,32 @@ def native_requirement(target):
         if not target.triple.startswith(host): return "requires the matching Linux architecture; add --docker (with Docker emulation enabled)"
     return None
 
+# App Store profile for the embedded watch app; read by build.py's
+# ios_watch_mobileprovision_path("distribution").
+WATCH_DISTRIBUTION_PROFILE_ENV = "IOS_WATCH_DISTRIBUTION_MOBILEPROVISION"
+
+
+def final_watch_target_problem(name, environ=None):
+    """Why `--final` cannot build this watch target, or None.
+
+    Only the device `watchos` target can be final: the iOS app with the watch
+    app embedded, both signed with distribution profiles (the watch app with
+    IOS_WATCH_DISTRIBUTION_MOBILEPROVISION). Simulator watch targets are ad hoc
+    signed and the Wear OS APK is not a store artifact, so they stay refused."""
+    target = TARGETS[name]
+    if target.watch != "watchos" or target.simulator:
+        return (f"--final is not supported for {name}; only the watchos target (iOS app with the Apple Watch "
+                "app embedded, distribution signed) can be final")
+    environ = os.environ if environ is None else environ
+    raw = (environ.get(WATCH_DISTRIBUTION_PROFILE_ENV) or "").strip()
+    if not raw:
+        return (f"--final --target {name} needs {WATCH_DISTRIBUTION_PROFILE_ENV} (an App Store profile for the "
+                "watch app); without it build --target ios --final, which ships the iOS app without the watch app")
+    if not Path(raw).expanduser().is_file():
+        return f"{WATCH_DISTRIBUTION_PROFILE_ENV} does not exist: {raw}"
+    return None
+
+
 def handle_target_args(argv, root, build_frontend, package_ios, finalize_release=None):
     if "--final" in argv and argv and argv[0] in TARGETS:
         argv = ["--target", argv[0], *argv[1:]]
@@ -404,7 +454,8 @@ def handle_target_args(argv, root, build_frontend, package_ios, finalize_release
         try:
             final = args.final and not target.simulator and target.platform in {"macos", "ios", "android"}
             if args.final and target.watch:
-                raise RuntimeError("--final is not supported for watch targets yet; build ios/android with --final and the watch target separately")
+                final_watch_problem = final_watch_target_problem(name)
+                if final_watch_problem: raise RuntimeError(final_watch_problem)
             if final and not args.dry_run:
                 if finalize_release is None: raise RuntimeError("Release finalizer is unavailable")
                 finalize_release(root, target.platform, args.package_type, prepare=True)

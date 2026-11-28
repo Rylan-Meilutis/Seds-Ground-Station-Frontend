@@ -616,13 +616,24 @@ jobs:
     - name: Fetch the current lock over the restored registry
       if: steps.store.outputs.enabled == 'true'
       run: python scripts/ci/frontend.py refetch
-    - name: App Store distribution keychain and profile from secrets
+    # The two watch profiles are optional: without the watch app profile the
+    # IPA has the iPhone app only, without the widget profile the watch app
+    # ships without its complication (docs/releasing.md).
+    - name: App Store distribution keychain and profiles from secrets
+      id: signing
       if: steps.store.outputs.enabled == 'true'
       env:
         IOS_DISTRIBUTION_P12_B64: ${{ secrets.IOS_DISTRIBUTION_P12_B64 }}
         IOS_DISTRIBUTION_P12_PASSWORD: ${{ secrets.IOS_DISTRIBUTION_P12_PASSWORD }}
         IOS_APPSTORE_PROFILE_B64: ${{ secrets.IOS_APPSTORE_PROFILE_B64 }}
+        IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64: ${{ secrets.IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64 }}
+        IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64: ${{ secrets.IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64 }}
       run: python scripts/ci/frontend.py release-ios-signing
+    - name: watchOS SDK and XcodeGen for the embedded watch app
+      if: steps.store.outputs.enabled == 'true' && steps.signing.outputs.watch == 'true'
+      run: 'xcrun --sdk watchos --show-sdk-version
+
+        brew install xcodegen'
     - name: Release IPA, App Store signing, warnings fatal
       if: steps.store.outputs.enabled == 'true'
       run: python scripts/ci/frontend.py release-store-build

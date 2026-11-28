@@ -5013,6 +5013,9 @@ def ios_watch_widgets_mobileprovision_path(
     elif not _profile_matches_bundle(info, bundle_id):
         print(f"watch widget skipped: {candidate} does not match {bundle_id}")
         return None
+    elif (info.get("Entitlements") or {}).get("get-task-allow") is True:
+        print(f"watch widget skipped: {candidate} is a development profile, not a distribution profile")
+        return None
     return candidate
 
 
@@ -5078,8 +5081,10 @@ def package_ios_ipa_with_script(
             problem = development_profile_problem(watch_info, watch_bundle_id, _profile_matches_bundle)
             if problem:
                 raise RuntimeError(f"Watch development provisioning profile {watch_profile} {problem}.")
-        elif not _profile_matches_bundle(watch_info, watch_bundle_id):
-            raise RuntimeError(f"Watch provisioning profile does not match {watch_bundle_id}: {watch_profile}")
+        else:
+            # Same rule as the iOS app's distribution profile: matching bundle
+            # id, never a development (get-task-allow) profile.
+            _validate_ios_distribution_mobileprovision(watch_profile, watch_info, bundle_id=watch_bundle_id)
     profile_arg = "-"
     if sign_kind == "development":
         profile = ios_development_mobileprovision_path(frontend_dir, bundle_id=bundle_id)

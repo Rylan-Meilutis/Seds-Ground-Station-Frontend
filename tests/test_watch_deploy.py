@@ -489,6 +489,21 @@ class WatchOSDeviceDeploy(unittest.TestCase):
         with patch.dict(os.environ, {"IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION": ""}):
             self.assertIsNone(build.ios_watch_widgets_mobileprovision_path("distribution", self.root, bundle_id=WIDGET_ID))
 
+    def test_distribution_widget_profile_must_be_a_distribution_profile(self):
+        store = self.root / "widget-appstore.mobileprovision"
+        store.write_bytes(b"x")
+        self.profiles[store.name] = {"Entitlements": {"application-identifier": f"TEAMID1234.{WIDGET_ID}",
+                                                      "get-task-allow": False}}
+        with patch.dict(os.environ, {"IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION": str(store)}):
+            self.assertEqual(build.ios_watch_widgets_mobileprovision_path("distribution", self.root, bundle_id=WIDGET_ID),
+                             store)
+        development = self.root / "widget-dev.mobileprovision"
+        development.write_bytes(b"x")
+        self.profiles[development.name] = dev_profile(WIDGET_ID)
+        with patch.dict(os.environ, {"IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION": str(development)}):
+            self.assertIsNone(build.ios_watch_widgets_mobileprovision_path("distribution", self.root, bundle_id=WIDGET_ID))
+        self.assertIn("is a development profile, not a distribution profile", self.out.getvalue())
+
     def test_embedded_watch_app_drops_or_keeps_the_widget_for_with_ios(self):
         embedded = add_widget(fake_watch_app(self.app / "Watch" / targets.WATCH_APP_NAME)).parent.parent
         with patch.object(build, "ios_watch_widgets_mobileprovision_path", return_value=None):

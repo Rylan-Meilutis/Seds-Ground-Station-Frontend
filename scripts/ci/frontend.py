@@ -388,7 +388,7 @@ def ci_env():
         if key.startswith(("NOTARY_", "IOS_DISTRIBUTION_", "IOS_DEVELOPMENT_", "ANDROID_KEY", "ANDROID_UPLOAD_",
                            "SEDS_GS_CI_ANDROID_", "SEDS_GS_RELEASE_", "SEDS_GS_NOTARY_", "MACOS_SIGNING_",
                            "MACOS_DEVELOPER_ID_", "APPLE_NOTARY_", "APPLE_APP_SPECIFIC_",
-                           "IOS_APPSTORE_", "PLAY_SERVICE_ACCOUNT_")) or key in {"APPLE_ID", "APPLE_TEAM_ID"}:
+                           "IOS_APPSTORE_", "IOS_WATCH_", "PLAY_SERVICE_ACCOUNT_")) or key in {"APPLE_ID", "APPLE_TEAM_ID"}:
             env.pop(key)
     bins = [ROOT / ".ci-tools/dx/bin", ROOT / ".ci-tools/wasm-bindgen", ROOT / ".ci-tools/binaryen/bin", ROOT / ".ci-tools/linuxdeploy/bin", ROOT / ".ci-tools/node/node_modules/.bin"]
     env["PATH"] = os.pathsep.join(map(str, bins)) + os.pathsep + env.get("PATH", "")
@@ -856,7 +856,8 @@ RELEASE_SIGNING_ENV = {
     "android": ("ANDROID_KEYSTORE_PATH", "ANDROID_KEYSTORE_PASSWORD", "ANDROID_KEY_PASSWORD",
                 "ANDROID_KEY_ALIAS", "ANDROID_KEYSTORE_TYPE"),
     "macos": ("MACOS_SIGNING_IDENTITY", "NOTARY_PROFILE", "NOTARY_KEYCHAIN"),
-    "ios": ("IOS_DISTRIBUTION_MOBILEPROVISION",),
+    "ios": ("IOS_DISTRIBUTION_MOBILEPROVISION", "IOS_WATCH_DISTRIBUTION_MOBILEPROVISION",
+            "IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION"),
 }
 ANDROID_RELEASE_SECRETS = ("ANDROID_UPLOAD_KEYSTORE_B64", "ANDROID_KEYSTORE_PASSWORD")
 MACOS_CERT_SECRETS = ("MACOS_DEVELOPER_ID_P12_B64", "MACOS_DEVELOPER_ID_P12_PASSWORD")
@@ -882,6 +883,18 @@ PLAY_UPLOAD_API = "https://androidpublisher.googleapis.com/upload/androidpublish
 PLAY_SCOPE = "https://www.googleapis.com/auth/androidpublisher"
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 IOS_STORE_SECRETS = ("IOS_DISTRIBUTION_P12_B64", "IOS_DISTRIBUTION_P12_PASSWORD", "IOS_APPSTORE_PROFILE_B64")
+# Optional: App Store profiles for the Apple Watch app embedded in the IPA and
+# for its widget extension (the same IDs as build_targets / watch_deploy).
+# Without the watch profile the IPA ships the iPhone app only; without the
+# widget profile the watch app ships without its push-to-talk complication.
+IOS_WATCH_BUNDLE_ID = IOS_BUNDLE_ID + ".watchkitapp"
+IOS_WATCH_WIDGETS_BUNDLE_ID = IOS_WATCH_BUNDLE_ID + ".widgets"
+IOS_WATCH_PROFILE_SECRET = "IOS_WATCH_DISTRIBUTION_MOBILEPROVISION_B64"
+IOS_WATCH_WIDGETS_PROFILE_SECRET = "IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION_B64"
+IOS_WATCH_PROFILE_ENV = "IOS_WATCH_DISTRIBUTION_MOBILEPROVISION"
+IOS_WATCH_WIDGETS_PROFILE_ENV = "IOS_WATCH_WIDGETS_DISTRIBUTION_MOBILEPROVISION"
+WATCH_APP_NAME = "GS26Watch.app"
+WATCH_WIDGET_APPEX = "GS26WatchWidgets.appex"
 PLAY_STORE_SECRETS = ("PLAY_SERVICE_ACCOUNT_JSON_B64",)
 # store -> (build target, secrets whose presence enables the store, every secret it then needs)
 STORES = {
@@ -1191,6 +1204,12 @@ def release_env(name):
                                "run release-ios-signing with the GitHub secrets first")
         if Path(profile).resolve().parent != release_signing_dir():
             raise RuntimeError("The App Store profile must be the job-local file written by release-ios-signing")
+        for key in (IOS_WATCH_PROFILE_ENV, IOS_WATCH_WIDGETS_PROFILE_ENV):
+            if env.get(key) and Path(env[key]).resolve().parent != release_signing_dir():
+                raise RuntimeError(f"{key} must be the job-local file written by release-ios-signing")
+        if env.get(IOS_WATCH_WIDGETS_PROFILE_ENV) and not env.get(IOS_WATCH_PROFILE_ENV):
+            # build.py would never use it; keep the inputs unambiguous.
+            env.pop(IOS_WATCH_WIDGETS_PROFILE_ENV)
     return env
 
 
@@ -1526,25 +1545,93 @@ def mobileprovision_info(path):
     return plistlib.loads(out)
 
 
-def check_appstore_profile(info, bundle_id=IOS_BUNDLE_ID, now=None):
+def check_appstore_profile(info, bundle_id=IOS_BUNDLE_ID, now=None, secret="IOS_APPSTORE_PROFILE_B64"):
     """An App Store distribution profile for exactly this bundle id: no device
     list (development/ad hoc), not enterprise, no get-task-allow, unexpired."""
     entitlements = info.get("Entitlements") or {}
     teams = info.get("TeamIdentifier") or []
     team = teams[0] if teams else ""
     if not team or entitlements.get("application-identifier") != f"{team}.{bundle_id}":
-        raise RuntimeError(f"IOS_APPSTORE_PROFILE_B64 is not a profile for {bundle_id} "
+        raise RuntimeError(f"{secret} is not a profile for {bundle_id} "
                            f"(application-identifier {entitlements.get('application-identifier')!r})")
     if info.get("ProvisionedDevices") or info.get("ProvisionsAllDevices"):
-        raise RuntimeError("IOS_APPSTORE_PROFILE_B64 is a development, ad hoc or enterprise profile; "
+        raise RuntimeError(f"{secret} is a development, ad hoc or enterprise profile; "
                            "TestFlight needs an App Store distribution profile")
     if entitlements.get("get-task-allow") is True:
-        raise RuntimeError("IOS_APPSTORE_PROFILE_B64 allows get-task-allow; it is not an App Store profile")
+        raise RuntimeError(f"{secret} allows get-task-allow; it is not an App Store profile")
     expires = info.get("ExpirationDate")
     now = now or utc_now()
     if not isinstance(expires, datetime.datetime) or expires <= now:
-        raise RuntimeError(f"IOS_APPSTORE_PROFILE_B64 has expired ({expires})")
+        raise RuntimeError(f"{secret} has expired ({expires})")
     return team
+
+
+def profile_certificate_sha1s(info):
+    """Upper-case SHA-1 of every certificate a provisioning profile lists."""
+    return {hashlib.sha1(bytes(cert)).hexdigest().upper() for cert in info.get("DeveloperCertificates") or []}
+
+
+def watch_store_profile(directory, secret, filename, bundle_id, team, certificate_sha1, now=None):
+    """Decode one watch App Store profile secret into the job's signing
+    directory and validate it against the iPhone app's signing: an App Store
+    profile for exactly `bundle_id`, the same team, listing the Apple
+    Distribution certificate from IOS_DISTRIBUTION_P12_B64, not expired."""
+    path = directory / filename
+    private_write(path, decode_secret(secret))
+    info = mobileprovision_info(path)
+    found = check_appstore_profile(info, bundle_id, now=now, secret=secret)
+    if found != team:
+        raise RuntimeError(f"{secret} belongs to team {found}, but the iPhone App Store profile is team {team}; "
+                           "make both profiles in the same developer account")
+    if certificate_sha1 not in profile_certificate_sha1s(info):
+        raise RuntimeError(f"{secret} does not include the IOS_DISTRIBUTION_P12_B64 certificate; regenerate it "
+                           "with the Apple Distribution certificate that signs the iPhone app")
+    return path, info
+
+
+def prepare_watch_release_signing(directory, team, certificate_sha1, now=None):
+    """The optional watch app / widget App Store profiles. Returns the job
+    summary lines; exports IOS_WATCH_*_DISTRIBUTION_MOBILEPROVISION for
+    build.py and the step outputs `watch` / `watch_widget`.
+
+    No watch profile secret: the release goes ahead with the iPhone app only,
+    as before. A watch profile secret that is set but wrong fails the job."""
+    watch_set = bool(os.environ.get(IOS_WATCH_PROFILE_SECRET, "").strip())
+    widget_set = bool(os.environ.get(IOS_WATCH_WIDGETS_PROFILE_SECRET, "").strip())
+    if not watch_set:
+        lines = [f"- Apple Watch app: **not embedded**. {IOS_WATCH_PROFILE_SECRET} is not set, so the IPA has the "
+                 "iPhone app only (see docs/releasing.md)."]
+        if widget_set:
+            lines.append(f"- {IOS_WATCH_WIDGETS_PROFILE_SECRET} is ignored: the widget ships only inside the watch app.")
+            print(f"::warning title=Apple Watch app not embedded::{IOS_WATCH_WIDGETS_PROFILE_SECRET} is set but "
+                  f"{IOS_WATCH_PROFILE_SECRET} is not; the IPA has the iPhone app only.", flush=True)
+        github_file("GITHUB_OUTPUT", {"watch": "false", "watch_widget": "false"})
+        return lines
+    exported = {}
+    path, info = watch_store_profile(directory, IOS_WATCH_PROFILE_SECRET, "watch-appstore.mobileprovision",
+                                     IOS_WATCH_BUNDLE_ID, team, certificate_sha1, now)
+    exported[IOS_WATCH_PROFILE_ENV] = str(path)
+    expires = info.get("ExpirationDate")
+    report_expiry("Apple Watch app App Store profile", expires if isinstance(expires, datetime.datetime) else None, now)
+    widget = False
+    if widget_set:
+        widget_path, widget_info = watch_store_profile(
+            directory, IOS_WATCH_WIDGETS_PROFILE_SECRET, "watch-widgets-appstore.mobileprovision",
+            IOS_WATCH_WIDGETS_BUNDLE_ID, team, certificate_sha1, now)
+        exported[IOS_WATCH_WIDGETS_PROFILE_ENV] = str(widget_path)
+        expires = widget_info.get("ExpirationDate")
+        report_expiry("Apple Watch widget App Store profile",
+                      expires if isinstance(expires, datetime.datetime) else None, now)
+        widget = True
+    github_file("GITHUB_ENV", exported)
+    github_file("GITHUB_OUTPUT", {"watch": "true", "watch_widget": "true" if widget else "false"})
+    if widget:
+        return [f"- Apple Watch app: **embedded** (`{IOS_WATCH_BUNDLE_ID}`, profile `{info.get('Name')}`), with its "
+                f"push-to-talk widget (`{IOS_WATCH_WIDGETS_BUNDLE_ID}`, profile `{widget_info.get('Name')}`)."]
+    print(f"::notice title=Watch widget not included::{IOS_WATCH_WIDGETS_PROFILE_SECRET} is not set; the watch "
+          "app ships without its push-to-talk complication.", flush=True)
+    return [f"- Apple Watch app: **embedded** (`{IOS_WATCH_BUNDLE_ID}`, profile `{info.get('Name')}`), "
+            f"**without** its push-to-talk widget: {IOS_WATCH_WIDGETS_PROFILE_SECRET} is not set."]
 
 
 def prepare_ios_release_signing():
@@ -1561,21 +1648,23 @@ def prepare_ios_release_signing():
     if len(distribution) != 1:
         raise RuntimeError("Expected exactly one Apple Distribution identity in IOS_DISTRIBUTION_P12_B64; found "
                            + str(len(distribution)))
-    allowed = {hashlib.sha1(bytes(cert)).hexdigest().upper() for cert in info.get("DeveloperCertificates") or []}
-    if distribution[0][0] not in allowed:
+    if distribution[0][0] not in profile_certificate_sha1s(info):
         raise RuntimeError("The App Store profile does not include the IOS_DISTRIBUTION_P12_B64 certificate; "
                            "regenerate the profile with that certificate")
     github_file("GITHUB_ENV", {"IOS_DISTRIBUTION_MOBILEPROVISION": str(profile)})
     report_expiry("Apple Distribution certificate", keychain_cert_not_after(keychain, distribution[0][1]))
     expires = info.get("ExpirationDate")
     report_expiry("App Store provisioning profile", expires if isinstance(expires, datetime.datetime) else None)
+    watch = prepare_watch_release_signing(directory, team, distribution[0][0])
     job_summary([f"App Store signing: `{distribution[0][1]}`, profile `{info.get('Name')}` "
-                 f"(team {team}, expires {info.get('ExpirationDate')}). The Apple Watch app is not embedded."])
+                 f"(team {team}, expires {info.get('ExpirationDate')}).", *watch])
 
 
-def store_command(name):
+def store_command(name, watch=False):
+    """The store build. iOS with the watch App Store profile prepared builds
+    the `watchos` target: the same iPhone app with the watch app embedded."""
     if name == "ios":
-        return [sys.executable, "build.py", "--target", "ios", "--release", "--final"]
+        return [sys.executable, "build.py", "--target", "watchos" if watch else "ios", "--release", "--final"]
     if name == "android":
         return [sys.executable, "build.py", "--target", "android", "--release", "--final", "--package-type", "aab"]
     raise ValueError(f"{name} is not a store target")
@@ -1590,11 +1679,14 @@ def store_build(name):
     for tool in ["dx", "wasm-bindgen", "wasm-opt", "esbuild"]:
         if not shutil.which(tool, path=env["PATH"]):
             raise RuntimeError(f"Missing prepared tool: {tool}")
-    if (ROOT / "artifacts" / name).exists():
+    watch = name == "ios" and bool(env.get(IOS_WATCH_PROFILE_ENV))
+    if watch and not shutil.which("xcodegen", path=env["PATH"]):
+        raise RuntimeError("Embedding the Apple Watch app needs xcodegen (brew install xcodegen); see CI-RUNNERS.md")
+    if (ROOT / "artifacts" / name).exists() or (watch and (ROOT / "artifacts" / "watchos").exists()):
         raise RuntimeError("Refusing stale platform artifact directory; use a fresh checkout")
     (ROOT / "ci-results").mkdir(exist_ok=True)
     build = checked_gradle_build if name.startswith("android") else checked
-    build(store_command(name), env, "store-" + name, dioxus_progress=True,
+    build(store_command(name, watch=watch), env, "store-" + name, dioxus_progress=True,
             android_upstream_r8=name == "android", android_store_signing=name == "android")
     output = ROOT / STORE_OUTPUTS[name]
     if output.is_symlink() or not output.is_file():
@@ -1661,8 +1753,112 @@ def ios_minos(output):
     return min(versions, default=None)
 
 
+def codesign_details(bundle):
+    """`codesign -dvv` output (it prints to stderr) and its exit status."""
+    result = subprocess.run(["codesign", "-dvv", str(bundle)], capture_output=True, text=True)
+    return result.returncode, result.stdout + result.stderr
+
+
+def distribution_authority(details):
+    match = re.search(r"^Authority=((?:Apple|iPhone) Distribution: .+)$", details, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def signed_team(details):
+    match = re.search(r"^TeamIdentifier=(\S+)$", details, re.MULTILINE)
+    return match.group(1) if match else None
+
+
+def signed_entitlements(bundle):
+    """The entitlements a bundle is signed with, as a dict."""
+    result = subprocess.run(["codesign", "-d", "--entitlements", "-", "--xml", str(bundle)], capture_output=True)
+    if result.returncode:
+        raise RuntimeError(f"codesign could not read the entitlements of {bundle.name}")
+    raw = result.stdout.strip()
+    try:
+        return plistlib.loads(raw) if raw else {}
+    except Exception:
+        raise RuntimeError(f"codesign printed unreadable entitlements for {bundle.name}") from None
+
+
+def verify_embedded_bundle(bundle, *, label, bundle_id, secret, team, authority, version, build):
+    """An embedded watch app / extension inside the IPA: its bundle id, the
+    iPhone app's version and build (App Store Connect rejects a mismatch), an
+    App Store profile of the same team, the same Apple Distribution signer as
+    the iPhone app, and entitlements that are its profile's, for its own id."""
+    plist = plistlib.loads((bundle / "Info.plist").read_bytes())
+    if plist.get("CFBundleIdentifier") != bundle_id:
+        raise RuntimeError(f"The embedded {label} is {plist.get('CFBundleIdentifier')!r}, expected {bundle_id}")
+    found = (plist.get("CFBundleShortVersionString"), plist.get("CFBundleVersion"))
+    if found != (version, build):
+        raise RuntimeError(f"The embedded {label} has version/build {found}, but the iPhone app has "
+                           f"{(version, build)}; App Store Connect rejects the IPA")
+    profile_path = bundle / "embedded.mobileprovision"
+    if not profile_path.is_file():
+        raise RuntimeError(f"The embedded {label} has no embedded.mobileprovision")
+    profile = mobileprovision_info(profile_path)
+    if check_appstore_profile(profile, bundle_id, secret=secret) != team:
+        raise RuntimeError(f"The embedded {label}'s profile is not for team {team}")
+    status, details = codesign_details(bundle)
+    if status or distribution_authority(details) != authority:
+        raise RuntimeError(f"The embedded {label} is not signed by {authority}")
+    if signed_team(details) != team:
+        raise RuntimeError(f"The embedded {label} is signed for team {signed_team(details)!r}, expected {team}")
+    entitlements = signed_entitlements(bundle)
+    allowed = profile.get("Entitlements") or {}
+    if entitlements.get("application-identifier") != f"{team}.{bundle_id}":
+        raise RuntimeError(f"The embedded {label} is signed with application-identifier "
+                           f"{entitlements.get('application-identifier')!r}, expected {team}.{bundle_id}")
+    if entitlements.get("com.apple.developer.team-identifier") != team:
+        raise RuntimeError(f"The embedded {label} is signed with team-identifier "
+                           f"{entitlements.get('com.apple.developer.team-identifier')!r}, expected {team}")
+    if entitlements.get("get-task-allow") is True:
+        raise RuntimeError(f"The embedded {label} is signed with get-task-allow")
+    extra = sorted(set(entitlements) - set(allowed))
+    if extra:
+        raise RuntimeError(f"The embedded {label} has entitlements its profile does not grant: {', '.join(extra)}")
+    return plist
+
+
+def verify_store_watch(app, phone_plist, *, team, authority, expect_watch, expect_widget):
+    """The Apple Watch app in Payload/<app>.app/Watch, when it is expected (the
+    watch profile was prepared) or present. Returns the summary lines."""
+    watch_dir = app / "Watch"
+    watch_apps = sorted(watch_dir.glob("*.app")) if watch_dir.is_dir() else []
+    if not expect_watch and not watch_apps:
+        return ["- Apple Watch app: **not embedded** (no watch App Store profile)"]
+    if not expect_watch:
+        raise RuntimeError("The IPA embeds a watch app although no watch App Store profile was prepared")
+    if [w.name for w in watch_apps] != [WATCH_APP_NAME]:
+        raise RuntimeError(f"Expected Watch/{WATCH_APP_NAME} in the IPA, found {[w.name for w in watch_apps]}")
+    watch = watch_apps[0]
+    version, build = phone_plist.get("CFBundleShortVersionString"), phone_plist.get("CFBundleVersion")
+    common = {"team": team, "authority": authority, "version": version, "build": build}
+    watch_plist = verify_embedded_bundle(watch, label="watch app", bundle_id=IOS_WATCH_BUNDLE_ID,
+                                         secret=IOS_WATCH_PROFILE_SECRET, **common)
+    if watch_plist.get("WKCompanionAppBundleIdentifier") != IOS_BUNDLE_ID:
+        raise RuntimeError(f"The embedded watch app's WKCompanionAppBundleIdentifier is "
+                           f"{watch_plist.get('WKCompanionAppBundleIdentifier')!r}, expected {IOS_BUNDLE_ID}")
+    appexes = sorted((watch / "PlugIns").glob("*.appex")) if (watch / "PlugIns").is_dir() else []
+    names = [a.name for a in appexes]
+    if expect_widget and names != [WATCH_WIDGET_APPEX]:
+        raise RuntimeError(f"Expected the watch widget {WATCH_WIDGET_APPEX} in the watch app, found {names}")
+    if not expect_widget and names:
+        raise RuntimeError(f"The watch app carries {names} although no widget App Store profile was prepared")
+    if expect_widget:
+        verify_embedded_bundle(appexes[0], label="watch widget", bundle_id=IOS_WATCH_WIDGETS_BUNDLE_ID,
+                               secret=IOS_WATCH_WIDGETS_PROFILE_SECRET, **common)
+        widget = f", with its widget `{IOS_WATCH_WIDGETS_BUNDLE_ID}`"
+    else:
+        widget = ", without its push-to-talk widget (no widget App Store profile)"
+    return [f"- Apple Watch app: **embedded** at `Watch/{WATCH_APP_NAME}` (`{IOS_WATCH_BUNDLE_ID}` {version} "
+            f"({build}), companion `{IOS_BUNDLE_ID}`){widget}; same signer and team"]
+
+
 def verify_store_ios(info):
     ipa = ROOT / STORE_OUTPUTS["ios"]
+    expect_watch = bool(os.environ.get(IOS_WATCH_PROFILE_ENV, "").strip())
+    expect_widget = expect_watch and bool(os.environ.get(IOS_WATCH_WIDGETS_PROFILE_ENV, "").strip())
     with tempfile.TemporaryDirectory(prefix="ipa-verify-") as temp:
         quiet_run(["ditto", "-x", "-k", str(ipa), temp], "Unpacking the IPA")
         apps = sorted((Path(temp) / "Payload").glob("*.app"))
@@ -1673,7 +1869,7 @@ def verify_store_ios(info):
         found = (plist.get("CFBundleIdentifier"), plist.get("CFBundleShortVersionString"), plist.get("CFBundleVersion"))
         if found != (IOS_BUNDLE_ID, info["version"], info["build"]):
             raise RuntimeError(f"IPA identity/version {found} != ({IOS_BUNDLE_ID}, {info['version']}, {info['build']})")
-        check_appstore_profile(mobileprovision_info(app / "embedded.mobileprovision"))
+        team = check_appstore_profile(mobileprovision_info(app / "embedded.mobileprovision"))
         verify = subprocess.run(["codesign", "--verify", "--deep", "--strict", "--verbose=2", str(app)],
                                 capture_output=True, text=True)
         print(verify.stdout + verify.stderr)
@@ -1691,13 +1887,14 @@ def verify_store_ios(info):
         declared = str(plist.get("MinimumOSVersion", ""))
         if not re.fullmatch(r"\d+(?:\.\d+){0,2}", declared) or tuple(map(int, declared.split(".")))[:2] < IOS_STORE_MINIMUM_OS:
             raise RuntimeError(f"The IPA declares MinimumOSVersion {declared!r}; App Store Connect takes {minimum} or later")
-        details = subprocess.run(["codesign", "-dvv", str(app)], capture_output=True, text=True)
-        authority = re.search(r"^Authority=((?:Apple|iPhone) Distribution: .+)$", details.stdout + details.stderr,
-                              re.MULTILINE)
-        if details.returncode or not authority:
+        status, details = codesign_details(app)
+        authority = distribution_authority(details)
+        if status or not authority:
             raise RuntimeError("The IPA's app is not signed with an Apple Distribution identity")
+        watch = verify_store_watch(app, plist, team=team, authority=authority,
+                                   expect_watch=expect_watch, expect_widget=expect_widget)
     job_summary([f"### TestFlight IPA", f"- `{IOS_BUNDLE_ID}` {info['version']} ({info['build']})",
-                 f"- Signed by `{authority.group(1)}`, App Store profile embedded"])
+                 f"- Signed by `{authority}`, App Store profile embedded", *watch])
 
 
 def store_verify(name, tag):
