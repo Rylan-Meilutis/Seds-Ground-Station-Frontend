@@ -429,7 +429,11 @@ class ReleaseDriver(unittest.TestCase):
                       "MACOS_SIGNING_IDENTITY": "Developer ID Application: X (T)", "NOTARY_PROFILE": "p",
                       "NOTARY_KEYCHAIN": "/k", "APPLE_ID": "fixture", "MACOS_DEVELOPER_ID_P12_PASSWORD": "fixture",
                       "ANDROID_UPLOAD_KEYSTORE_B64": "Zml4dHVyZQ==", "SEDS_GS_CI_ANDROID_KEYSTORE": "/dev"}
-            with patch.dict(os.environ, values):
+            # Only this fixture's signing values: a runner's own protected
+            # variables (GitLab sets ANDROID_KEY_PASSWORD on main) must not leak in.
+            runner = {k: v for k, v in os.environ.items()
+                      if not k.startswith(("ANDROID_", "NOTARY_", "MACOS_", "APPLE_", "IOS_", "SEDS_GS_", "PLAY_"))}
+            with patch.dict(os.environ, {**runner, **values}, clear=True):
                 linux = ci.release_env("linux")
                 android = ci.release_env("android")
                 macos = ci.release_env("macos")
